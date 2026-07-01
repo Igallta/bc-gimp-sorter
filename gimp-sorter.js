@@ -1,20 +1,21 @@
-// GimpSorter v1.3 — BC Gimp Doll 自动排序 mod
-// 通过 bcModSdk.registerMod 注册，掉线重连后由 FUSAM 自动重新加载
+// GimpSorter v1.4 — BC Gimp Doll 自动排序 mod
+// 通过 bcModSdk.registerMod 注册，掉线重连后由油猴自动重新加载
 // 排序规则：所有 GIMP 娃娃按编号从小到大排在房间最前面
+// 优化：一次性计算移动次数，连续发送 MoveLeft，避免超调
 (function() {
   "use strict";
 
   const mod = bcModSdk.registerMod({
     name: "GimpSorter",
     fullName: "Gimp Doll 自动排序",
-    version: "1.3.0",
+    version: "1.4.0",
     repository: "https://github.com/Igallta/bc-gimp-sorter"
   });
 
   const config = {
     enabled: true,
     pollMs: 3000,
-    moveDelayMs: 300,
+    sortCooldownMs: 1500,  // 排序后等待服务器同步
     gimpPattern: /^GIMP \d{3}$/,
     busy: false,
   };
@@ -62,11 +63,16 @@
     if (!ChatRoomPlayerIsAdmin()) return;
     config.busy = true;
     try {
+      let totalMoves = 0;
+      let pass = 0;
       let safety = 0;
-      while (config.enabled && safety < 80) {
+
+      while (config.enabled && safety < 40) {
         const gimps = getGimps();
         if (gimps.length === 0) break;
         const sorted = [].concat(gimps).sort((a, b) => a.gimpNum - b.gimpNum);
+
+        // 找到第一个不在正确位置的 GIMP
         let target = null;
         let targetPos = -1;
         for (let i = 0; i < sorted.length; i++) {
@@ -77,20 +83,37 @@
           }
         }
         if (target === null) break;
-        log("移动 GIMP " + target.gimpNum + " #" + target.memberNumber + " 从位置" + target.index + " → 目标位置" + targetPos);
-        ServerSend("ChatRoomAdmin", {
-          MemberNumber: target.memberNumber,
-          Action: "MoveLeft",
-          Publish: false
-        });
+
+        // 计算需要 MoveLeft 的次数 = 当前位置 - 目标位置
+        const moveCount = target.index - targetPos;
+        if (moveCount <= 0) {
+          // 这个 GIMP 在目标位置左边，说明是别的 GIMP 占了它的位置
+          // 跳过，下一轮会处理占位的那个
+          break;
+        }
+
+        log("GIMP " + target.gimpNum + " 从位置" + target.index + " 移动" + moveCount + "位到位置" + targetPos);
+
+        // 像 BC 原版一样，连续发送 moveCount 个 MoveLeft，不等回复
+        for (let i = 0; i < moveCount; i++) {
+          ServerSend("ChatRoomAdmin", {
+            MemberNumber: target.memberNumber,
+            Action: "MoveLeft",
+            Publish: false
+          });
+        }
+
+        totalMoves += moveCount;
+        pass++;
         safety++;
-        await sleep(config.moveDelayMs);
+
+        // 等待服务器同步位置
+        await sleep(config.sortCooldownMs);
       }
-      if (safety >= 80) {
-        log("⚠️ 安全限制触发，本轮停止");
-      } else if (safety > 0) {
+
+      if (totalMoves > 0) {
         const allGood = !needsReorder();
-        log("✅ 排序完成，共移动 " + safety + " 次" + (allGood ? "，全部到位" : "，仍有未到位"));
+        log("✅ 排序完成，" + pass + "轮共移动" + totalMoves + "次" + (allGood ? "，全部到位" : "，仍有未到位"));
       }
     } catch (e) {
       console.error("[GimpSorter] error:", e);
@@ -136,5 +159,5 @@
     }
   }, config.pollMs);
 
-  log("Gimp Doll 自动排序 v1.3 已加载。命令: /gimpsorter on|off|status");
+  log("Gimp Doll 自动排序 v1.4 已加载（连续移动模式）。命令: /gimpsorter on|off|status");
 })();
