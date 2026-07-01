@@ -17,6 +17,17 @@
       setTimeout(loadScript, 500);
       return;
     }
+    // 只有御坂账号加载，其他账号不受影响
+    if (typeof Player !== "undefined" && Player.Name && Player.Name !== "MSK002") {
+      console.log("[GimpSorter] skipped for account: " + Player.Name);
+      return;
+    }
+    // 登录前无法判断账号，等 Player 加载后再检查
+    if (typeof Player === "undefined" || !Player.Name) {
+      // 还在登录界面，等登录完成后再判断
+      setTimeout(loadScript, 1000);
+      return;
+    }
     const script = document.createElement("script");
     script.src = "https://igallta.github.io/bc-gimp-sorter/gimp-sorter.js";
     script.onload = () => console.log("[GimpSorter] loaded from GitHub Pages");
