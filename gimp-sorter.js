@@ -1,4 +1,4 @@
-// GimpSorter v1.6 — BC Gimp Doll 自动排序 mod
+// GimpSorter v1.6.1 — BC Gimp Doll 自动排序 mod
 // 通过 bcModSdk.registerMod 注册，掉线重连后由油猴自动重新加载
 // 排序规则：所有 GIMP 娃娃按编号从小到大排在房间最前面
 // 策略：只使用 MoveLeft，行为更稳定可预测
@@ -8,7 +8,7 @@
   const mod = bcModSdk.registerMod({
     name: "GimpSorter",
     fullName: "Gimp Doll 自动排序",
-    version: "1.6.0",
+    version: "1.6.1",
     repository: "https://github.com/Igallta/bc-gimp-sorter"
   });
 
@@ -63,8 +63,6 @@
     if (!ChatRoomPlayerIsAdmin()) return;
     config.busy = true;
     try {
-      let totalMoves = 0;
-      let pass = 0;
       let safety = 0;
 
       while (config.enabled && safety < 40) {
@@ -86,8 +84,6 @@
         const moveCount = target.index - targetPos;
         if (moveCount <= 0) break;
 
-        log("GIMP " + target.gimpNum + " 从位置" + target.index + " MoveLeft " + moveCount + "位到位置" + targetPos);
-
         // 连续发送，每个之间隔 50ms 避免客户端动画抽搐
         for (let i = 0; i < moveCount; i++) {
           ServerSend("ChatRoomAdmin", {
@@ -98,17 +94,10 @@
           await sleep(50);
         }
 
-        totalMoves += moveCount;
-        pass++;
         safety++;
 
         // 等待服务器同步位置
         await sleep(config.sortCooldownMs);
-      }
-
-      if (totalMoves > 0) {
-        const allGood = !needsReorder();
-        log("✅ 排序完成，" + pass + "轮共移动" + totalMoves + "次" + (allGood ? "，全部到位" : "，仍有未到位"));
       }
     } catch (e) {
       console.error("[GimpSorter] error:", e);
@@ -155,5 +144,5 @@
     }
   }, config.pollMs);
 
-  log("Gimp Doll 自动排序 v1.6 已加载（MoveLeft only）。命令: /gimpsorter on|off|status");
+  console.log("[GimpSorter] Gimp Doll 自动排序 v1.6.1 已加载（MoveLeft only）");
 })();
