@@ -1,14 +1,21 @@
-// GimpSorter v1.6.1 — BC Gimp Doll 自动排序 mod
+// GimpSorter v1.6.2 — BC Gimp Doll 自动排序 mod
 // 通过 bcModSdk.registerMod 注册，掉线重连后由油猴自动重新加载
 // 排序规则：所有 GIMP 娃娃按编号从小到大排在房间最前面
 // 策略：只使用 MoveLeft，行为更稳定可预测
 (function() {
   "use strict";
 
+  const version = "1.6.2";
+  if (window.__GimpSorterLoaded) {
+    console.log("[GimpSorter] already loaded: " + window.__GimpSorterLoaded);
+    return;
+  }
+  window.__GimpSorterLoaded = version;
+
   const mod = bcModSdk.registerMod({
     name: "GimpSorter",
     fullName: "Gimp Doll 自动排序",
-    version: "1.6.1",
+    version,
     repository: "https://github.com/Igallta/bc-gimp-sorter"
   });
 
@@ -18,6 +25,7 @@
     sortCooldownMs: 1500,  // 排序后等待服务器同步
     gimpPattern: /^GIMP \d{3}$/,
     busy: false,
+    debug: false,
   };
 
   function log(msg) {
@@ -30,6 +38,10 @@
 
   function sleep(ms) {
     return new Promise(r => setTimeout(r, ms));
+  }
+
+  function debug(msg) {
+    if (config.debug) log(msg);
   }
 
   function getGimpNumber(nickname) {
@@ -84,6 +96,8 @@
         const moveCount = target.index - targetPos;
         if (moveCount <= 0) break;
 
+        debug("GIMP " + target.gimpNum + " 从位置" + target.index + " MoveLeft " + moveCount + "位到位置" + targetPos);
+
         // 连续发送，每个之间隔 50ms 避免客户端动画抽搐
         for (let i = 0; i < moveCount; i++) {
           ServerSend("ChatRoomAdmin", {
@@ -95,10 +109,13 @@
         }
 
         safety++;
+        debug("第" + safety + "轮移动已发送，等待同步");
 
         // 等待服务器同步位置
         await sleep(config.sortCooldownMs);
       }
+
+      debug("排序循环结束，当前需排序: " + needsReorder());
     } catch (e) {
       console.error("[GimpSorter] error:", e);
       log("❌ 排序出错: " + e.message);
@@ -117,10 +134,16 @@
       } else if (cmd === "off") {
         config.enabled = false;
         log("⏹ 已关闭自动排序");
+      } else if (cmd === "debug on") {
+        config.debug = true;
+        log("debug 已开启");
+      } else if (cmd === "debug off") {
+        config.debug = false;
+        log("debug 已关闭");
       } else if (cmd === "status") {
         const gimps = getGimps();
         const sorted = [].concat(gimps).sort((a, b) => a.gimpNum - b.gimpNum);
-        log("状态: " + (config.enabled ? "开启" : "关闭") + " | GIMP: " + gimps.length + "个 | 需排序: " + needsReorder() + " | 搬运中: " + config.busy);
+        log("状态: " + (config.enabled ? "开启" : "关闭") + " | debug: " + (config.debug ? "开" : "关") + " | GIMP: " + gimps.length + "个 | 需排序: " + needsReorder() + " | 搬运中: " + config.busy);
         log("目标顺序: " + sorted.map(g => g.gimpNum).join(" → "));
         gimps.forEach(g => {
           const targetPos = sorted.findIndex(s => s.memberNumber === g.memberNumber);
@@ -128,7 +151,7 @@
           log("  GIMP " + g.gimpNum + " (#" + g.memberNumber + ") @ 位置" + g.index + (ok ? " ✓" : " → 目标位置" + targetPos));
         });
       } else {
-        log("用法: /gimpsorter on|off|status");
+        log("用法: /gimpsorter on|off|status|debug on|debug off");
       }
       return;
     }
@@ -144,5 +167,5 @@
     }
   }, config.pollMs);
 
-  console.log("[GimpSorter] Gimp Doll 自动排序 v1.6.1 已加载（MoveLeft only）");
+  console.log("[GimpSorter] Gimp Doll 自动排序 v" + version + " 已加载（MoveLeft only）");
 })();
