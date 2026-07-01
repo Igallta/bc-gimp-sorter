@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BC Gimp Sorter
 // @namespace    https://igallta.github.io/bc-gimp-sorter
-// @version      1.5
+// @version      1.6
 // @description  BC Gimp Doll 房间自动排序
 // @match        https://www.bondage-europe.com/R129/BondageClub/*
 // @match        https://www.bondageclub.com/R129/BondageClub/*
@@ -29,7 +29,7 @@
       return;
     }
     const script = document.createElement("script");
-    script.src = "https://igallta.github.io/bc-gimp-sorter/gimp-sorter.js?v=1.5.0";
+    script.src = "https://igallta.github.io/bc-gimp-sorter/gimp-sorter.js?v=1.6.0";
     script.onload = () => console.log("[GimpSorter] loaded from GitHub Pages");
     script.onerror = () => console.error("[GimpSorter] failed to load from GitHub Pages");
     document.head.appendChild(script);
