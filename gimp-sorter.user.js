@@ -18,7 +18,7 @@
       return;
     }
     // 只有御坂账号加载，其他账号不受影响
-    if (typeof Player !== "undefined" && Player.Name && Player.Name !== "MSK002") {
+    if (typeof Player !== "undefined" && Player.Name && Player.Name !== "Misaka") {
       console.log("[GimpSorter] skipped for account: " + Player.Name);
       return;
     }
