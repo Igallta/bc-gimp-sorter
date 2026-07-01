@@ -77,6 +77,7 @@
           }
         }
         if (target === null) break;
+        log("移动 GIMP " + target.gimpNum + " #" + target.memberNumber + " 从位置" + target.index + " → 目标位置" + targetPos);
         ServerSend("ChatRoomAdmin", {
           MemberNumber: target.memberNumber,
           Action: "MoveLeft",
