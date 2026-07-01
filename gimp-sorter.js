@@ -1,11 +1,11 @@
-// GimpSorter v1.6.3 — BC Gimp Doll 自动排序 mod
+// GimpSorter v1.6.4 — BC Gimp Doll 自动排序 mod
 // 通过 bcModSdk.registerMod 注册，掉线重连后由油猴自动重新加载
 // 排序规则：所有 GIMP 娃娃按编号从小到大排在房间最前面
 // 策略：只使用 MoveLeft，行为更稳定可预测
 (function() {
   "use strict";
 
-  const version = "1.6.3";
+  const version = "1.6.4";
   if (window.__GimpSorterLoaded) {
     console.log("[GimpSorter] already loaded: " + window.__GimpSorterLoaded);
     return;
@@ -71,50 +71,61 @@
     return false;
   }
 
+  function getMoveLeftPlan() {
+    if (typeof ChatRoomCharacter === "undefined" || !ChatRoomCharacter) return [];
+
+    const order = ChatRoomCharacter.map(c => ({
+      memberNumber: c.MemberNumber,
+      nickname: c.Nickname || c.Name || "",
+      gimpNum: getGimpNumber(c.Nickname || c.Name || ""),
+    }));
+    const sortedGimps = order
+      .filter(c => c.gimpNum !== null)
+      .sort((a, b) => a.gimpNum - b.gimpNum);
+    const plan = [];
+
+    for (let targetPos = 0; targetPos < sortedGimps.length; targetPos++) {
+      const target = sortedGimps[targetPos];
+      let currentPos = order.findIndex(c => c.memberNumber === target.memberNumber);
+      while (currentPos > targetPos) {
+        plan.push({
+          memberNumber: target.memberNumber,
+          gimpNum: target.gimpNum,
+          from: currentPos,
+          to: currentPos - 1,
+        });
+        const tmp = order[currentPos - 1];
+        order[currentPos - 1] = order[currentPos];
+        order[currentPos] = tmp;
+        currentPos--;
+      }
+    }
+
+    return plan;
+  }
+
   async function sortOnce() {
     if (!ChatRoomPlayerIsAdmin()) return;
     config.busy = true;
     try {
-      let safety = 0;
+      const plan = getMoveLeftPlan();
+      if (plan.length === 0) return;
 
-      while (config.enabled && safety < 40) {
-        const gimps = getGimps();
-        if (gimps.length === 0) break;
-        const sorted = [].concat(gimps).sort((a, b) => a.gimpNum - b.gimpNum);
+      debug("本轮 MoveLeft 计划: " + plan.length + " 步");
 
-        let target = null;
-        let targetPos = -1;
-        for (let i = 0; i < sorted.length; i++) {
-          if (sorted[i].index !== i) {
-            target = sorted[i];
-            targetPos = i;
-            break;
-          }
-        }
-        if (target === null) break;
-
-        const moveCount = target.index - targetPos;
-        if (moveCount <= 0) break;
-
-        debug("GIMP " + target.gimpNum + " 从位置" + target.index + " MoveLeft " + moveCount + "位到位置" + targetPos);
-
-        // 连续发送，每个之间隔 50ms 避免客户端动画抽搐
-        for (let i = 0; i < moveCount; i++) {
-          ServerSend("ChatRoomAdmin", {
-            MemberNumber: target.memberNumber,
-            Action: "MoveLeft",
-            Publish: false
-          });
-          await sleep(50);
-        }
-
-        safety++;
-        debug("第" + safety + "轮移动已发送，等待同步");
-
-        // 等待服务器同步位置
-        await sleep(config.sortCooldownMs);
+      for (const step of plan) {
+        if (!config.enabled) break;
+        ServerSend("ChatRoomAdmin", {
+          MemberNumber: step.memberNumber,
+          Action: "MoveLeft",
+          Publish: false
+        });
+        debug("GIMP " + step.gimpNum + " " + step.from + "→" + step.to);
+        await sleep(50);
       }
 
+      // 等待服务器同步位置
+      await sleep(config.sortCooldownMs);
       debug("排序循环结束，当前需排序: " + needsReorder());
     } catch (e) {
       console.error("[GimpSorter] error:", e);
