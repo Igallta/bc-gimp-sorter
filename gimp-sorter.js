@@ -94,13 +94,14 @@
 
         log("GIMP " + target.gimpNum + " 从位置" + target.index + " 移动" + moveCount + "位到位置" + targetPos);
 
-        // 像 BC 原版一样，连续发送 moveCount 个 MoveLeft，不等回复
+        // 连续发送 MoveLeft，每个之间隔 50ms 避免客户端动画抽搐
         for (let i = 0; i < moveCount; i++) {
           ServerSend("ChatRoomAdmin", {
             MemberNumber: target.memberNumber,
             Action: "MoveLeft",
             Publish: false
           });
+          await sleep(50);
         }
 
         totalMoves += moveCount;
