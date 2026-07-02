@@ -506,6 +506,7 @@
 
   // 检测是否是查询请求
   function parseQueryRequest(content) {
+    if (/(头发|頭髮|发色|髮色)/i.test(content || "")) return null;
     if (/刚刚|剛剛|刚才|剛才|刚/.test(content) && /(?:查询|查|查过|查過|问过|問過)/.test(content)) {
       try {
         const lastQuery = JSON.parse(localStorage.getItem("misaka_last_query") || "null");
@@ -547,6 +548,7 @@
     let q = String(raw).trim();
     q = q
       .replace(/^(御坂|御搬|misaka)[,，、\s]*/i, "")
+      .replace(/^(你知道|你認識|你认识|你記得|你记得|知道|認識|认识|記得|记得)\s*/i, "")
       .replace(/^(刚刚|剛剛|刚才|剛才|刚刚的|剛剛的|刚才的|剛才的)\s*/i, "")
       .replace(/^(这个|這個|该|該)\s*/i, "")
       .replace(/^(玩家|角色|成员|成員|member|player)\s*/i, "")
