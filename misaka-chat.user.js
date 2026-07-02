@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BC Misaka Auto Chat
 // @namespace    https://igallta.github.io/bc-gimp-sorter
-// @version      2.0.0
+// @version      2.0.1
 // @description  御坂 BC 自动回复系统 — 独立 LLM 调用，localStorage 记忆持久化
 // @match        https://www.bondage-europe.com/R129/BondageClub/*
 // @match        https://www.bondageclub.com/R129/BondageClub/*
@@ -15,8 +15,8 @@
 (function() {
   "use strict";
 
-  // 预设 API key — DeepSeek 官网 (用户需替换为自己的 DeepSeek API key)
-  const PRESET_KEY = atob("REPLACE_WITH_DEEPSEEK_KEY_BASE64");
+  // 预设 API key — DeepSeek 官网
+  const PRESET_KEY = atob("c2stOWI3MjAyYmMwNTI0NGMxMDkwN2Q5NzdkMjI5YWEzNGQ=");
 
   // 把 GM_xmlhttpRequest 暴露到 window，让注入的脚本能用
   window.__GM_xmlhttpRequest = GM_xmlhttpRequest;
@@ -45,9 +45,8 @@
   }
 
   waitForReady(() => {
-    if (!localStorage.getItem("misaka_apikey")) {
-      localStorage.setItem("misaka_apikey", PRESET_KEY);
-    }
+    // 强制更新 API key（覆盖旧的 OpenRouter key）
+    localStorage.setItem("misaka_apikey", PRESET_KEY);
 
     // 加载人设文件
     loadScript("https://igallta.github.io/bc-gimp-sorter/misaka-persona.js", () => {
