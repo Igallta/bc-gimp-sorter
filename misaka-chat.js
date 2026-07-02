@@ -440,13 +440,21 @@
     const savedModel = localStorage.getItem(storageKey("model")) || "";
     if (savedModel) CONFIG.model = savedModel;
 
-    // 注册 mod
-    const mod = bcModSdk.registerMod({
-      name: "MisakaChat",
-      fullName: "Misaka Auto Chat",
-      version: "1.0.0",
-      repository: "https://github.com/Igallta/bc-gimp-sorter"
-    });
+    // 注册 mod（先检查是否已存在）
+    const existingMods = bcModSdk.getModsInfo();
+    const existingMod = existingMods.find(m => m.name === "MisakaChat");
+    let mod;
+    if (existingMod) {
+      console.log("[MisakaChat] mod 已注册，跳过重复注册");
+      mod = { hookFunction: () => {} }; // no-op
+    } else {
+      mod = bcModSdk.registerMod({
+        name: "MisakaChat",
+        fullName: "Misaka Auto Chat",
+        version: "1.0.0",
+        repository: "https://github.com/Igallta/bc-gimp-sorter"
+      });
+    }
 
     // 监听 ServerSocket 的 ChatRoomMessage 事件（比 hookFunction 更可靠）
     if (typeof ServerSocket !== "undefined" && typeof ServerSocket.on === "function") {
