@@ -284,18 +284,25 @@
       let steps = 0;
       const maxSteps = 20;
       const lastIdx = () => ChatRoomCharacter.length - 1;
+      let lastSrcIdx = -1;
       while (steps < maxSteps) {
         const srcIdx = findIdx(memberNumber);
         if (srcIdx < 0) break;
-        if (edge === "left" && srcIdx === 0) break;   // 已经在最左
-        if (edge === "right" && srcIdx === lastIdx()) break; // 已经在最右
+        if (edge === "left" && srcIdx === 0) break;
+        if (edge === "right" && srcIdx === lastIdx()) break;
+        // 如果位置没变说明服务器不让再移了（被阻挡）
+        if (srcIdx === lastSrcIdx) {
+          console.log(`[MisakaChat] moveEdge 卡在 index ${srcIdx}，服务器拒绝移动`);
+          break;
+        }
+        lastSrcIdx = srcIdx;
         const action = edge === "left" ? "MoveLeft" : "MoveRight";
         ServerSend("ChatRoomAdmin", { MemberNumber: memberNumber, Action: action, Publish: false });
         steps++;
         await new Promise(r => setTimeout(r, 400));
       }
       state.lastMoveTime = Date.now();
-      console.log(`[MisakaChat] moveEdge #${memberNumber} ${edge}, ${steps}步`);
+      console.log(`[MisakaChat] moveEdge #${memberNumber} ${edge}, ${steps}步, 最终 index=${findIdx(memberNumber)}`);
       return steps > 0;
     } catch(e) {
       console.error("[MisakaChat] moveEdge 失败:", e.message);
