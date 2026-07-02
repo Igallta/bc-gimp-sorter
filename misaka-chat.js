@@ -23,8 +23,8 @@
     maxTokens: 100,
     temperature: 0.8,
     maxContext: 10,          // 上下文消息条数
-    cooldownMs: 10000,       // 两次回复最小间隔
-    perUserCooldownMs: 15000, // 同一用户连续回复间隔
+    cooldownMs: 3000,        // 两次回复最小间隔
+    perUserCooldownMs: 5000,  // 同一用户连续回复间隔
     idleTimeoutMs: 300000,   // 5 分钟无人说话进入安静模式
     apiKeyTimeout: 10000,   // API 调用超时
     replyDelayMs: 800,      // 回复前最小延迟（模拟自然节奏）
