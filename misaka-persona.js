@@ -117,6 +117,16 @@ GIMP XXX 中的数字是编号。`;
         return "黑色";
       }
       const hue = h * 360;
+      // 低饱和度冷色 — 灰蓝/蓝灰
+      if (s < 0.25 && hue >= 200 && hue < 250) {
+        return l > 0.5 ? "灰蓝" : "深蓝灰";
+      }
+      // 棕色 — 橙红色相但亮度低
+      if (hue >= 15 && hue < 50 && l < 0.4) return "棕色";
+      // 金色 — 黄橙色相且亮度高
+      if (hue >= 40 && hue < 70 && l > 0.6 && s > 0.3) return "金色";
+      // 银色 — 高亮度低饱和
+      if (s < 0.08 && l > 0.8) return "银色";
       if (hue < 15 || hue >= 345) return "红色";
       if (hue < 45) return "橙红";
       if (hue < 70) return "橙色";
