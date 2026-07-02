@@ -1,7 +1,7 @@
 // 御坂 (Misaka) 人设提示词 — 可独立修改，不影响主脚本逻辑
 // 调用方: const PERSONA = MisakaPersona.build(memory);
 
-const MisakaPersona = {
+window.MisakaPersona = {
   build(memory = { profiles: {}, summaries: [] }) {
     const profileLines = [];
     for (const [mn, info] of Object.entries(memory.profiles || {})) {
