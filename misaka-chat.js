@@ -417,11 +417,24 @@
       if (typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom") {
         console.log("[MisakaChat] 准备发送回复:", finalReply);
         
-        // 根据回复内容选择发送方式
-        // BC 的 ChatRoomSendChat 会自动检测 * 开头并走 ChatRoomSendEmote
-        ElementValue("InputChat", finalReply);
-        ChatRoomSendChat();
-        console.log("[MisakaChat] ChatRoomSendChat 已调用");
+        // 检查是否有 | 分隔符（动作|说话）
+        const parts = finalReply.split("|");
+        if (parts.length === 2 && parts[0].trim() && parts[1].trim()) {
+          // 格式 C：先发动作（emote），延迟后发说话
+          ElementValue("InputChat", parts[0].trim());
+          ChatRoomSendChat();
+          console.log("[MisakaChat] 动作已发送:", parts[0].trim());
+          setTimeout(() => {
+            ElementValue("InputChat", parts[1].trim());
+            ChatRoomSendChat();
+            console.log("[MisakaChat] 说话已发送:", parts[1].trim());
+          }, 600);
+        } else {
+          // 格式 A 或 B：整条直接发
+          ElementValue("InputChat", finalReply);
+          ChatRoomSendChat();
+          console.log("[MisakaChat] ChatRoomSendChat 已调用");
+        }
         
         // 记录自己的回复
         state.recentMessages.push({
