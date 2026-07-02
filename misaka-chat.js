@@ -9,7 +9,7 @@
   const CONFIG = {
     enabled: true,
     apiBase: "https://openrouter.ai/api/v1/chat/completions",
-    model: "google/gemini-2.0-flash-001",
+    model: "meta-llama/llama-3.1-8b-instruct",
     fallbackModel: "meta-llama/llama-3.1-8b-instruct:free",
     maxTokens: 100,
     temperature: 0.8,
