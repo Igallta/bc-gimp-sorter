@@ -392,6 +392,7 @@
             if (p.owner) line += ` | ${p.owner}`;
             if (p.lover) line += ` | ${p.lover}`;
             if (p.lockCount || p.itemCount) line += ` | ${p.itemCount}件束缚, ${p.lockCount}把锁`;
+            if (p.appearance) line += `\n穿着: ${p.appearance.slice(0, 500)}`;
             if (p.description) line += `\n描述: ${p.description.slice(0, 300)}`;
             return line;
           }).join("\n");
