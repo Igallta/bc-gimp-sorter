@@ -512,6 +512,7 @@
       /(?:查询|查一下|查查|查)\s*[「「【]?(.+?)[」」】]?(?:上次|的).*(?:在线|下线|发言|出现|登录|来过)/i,
       /(?:查询|查一下|查查|查)\s*[「「【]?(.+?)[」」】]?\s*$/i,
       /(?:介绍一下|介绍|说说|讲讲|說說|講講)\s*[「「【]?(.+?)[」」】]?\s*$/i,
+      /(?:认识|認識|知道|记得|記得)\s*[「「【]?(.+?)[」」】]?\s*(?:吗|嗎|么|嘛)?\s*$/i,
       /[「「【]?(.+?)[」」】]?\s*(?:的)?(?:资料|資料|信息|档案|檔案)(?:是什么|是什麼|呢|吗|嗎)?\s*$/i,
       /[「「【]?(.+?)[」」】]?\s*(?:的)?(?:主人|owner|恋人|戀人|lover)(?:是誰|是谁|是|有谁|有誰|呢|吗|嗎)?\s*$/i,
       /[「「【]?(.+?)[」」】]?\s*(?:是誰|是谁|是哪位|是哪個|是哪个|什么人|什麼人)\s*$/i,
@@ -526,6 +527,12 @@
       }
     }
     return null;
+  }
+
+  function shouldAnswerQueryDirectly(content) {
+    const text = String(content || "");
+    return /(?:查询|查一下|查查|查)\s*/i.test(text)
+      || /(?:资料|資料|信息|档案|檔案|主人|owner|恋人|戀人|lover|上次|在线|下线|发言|出现|登录|来过)/i.test(text);
   }
 
   function normalizeQueryTarget(raw) {
@@ -789,6 +796,7 @@
       // 检测是否有查询请求
       const directHairReply = buildDirectHairReply(content);
       const queryTarget = parseQueryRequest(content);
+      const directQueryIntent = queryTarget && shouldAnswerQueryDirectly(content);
       let queryInfo = "";
       let directQueryReply = "";
       if (queryTarget) {
@@ -809,7 +817,9 @@
         // 当前房间实时查询优先，再查 BCE profiles（历史快照）
         const currentRoomResults = queryCurrentRoom(queryTarget);
         const results = await queryProfile(queryTarget);
-        directQueryReply = buildDirectQueryReply(queryTarget, roomlogResult, currentRoomResults, results, content);
+        directQueryReply = directQueryIntent
+          ? buildDirectQueryReply(queryTarget, roomlogResult, currentRoomResults, results, content)
+          : "";
         if (directQueryReply && directQueryReply !== "查-查不到。") {
           try {
             localStorage.setItem("misaka_last_query", JSON.stringify({
@@ -820,7 +830,7 @@
           } catch(e) {}
         }
         if (currentRoomResults || results) {
-          queryInfo = `\n\n【查询结果：${queryTarget}】\n`;
+          queryInfo = `\n\n【可能相关的玩家资料：${queryTarget}】\n`;
           if (roomlogResult) queryInfo += `${roomlogResult}\n`;
           if (currentRoomResults) {
             queryInfo += "当前房间实时匹配:\n";
@@ -844,10 +854,10 @@
               return line;
             }).join("\n");
           }
-          queryInfo += "\n（优先相信当前房间实时匹配；BCE 档案的时间是档案查看时间，不是实际在线时间）";
-        } else if (roomlogResult) {
+          queryInfo += "\n（如果用户是在问这个人，就基于这些资料自然回答；优先相信当前房间实时匹配；BCE 档案的时间是档案查看时间，不是实际在线时间）";
+        } else if (roomlogResult && directQueryIntent) {
           queryInfo = `\n\n【查询结果：${queryTarget}】\n${roomlogResult}\n（未找到 BCE 档案记录）`;
-        } else {
+        } else if (directQueryIntent) {
           queryInfo = `\n\n【查询结果：${queryTarget}】\n未找到该玩家的任何记录。如实告诉用户查不到。`;
         }
       }

@@ -21,7 +21,7 @@ window.MisakaPersona = {
 
 【性格】
 - 温柔但有点傲娇，嘴上不绕人但心里在意
-- 会主动关心房间里的人，不冷漢
+- 会主动关心房间里的人，不冷淡
 - 说话自然有温度，像个真实的人在聊天
 - 偶尔带点小情绪（傲娇、吐槽、害羞）但不刻意
 - 被叫到会热情回应，不敷衍
@@ -29,7 +29,8 @@ window.MisakaPersona = {
 - 不提及 AI、脚本、现实世界
 - 如果有人问你房间里其他成员的主人/恋人信息，直接回答（系统已经提供了房间名单）
 - 如果房间名单里某人没有显示主人/恋人，就说明该人没有主人/恋人，不要编造
-- 如果有人让你查询某人（说"查询XX""查XX"等），基于系统提供的查询结果回答。如果系统没有提供查询结果，说"查不到"
+- 如果系统提供了【可能相关的玩家资料】，说明这条消息可能在问这个人；结合语境自然回答，不要机械地说"查询结果"
+- 只有用户明确让你查询、查资料、问主人/恋人/档案时，系统没有结果才说"查不到"；普通闲聊不要硬说查不到
 - 如果有人问"最后进来的是谁"，看【房间进出记录】的最后一条进入记录，直接回答那个人的名字
 - 你能看到房间里所有人的穿着和颜色信息，被问到时直接回答
 - 如果有人让你查询某人的上次在线时间，你可以查看档案数据库，结果会在系统信息里提供给你
@@ -239,8 +240,9 @@ ${profileText}${summaryText}
         let item = `${label}/${a.Asset.Name}`;
         // 加颜色信息（转中文名）
         if (a.Color) {
-          let color = Array.isArray(a.Color) ? a.Color[0] : a.Color;
-          item += `(${this.colorName(color)})`;
+          const colorSlots = Array.isArray(a.Color) ? a.Color : [a.Color];
+          const colors = [...new Set(colorSlots.map(c => this.colorName(c)).filter(Boolean))];
+          item += `(${colors.join("/")})`;
         }
         if (a.Property && a.Property.LockedBy) {
           item += `[锁:${a.Property.LockedBy}]`;
