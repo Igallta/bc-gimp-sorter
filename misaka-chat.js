@@ -18,8 +18,8 @@
   const CONFIG = {
     enabled: true,
     apiBase: "https://openrouter.ai/api/v1/chat/completions",
-    model: "openai/gpt-4o-mini",
-    fallbackModel: "deepseek/deepseek-v4-pro",
+    model: "deepseek/deepseek-v4-pro",
+    fallbackModel: "openai/gpt-4o-mini",
     maxTokens: 100,
     temperature: 0.8,
     maxContext: 50,          // 上下文消息条数
