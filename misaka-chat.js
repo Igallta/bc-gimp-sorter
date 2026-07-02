@@ -339,11 +339,9 @@
 
       // 发送到 BC
       if (typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom") {
-        ServerSend("ChatRoomChat", {
-          Content: finalReply,
-          Type: "Chat",
-          Target: -1
-        });
+        // BC R129 正确发送方式：设置输入框 + 调用 ChatRoomSendChat
+        ElementValue("InputChat", finalReply);
+        ChatRoomSendChat();
         
         // 记录自己的回复
         state.recentMessages.push({
