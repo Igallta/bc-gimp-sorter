@@ -499,9 +499,26 @@
       console.log("[MisakaChat] 监听 ServerSocket ChatRoomMessage 事件");
     }
 
-    // 暴露给外部 wrapper（只在新实例上绑定）
+    // 暴露给外部
     window.__misakaOnMessage = onChatRoomMessage;
-    // 不再 wrap window.ChatRoomMessage（多次 wrap 会导致重复调用）
+
+    // wrap window.ChatRoomMessage（只在新实例上 wrap，旧实例不会覆盖）
+    if (isCurrent() && !window.__misakaWrapped) {
+      const origChatRoomMessage = window.ChatRoomMessage;
+      window.__misakaOrigChatRoomMessage = origChatRoomMessage;
+      window.__misakaWrapped = true;
+      window.ChatRoomMessage = function(data) {
+        try {
+          if (data && data.Content && window.__misakaOnMessage && isCurrent()) {
+            window.__misakaOnMessage(data);
+          }
+        } catch(e) {
+          console.error("[MisakaChat] wrapper error:", e.message);
+        }
+        return origChatRoomMessage.apply(this, arguments);
+      };
+      console.log("[MisakaChat] ChatRoomMessage wrapper 已设置");
+    }
 
     // hook 聊天命令
     mod.hookFunction("ChatRoomSendChat", 10, (args, next) => {
