@@ -12,9 +12,9 @@
 
   const CONFIG = {
     enabled: true,
-    apiBase: "https://api.deepseek.com/chat/completions",
-    model: "deepseek-v4-flash",
-    fallbackModel: "deepseek-v4-pro",
+    apiBase: "https://openrouter.ai/api/v1/chat/completions",
+    model: "deepseek/deepseek-v4-pro",
+    fallbackModel: "openai/gpt-4o-mini",
     maxTokens: 120,
     temperature: 0.8,
     maxContext: 50,
@@ -112,7 +112,9 @@
           window.__GM_xmlhttpRequest({
             method: "POST", url, headers: {
               "Content-Type": "application/json",
-              "Authorization": "Bearer " + apiKey
+              "Authorization": "***" + apiKey,
+              "HTTP-Referer": "https://igallta.github.io/bc-gimp-sorter/",
+              "X-Title": "Misaka BC Chat"
             }, data: reqBody, timeout: CONFIG.apiKeyTimeout,
             onload: (resp) => {
               try {
@@ -133,6 +135,8 @@
           xhr.open("POST", url, true);
           xhr.setRequestHeader("Content-Type", "application/json");
           xhr.setRequestHeader("Authorization", "Bearer " + apiKey);
+          xhr.setRequestHeader("HTTP-Referer", "https://igallta.github.io/bc-gimp-sorter/");
+          xhr.setRequestHeader("X-Title", "Misaka BC Chat");
           xhr.timeout = CONFIG.apiKeyTimeout;
           xhr.onload = () => {
             try {
