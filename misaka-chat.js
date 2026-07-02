@@ -490,10 +490,20 @@
 
   // 检测是否是查询请求
   function parseQueryRequest(content) {
+    if (/刚刚|剛剛|刚才|剛才|刚/.test(content) && /(?:查询|查|查过|查過|问过|問過)/.test(content)) {
+      try {
+        const lastQuery = JSON.parse(localStorage.getItem("misaka_last_query") || "null");
+        if (lastQuery && lastQuery.target && Date.now() - (lastQuery.time || 0) < 10 * 60 * 1000) {
+          return lastQuery.target;
+        }
+      } catch(e) {}
+    }
     // 匹配"查询XX"、"查XX"、"XX上次在线"、"XX上次发言"、"XX下线时间"等
     const patterns = [
       /(?:查询|查一下|查查|查)\s*[「「【]?(.+?)[」」】]?(?:上次|的).*(?:在线|下线|发言|出现|登录|来过)/i,
       /(?:查询|查一下|查查|查)\s*[「「【]?(.+?)[」」】]?\s*$/i,
+      /(?:介绍一下|介绍|说说|讲讲|說說|講講)\s*[「「【]?(.+?)[」」】]?\s*$/i,
+      /[「「【]?(.+?)[」」】]?\s*(?:的)?(?:资料|資料|信息|档案|檔案)(?:是什么|是什麼|呢|吗|嗎)?\s*$/i,
       /[「「【]?(.+?)[」」】]?(?:上次|的).*(?:在线|下线|发言|出现|登录|来过)/i,
       /(?:御坂|御搬|misaka)?[,，、\s]*([A-Za-z0-9_\-\s\u4e00-\u9fff]+?)\s*(?:能不能|能|可以|可不可以)?查(?:询)?到吗/i,
     ];
@@ -516,6 +526,7 @@
       .replace(/^(这个|這個|该|該)\s*/i, "")
       .replace(/^(玩家|角色|成员|成員|member|player)\s*/i, "")
       .replace(/^(id|ID|#|编号|編號|成员编号|成員編號)\s*/i, "")
+      .replace(/^(一下|一下子)\s*/i, "")
       .replace(/[,，、]\s*(不是|并不是|而不是|不是说|不(?:要)?是).+$/i, "")
       .replace(/[？?。.!！,，、：:；;]+$/g, "")
       .trim();
@@ -689,6 +700,15 @@
         const currentRoomResults = queryCurrentRoom(queryTarget);
         const results = await queryProfile(queryTarget);
         directQueryReply = buildDirectQueryReply(queryTarget, roomlogResult, currentRoomResults, results);
+        if (directQueryReply && directQueryReply !== "查-查不到。") {
+          try {
+            localStorage.setItem("misaka_last_query", JSON.stringify({
+              target: queryTarget,
+              reply: directQueryReply,
+              time: Date.now()
+            }));
+          } catch(e) {}
+        }
         if (currentRoomResults || results) {
           queryInfo = `\n\n【查询结果：${queryTarget}】\n`;
           if (roomlogResult) queryInfo += `${roomlogResult}\n`;
@@ -965,6 +985,9 @@
       roomlogResult,
       directReply: buildDirectQueryReply(queryTarget, roomlogResult, currentRoomResults, results)
     };
+  };
+  window.__misakaDebugParseQuery = function(content) {
+    return parseQueryRequest(content);
   };
 
   // 等待页面加载完成
