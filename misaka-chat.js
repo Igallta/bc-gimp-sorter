@@ -212,8 +212,8 @@
       }
       const char = ChatRoomCharacter.find(c => c.MemberNumber === memberNumber);
       if (!char) { console.log("[MisakaChat] 找不到玩家 #" + memberNumber); return false; }
-      if (direction === "left") ChatRoomAdminCharacterMoveLeft(memberNumber);
-      else ChatRoomAdminCharacterMoveRight(memberNumber);
+      const action = direction === "left" ? "MoveLeft" : "MoveRight";
+      ServerSend("ChatRoomAdmin", { MemberNumber: memberNumber, Action: action, Publish: false });
       state.lastMoveTime = Date.now();
       console.log(`[MisakaChat] 已移动 #${memberNumber} ${direction}`);
       return true;
