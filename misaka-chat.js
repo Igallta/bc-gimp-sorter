@@ -13,9 +13,9 @@
   const CONFIG = {
     enabled: true,
     apiBase: "https://api.deepseek.com/chat/completions",
-    model: "deepseek-v4-flash",
-    fallbackModel: "deepseek-v4-pro",
-    maxTokens: 150,
+    model: "deepseek-v4-pro",
+    fallbackModel: "deepseek-v4-flash",
+    maxTokens: 500,
     temperature: 0.8,
     maxContext: 50,
     cooldownMs: 3000,
@@ -105,7 +105,7 @@
 
     return new Promise((resolve) => {
       const doRequest = (url, model, isFallback) => {
-        const reqBody = JSON.stringify({ model, messages, max_tokens: CONFIG.maxTokens, temperature: CONFIG.temperature, thinking: { type: "disabled" } });
+        const reqBody = JSON.stringify({ model, messages, max_tokens: CONFIG.maxTokens, temperature: CONFIG.temperature });
         const useGM = typeof window.__GM_xmlhttpRequest !== "undefined";
 
         if (useGM) {
