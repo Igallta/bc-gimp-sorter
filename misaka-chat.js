@@ -278,7 +278,19 @@
     // Sender = MemberNumber (number), Content = 消息内容, Type = 消息类型
     const content = data.Content || "";
     const senderNum = data.Sender;
-    
+
+    // 记录房间进出事件（在 validTypes 过滤之前，因为 ServerEnter 是 Action 类型）
+    if (data.Type === "Action" && (data.Content === "ServerEnter" || data.Content === "ServerDisconnect" || data.Content === "ServerLeave")) {
+      let who = "";
+      if (data.Dictionary && Array.isArray(data.Dictionary)) {
+        const nameEntry = data.Dictionary.find(d => d.Tag === "SourceCharacter");
+        if (nameEntry) who = nameEntry.Text || "";
+      }
+      state.roomJoinLog.push({ name: who, memberNum: data.Sender, time: Date.now(), action: data.Content === "ServerEnter" ? "join" : "leave" });
+      if (state.roomJoinLog.length > 50) state.roomJoinLog.shift();
+      try { localStorage.setItem("misaka_joinlog", JSON.stringify(state.roomJoinLog)); } catch(e) {}
+    }
+
     // 只处理实际聊天消息，过滤掉 mod 内部消息
     const validTypes = ["Chat", "Talk", "Emote", "Whisper", "Activity"];
     if (!validTypes.includes(data.Type)) return;
@@ -322,43 +334,6 @@
       localStorage.setItem("misaka_roomlog", JSON.stringify(log));
     } catch(e) {}
     
-    // 记录房间进出事件（系统消息）
-    if (data.Type === "Action" || data.Type === "LocalMessage" || data.Type === "ServerMessage") {
-      // BC 进入消息：Content="ServerEnter"，Dictionary 里有角色名
-      if (data.Content === "ServerEnter" || /进来了|进入了|加入了/.test(content)) {
-        // 从 Dictionary 提取名字
-        let who = senderName;
-        if (data.Dictionary && Array.isArray(data.Dictionary)) {
-          const nameEntry = data.Dictionary.find(d => d.Tag === "SourceCharacter" || d.Tag === "TargetCharacter");
-          if (nameEntry && nameEntry.MemberNumber) {
-            // 查找角色
-            const c = ChatRoomCharacter.find(ch => ch.MemberNumber === nameEntry.MemberNumber);
-            if (c) who = c.Nickname || c.Name;
-          }
-        }
-        state.roomJoinLog = state.roomJoinLog || [];
-        state.roomJoinLog.push({ name: who, memberNum: data.Sender, time: Date.now(), action: "join" });
-        if (state.roomJoinLog.length > 50) state.roomJoinLog.shift();
-        // 持久化
-        try { localStorage.setItem("misaka_joinlog", JSON.stringify(state.roomJoinLog)); } catch(e) {}
-      }
-      if (/掉了|掉线了|离开了|退出了/.test(content) || data.Content === "ServerLeave" || data.Content === "ServerDisconnect") {
-        let who = senderName;
-        if (data.Dictionary && Array.isArray(data.Dictionary)) {
-          const nameEntry = data.Dictionary.find(d => d.Tag === "SourceCharacter" || d.Tag === "TargetCharacter");
-          if (nameEntry && nameEntry.MemberNumber) {
-            const c = ChatRoomCharacter.find(ch => ch.MemberNumber === nameEntry.MemberNumber);
-            if (c) who = c.Nickname || c.Name;
-          }
-        }
-        state.roomJoinLog = state.roomJoinLog || [];
-        state.roomJoinLog.push({ name: who, memberNum: data.Sender, time: Date.now(), action: "leave" });
-        if (state.roomJoinLog.length > 50) state.roomJoinLog.shift();
-        // 持久化
-        try { localStorage.setItem("misaka_joinlog", JSON.stringify(state.roomJoinLog)); } catch(e) {}
-      }
-    }
-
     // 更新消息窗口
     if (!isGimpDoll) {
       state.recentMessages.push({
