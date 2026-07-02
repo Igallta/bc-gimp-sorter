@@ -357,6 +357,7 @@
           if (myProfile.ds) profileInfo += ` | ${myProfile.ds}`;
           if (myProfile.owner) profileInfo += ` | ${myProfile.owner}`;
           if (myProfile.lover) profileInfo += ` | ${myProfile.lover}`;
+          if (myProfile.description) profileInfo += `\n描述: ${myProfile.description}`;
         }
 
         // 发送者的详细资料
@@ -368,7 +369,8 @@
           if (profile.languages) profileInfo += ` | ${profile.languages.join("/")}`;
           if (profile.owner) profileInfo += ` | ${profile.owner}`;
           if (profile.lover) profileInfo += ` | ${profile.lover}`;
-          if (profile.about) profileInfo += `\n简介: ${profile.about}`;
+          // 直接传完整 description，让 LLM 自己理解
+          if (profile.description) profileInfo += `\n描述: ${profile.description}`;
         }
         
         // 房间里所有角色的简要信息
