@@ -250,6 +250,7 @@
   }
 
   // === 消息处理 ===
+  // 防重复：用 window 级别去重（避免多 IIFE 实例各自有自己的 key）
   function onChatRoomMessage(data) {
     if (!CONFIG.enabled) return;
     if (typeof Player === "undefined" || !Player) return;
@@ -262,6 +263,13 @@
     // 只处理实际聊天消息，过滤掉 mod 内部消息
     const validTypes = ["Chat", "Talk", "Emote", "Whisper", "Activity"];
     if (!validTypes.includes(data.Type)) return;
+
+    // 防重复：同一条消息 2 秒内只处理一次（window 级别）
+    const key = senderNum + ":" + content + ":" + data.Type;
+    const now = Date.now();
+    if (window.__misakaLastKey === key && now - (window.__misakaLastKeyTime || 0) < 2000) return;
+    window.__misakaLastKey = key;
+    window.__misakaLastKeyTime = now;
     
     // 忽略自己的消息
     if (senderNum === Player.MemberNumber) {
@@ -301,12 +309,15 @@
 
     if (!triggered) return;
     if (state.busy) return;
+    // window 级别 busy 锁
+    if (window.__misakaGlobalBusy) return;
+    window.__misakaGlobalBusy = true;
 
     // 频率控制
-    const now = Date.now();
-    if (now - state.lastReplyTime < CONFIG.cooldownMs) return;
+    const nowTime = Date.now();
+    if (nowTime - state.lastReplyTime < CONFIG.cooldownMs) return;
     const lastUserTime = state.lastUserReplyTime[senderNum] || 0;
-    if (now - lastUserTime < CONFIG.perUserCooldownMs) return;
+    if (nowTime - lastUserTime < CONFIG.perUserCooldownMs) return;
 
     // 触发回复
     handleReply(senderNum, senderName, content);
@@ -361,6 +372,7 @@
       console.error("[MisakaChat] 回复失败:", e.message);
     } finally {
       state.busy = false;
+      window.__misakaGlobalBusy = false;
     }
   }
 
