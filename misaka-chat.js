@@ -582,11 +582,18 @@
       // 房间进出记录
       let joinLogInfo = "";
       if (state.roomJoinLog && state.roomJoinLog.length > 0) {
-        const recent = state.roomJoinLog.slice(-10);
-        joinLogInfo = "\n\n【房间进出记录（最近）】\n";
-        joinLogInfo += recent.map(e => 
-          `${new Date(e.time).toLocaleString("zh-CN", {hour: "2-digit", minute: "2-digit"})} ${e.name} ${e.action === "join" ? "进入" : "离开"}房间`
-        ).join("\n");
+        // 直接提取最后进入的人，给 LLM 一个明确答案
+        const lastJoin = [...state.roomJoinLog].reverse().find(e => e.action === "join");
+        if (lastJoin) {
+          joinLogInfo = `\n\n【房间进出记录】最后进入房间的是: ${lastJoin.name} (于 ${new Date(lastJoin.time).toLocaleString("zh-CN", {hour: "2-digit", minute: "2-digit"})})`;
+        }
+        // 也列出最近 5 条供参考
+        const recent = state.roomJoinLog.slice(-5);
+        joinLogInfo += "\n最近进出: " + recent.map(e => 
+          `${e.name}${e.action === "join" ? "进入" : "离开"}`
+        ).join(" → ");
+      } else {
+        joinLogInfo = "\n\n【房间进出记录】暂无记录";
       }
 
       const systemPrompt = getSystemPrompt() + profileInfo + queryInfo + joinLogInfo;
