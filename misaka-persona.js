@@ -91,13 +91,17 @@ window.MisakaPersona = {
 移动玩家一步: [MOVE:成员编号:left] 或 [MOVE:成员编号:right]
 添加道具: [ITEMADD:成员编号:道具名]
 移除道具: [ITEMDEL:成员编号:道具名]
-可选道具: 绳索/口球/眼罩/手铐/项圈/宠物笼/宠物窝
+可用道具: 口球/布团/胶带/圆环口塞/奶嘴/马具口球/眼罩/催眠眼镜/头罩/耳塞/项圈/宠物项圈/铃铛项圈/电击项圈/奴隶项圈/手铐/绳索/尼龙绳/麻绳/皮带/单手套/连指手套/脚铐/腿铐/芭蕾高跟鞋/束带/贞操带/贞操文胸/宠物窝/笼子/狗窝/硬鞭/板子/鞭笞/跳蛋/肛塞/猫尾肛塞
 
 规则：
 - "把X移到Y左边" = [MOVE:X编号:to:Y编号:left]
 - "把X移到Y右边" = [MOVE:X编号:to:Y编号:right]
 - "把X移到最左边" = [MOVE:X编号:edge:left]
 - "把X移到最右边" = [MOVE:X编号:edge:right]
+- "给X加口球" = [ITEMADD:X编号:口球]
+- "脱掉X的口球" = [ITEMDEL:X编号:口球]
+- 可以对自己操作：[ITEMADD:194331:项圈]
+- 被锁的道具无法移除
 - 从名单里找编号。指令单独一行，回复文字在下一行。
 - 日常聊天不输出操作指令
 - 如果做不到，说"好像做不到呢"
@@ -224,6 +228,7 @@ ${rosterText}${profileText}${summaryText}
       // 道具统计 + 关键穿着
       let items = 0, locks = 0;
       const clothes = [];
+      const itemList = [];
       if (c.Appearance && Array.isArray(c.Appearance)) {
         // 识别 mod 覆盖
         const overrideDescs = new Set();
@@ -242,6 +247,10 @@ ${rosterText}${profileText}${summaryText}
           if (gName.startsWith("Item")) {
             items++;
             if (a.Property?.LockedBy) locks++;
+            // 记录具体道具名
+            const itemDesc = a.Asset.Description || a.Asset.Name || "";
+            const lockTag = a.Property?.LockedBy ? "[锁]" : "";
+            itemList.push(itemDesc + lockTag);
             continue;
           }
           // 只保留有视觉意义的穿着
@@ -262,7 +271,8 @@ ${rosterText}${profileText}${summaryText}
       if (lovers) line += ` 恋人:${lovers}`;
       if (hair) line += ` 发:${hair}`;
       if (clothes.length > 0) line += ` 穿:${clothes.slice(0, 6).join(",")}`;
-      if (items || locks) line += ` ${items}件${locks}锁`;
+      if (itemList.length > 0) line += ` 道具:${itemList.join(",")}`;
+      else if (items || locks) line += ` ${items}件${locks}锁`;
       lines.push(line);
     }
     return lines.join("\n");

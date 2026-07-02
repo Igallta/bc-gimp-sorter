@@ -310,27 +310,91 @@
     }
   }
 
-  // BC 道具名映射 → Asset 查找
+  // BC 道具名映射 → group + asset
+  // LLM 输出中文道具名，代码映射到 BC 内部 Asset
   const ITEM_MAP = {
-    "绳索": { group: "ItemArms", asset: "Rope" },
+    // 嘴巴
     "口球": { group: "ItemMouth", asset: "BallGag" },
-    "眼罩": { group: "ItemHead", asset: "Blindfold" },
-    "手铐": { group: "ItemArms", asset: "Handcuffs" },
-    "项圈": { group: "ItemNeck", asset: "Collar" },
-    "宠物笼": { group: "ItemMisc", asset: "PetCage" },
-    "宠物窝": { group: "ItemMisc", asset: "PetBed" },
+    "布团": { group: "ItemMouth", asset: "ClothGag" },
+    "胶带": { group: "ItemMouth", asset: "DuctTape" },
+    "圆环口塞": { group: "ItemMouth", asset: "RingGag" },
+    "奶嘴": { group: "ItemMouth", asset: "PacifierGag" },
+    "马具口球": { group: "ItemMouth", asset: "HarnessBallGag" },
+    // 眼/头
+    "眼罩": { group: "ItemHead", asset: "LeatherBlindfold" },
+    "皮革眼罩": { group: "ItemHead", asset: "LeatherBlindfold" },
+    "催眠眼镜": { group: "ItemHead", asset: "HypnoticVisor" },
+    "头罩": { group: "ItemHood", asset: "LeatherHoodSealed" },
+    "皮革头罩": { group: "ItemHood", asset: "LeatherHoodSealed" },
+    "耳塞": { group: "ItemEars", asset: "HeavyDutyEarPlugs" },
+    // 颈
+    "项圈": { group: "ItemNeck", asset: "LeatherCollar" },
+    "皮革项圈": { group: "ItemNeck", asset: "LeatherCollar" },
+    "宠物项圈": { group: "ItemNeck", asset: "PetCollar" },
+    "铃铛项圈": { group: "ItemNeck", asset: "LeatherCollarBell" },
+    "电击项圈": { group: "ItemNeck", asset: "ShockCollar" },
+    "奴隶项圈": { group: "ItemNeck", asset: "SlaveCollar" },
+    // 手臂
+    "手铐": { group: "ItemArms", asset: "MetalCuffs" },
+    "金属手铐": { group: "ItemArms", asset: "MetalCuffs" },
+    "绳索": { group: "ItemArms", asset: "NylonRope" },
+    "尼龙绳": { group: "ItemArms", asset: "NylonRope" },
+    "麻绳": { group: "ItemArms", asset: "HempRope" },
+    "皮带": { group: "ItemArms", asset: "LeatherBelt" },
+    "单手套": { group: "ItemArms", asset: "LeatherArmbinder" },
+    "连指手套": { group: "ItemHands", asset: "PaddedMittens" },
+    // 脚/腿
+    "脚铐": { group: "ItemFeet", asset: "HeavyAnkleCuffs" },
+    "腿铐": { group: "ItemLegs", asset: "LeatherLegCuffs" },
+    "芭蕾高跟鞋": { group: "ItemBoots", asset: "BalletHeels" },
+    // 躯干
+    "束带": { group: "ItemTorso", asset: "LeatherHarness" },
+    "贞操带": { group: "ItemPelvis", asset: "LeatherChastityBelt" },
+    "贞操文胸": { group: "ItemBreast", asset: "MetalChastityBra" },
+    // 道具
+    "宠物窝": { group: "ItemDevices", asset: "PetBed" },
+    "笼子": { group: "ItemDevices", asset: "Cage" },
+    "站立笼": { group: "ItemDevices", asset: "Cage" },
+    "狗窝": { group: "ItemDevices", asset: "LowCage" },
+    // 手持
+    "硬鞭": { group: "ItemHandheld", asset: "Crop" },
+    "板子": { group: "ItemHandheld", asset: "Paddle" },
+    "鞭笞": { group: "ItemHandheld", asset: "Flogger" },
+    // 其他
+    "跳蛋": { group: "ItemVulva", asset: "VibratingEgg" },
+    "肛塞": { group: "ItemButt", asset: "BlackButtPlug" },
+    "猫尾肛塞": { group: "ItemButt", asset: "TailButtPlug" },
   };
+
+  // 模糊匹配道具名
+  function findItemAsset(itemName) {
+    // 精确匹配
+    if (ITEM_MAP[itemName]) return ITEM_MAP[itemName];
+    // 模糊匹配
+    const lower = itemName.toLowerCase();
+    for (const [key, val] of Object.entries(ITEM_MAP)) {
+      if (key.includes(itemName) || itemName.includes(key)) return val;
+    }
+    // 尝试直接用 Asset.Description 匹配
+    const family = Player.AssetFamily;
+    if (typeof Asset !== "undefined" && Array.isArray(Asset)) {
+      for (const a of Asset) {
+        if (a?.Group?.Name?.startsWith("Item") && a.Description === itemName) {
+          return { group: a.Group.Name, asset: a.Name };
+        }
+      }
+    }
+    return null;
+  }
 
   function executeItemAdd(memberNumber, itemName) {
     try {
-      const mapping = ITEM_MAP[itemName];
+      const mapping = findItemAsset(itemName);
       if (!mapping) { console.log("[MisakaChat] 未知道具:", itemName); return false; }
-      const char = ChatRoomCharacter.find(c => c.MemberNumber === memberNumber);
+      const char = ChatRoomCharacter.find(c => c.MemberNumber === memberNumber) || Player;
       if (!char) return false;
-      const group = AssetGroupFind(char.AssetFamily, mapping.group);
-      if (!group) return false;
       const asset = AssetGet(char.AssetFamily, mapping.group, mapping.asset);
-      if (!asset) return false;
+      if (!asset) { console.log(`[MisakaChat] Asset 不存在: ${mapping.group}/${mapping.asset}`); return false; }
       CharacterAppearanceSetItem(char, mapping.group, asset, null, false);
       ChatRoomCharacterUpdate(char);
       console.log(`[MisakaChat] 已给 #${memberNumber} 添加 ${itemName}`);
@@ -343,10 +407,30 @@
 
   function executeItemDel(memberNumber, itemName) {
     try {
-      const mapping = ITEM_MAP[itemName];
-      if (!mapping) return false;
-      const char = ChatRoomCharacter.find(c => c.MemberNumber === memberNumber);
+      const mapping = findItemAsset(itemName);
+      if (!mapping) {
+        // 如果没匹配到，尝试按 group 名移除
+        const char = ChatRoomCharacter.find(c => c.MemberNumber === memberNumber) || Player;
+        if (!char) return false;
+        // 找到包含该名称的 item
+        const item = char.Appearance.find(a => 
+          a.Asset?.Group?.Name?.startsWith("Item") && 
+          (a.Asset?.Description?.includes(itemName) || a.Asset?.Name?.includes(itemName))
+        );
+        if (!item) { console.log("[MisakaChat] 找不到道具:", itemName); return false; }
+        CharacterAppearanceSetItem(char, item.Asset.Group.Name, null, null, false);
+        ChatRoomCharacterUpdate(char);
+        console.log(`[MisakaChat] 已移除 #${memberNumber} 的 ${itemName}`);
+        return true;
+      }
+      const char = ChatRoomCharacter.find(c => c.MemberNumber === memberNumber) || Player;
       if (!char) return false;
+      // 检查是否被锁
+      const existing = char.Appearance.find(a => a.Asset?.Group?.Name === mapping.group);
+      if (existing?.Property?.LockedBy) {
+        console.log(`[MisakaChat] 道具被锁: ${existing.Property.LockedBy}`);
+        return false;
+      }
       CharacterAppearanceSetItem(char, mapping.group, null, null, false);
       ChatRoomCharacterUpdate(char);
       console.log(`[MisakaChat] 已移除 #${memberNumber} 的 ${itemName}`);
