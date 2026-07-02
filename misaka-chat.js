@@ -539,33 +539,41 @@
 
   function executeItemDel(memberNumber, itemName) {
     try {
-      const mapping = findItemAsset(itemName);
-      if (!mapping) {
-        // 如果没匹配到，尝试按 group 名移除
-        const char = ChatRoomCharacter.find(c => c.MemberNumber === memberNumber) || Player;
-        if (!char) return false;
-        // 找到包含该名称的 item
-        const item = char.Appearance.find(a => 
-          a.Asset?.Group?.Name?.startsWith("Item") && 
-          (a.Asset?.Description?.includes(itemName) || a.Asset?.Name?.includes(itemName))
-        );
-        if (!item) { console.log("[MisakaChat] 找不到道具:", itemName); return false; }
-        directRemoveItem(char, item.Asset.Group.Name);
-        ChatRoomCharacterUpdate(char);
-        console.log(`[MisakaChat] 已移除 #${memberNumber} 的 ${itemName}`);
-        return true;
-      }
       const char = ChatRoomCharacter.find(c => c.MemberNumber === memberNumber) || Player;
       if (!char) return false;
-      // 检查是否被锁
-      const existing = char.Appearance.find(a => a.Asset?.Group?.Name === mapping.group);
-      if (existing?.Property?.LockedBy) {
-        console.log(`[MisakaChat] 道具被锁: ${existing.Property.LockedBy}`);
+      
+      // 优先从玩家身上找匹配的道具（解决多层 group：ItemMouth/ItemMouth2/ItemMouth3, ItemTorso/ItemTorso2, ItemHead/ItemHood）
+      // 1. 精确匹配 Description
+      let target = char.Appearance.find(a => 
+        a?.Asset?.Group?.Name?.startsWith("Item") && 
+        a?.Asset?.Description === itemName
+      );
+      // 2. 包含匹配
+      if (!target) target = char.Appearance.find(a => 
+        a?.Asset?.Group?.Name?.startsWith("Item") && 
+        a?.Asset?.Description?.includes(itemName)
+      );
+      // 3. fallback: findItemAsset mapping
+      if (!target) {
+        const mapping = findItemAsset(itemName);
+        if (mapping) {
+          target = char.Appearance.find(a => a?.Asset?.Group?.Name === mapping.group);
+          if (!target) {
+            target = char.Appearance.find(a => 
+              a?.Asset?.Group?.Name?.startsWith("Item") && 
+              a?.Asset?.Name === mapping.asset
+            );
+          }
+        }
+      }
+      if (!target) { console.log("[MisakaChat] 找不到道具:", itemName); return false; }
+      if (target?.Property?.LockedBy) {
+        console.log(`[MisakaChat] 道具被锁: ${target.Property.LockedBy}`);
         return false;
       }
-      directRemoveItem(char, mapping.group);
+      directRemoveItem(char, target.Asset.Group.Name);
       ChatRoomCharacterUpdate(char);
-      console.log(`[MisakaChat] 已移除 #${memberNumber} 的 ${itemName}`);
+      console.log(`[MisakaChat] 已移除 #${memberNumber} 的 ${itemName} (group: ${target.Asset.Group.Name})`);
       return true;
     } catch(e) {
       console.error("[MisakaChat] 移除道具失败:", e.message);
