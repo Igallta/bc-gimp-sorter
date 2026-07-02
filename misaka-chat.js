@@ -262,7 +262,7 @@
         }
         steps++;
         // 等待服务器同步
-        await new Promise(r => setTimeout(r, 100));
+        await new Promise(r => setTimeout(r, 400));
       }
       state.lastMoveTime = Date.now();
       console.log(`[MisakaChat] moveTo #${memberNumber} to #${targetNumber} ${side}, ${steps}步`);
