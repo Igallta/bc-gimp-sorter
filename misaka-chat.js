@@ -254,11 +254,17 @@
     if (!CONFIG.enabled) return;
     if (typeof Player === "undefined" || !Player) return;
     
-    // BC 消息字段是 Chat，不是 Content
-    const content = data.Chat || data.Content || "";
+    // BC ServerSocket 事件数据结构: { Sender, Content, Type, Dictionary }
+    // Sender = MemberNumber (number), Content = 消息内容, Type = 消息类型
+    const content = data.Content || "";
+    const senderNum = data.Sender;
+    
+    // 只处理实际聊天消息，过滤掉 mod 内部消息
+    const validTypes = ["Chat", "Talk", "Emote", "Whisper", "Activity"];
+    if (!validTypes.includes(data.Type)) return;
     
     // 忽略自己的消息
-    if (data.SenderMemberNumber === Player.MemberNumber) {
+    if (senderNum === Player.MemberNumber) {
       state.recentMessages.push({
         senderName: "御搬",
         content: content,
@@ -268,13 +274,15 @@
       return;
     }
 
-    const senderName = data.SenderName || data.SenderNickname || "Unknown";
+    // 从 ChatRoomCharacter 查找发送者名字
+    const senderChar = ChatRoomCharacter.find(c => c.MemberNumber === senderNum);
+    const senderName = (senderChar && (senderChar.Nickname || senderChar.Name)) || ("#" + senderNum);
 
     // 更新消息窗口
     state.recentMessages.push({
       senderName: senderName,
       content: content,
-      senderMemberNumber: data.SenderMemberNumber,
+      senderMemberNumber: senderNum,
       isSelf: false,
       time: Date.now()
     });
@@ -284,7 +292,7 @@
     state.idleMode = false;
 
     // 更新人物档案
-    updateProfile(data.SenderMemberNumber, senderName, content);
+    updateProfile(senderNum, senderName, content);
 
     // 检查触发词
     const triggers = ["misaka", "御搬", "御坂"];
@@ -297,17 +305,17 @@
     // 频率控制
     const now = Date.now();
     if (now - state.lastReplyTime < CONFIG.cooldownMs) return;
-    const lastUserTime = state.lastUserReplyTime[data.SenderMemberNumber] || 0;
+    const lastUserTime = state.lastUserReplyTime[senderNum] || 0;
     if (now - lastUserTime < CONFIG.perUserCooldownMs) return;
 
     // 触发回复
-    handleReply(data, senderName);
+    handleReply(senderNum, senderName, content);
   }
 
-  async function handleReply(data, senderName) {
+  async function handleReply(senderNum, senderName, content) {
     state.busy = true;
     state.lastReplyTime = Date.now();
-    state.lastUserReplyTime[data.SenderMemberNumber] = Date.now();
+    state.lastUserReplyTime[senderNum] = Date.now();
 
     try {
       // 等待最小延迟
@@ -432,39 +440,41 @@
     const savedModel = localStorage.getItem(storageKey("model")) || "";
     if (savedModel) CONFIG.model = savedModel;
 
-    // hook 聊天消息接收
-    if (typeof bcModSdk !== "undefined" && bcModSdk.registerMod) {
-      const mod = bcModSdk.registerMod({
-        name: "MisakaChat",
-        fullName: "Misaka Auto Chat",
-        version: "1.0.0",
-        repository: "https://github.com/Igallta/bc-gimp-sorter"
-      });
+    // 注册 mod
+    const mod = bcModSdk.registerMod({
+      name: "MisakaChat",
+      fullName: "Misaka Auto Chat",
+      version: "1.0.0",
+      repository: "https://github.com/Igallta/bc-gimp-sorter"
+    });
 
+    // 监听 ServerSocket 的 ChatRoomMessage 事件（比 hookFunction 更可靠）
+    if (typeof ServerSocket !== "undefined" && typeof ServerSocket.on === "function") {
+      ServerSocket.on("ChatRoomMessage", onChatRoomMessage);
+      console.log("[MisakaChat] 监听 ServerSocket ChatRoomMessage 事件");
+    } else {
+      console.error("[MisakaChat] ServerSocket 不可用，回退到 hookFunction");
       mod.hookFunction("ChatRoomMessage", 0, (args, next) => {
         try {
-          if (args && args[0]) {
-            onChatRoomMessage(args[0]);
-          }
+          if (args && args[0]) onChatRoomMessage(args[0]);
         } catch (e) {
           console.error("[MisakaChat] 消息处理错误:", e.message);
         }
         return next(args);
       });
-
-      mod.hookFunction("ChatRoomSendChat", 10, (args, next) => {
-        const msg = args[0];
-        if (msg && msg.startsWith("/misaka")) {
-          if (handleCommand(msg)) return;
-        }
-        return next(args);
-      });
-
-      console.log("[MisakaChat] ✅ 已初始化 v1.0.0");
-      sendLocal("御坂自动回复 v1.0 已加载。/misaka status 查看状态");
-    } else {
-      console.error("[MisakaChat] bcModSdk 不可用");
     }
+
+    // hook 聊天命令
+    mod.hookFunction("ChatRoomSendChat", 10, (args, next) => {
+      const msg = args[0];
+      if (msg && msg.startsWith("/misaka")) {
+        if (handleCommand(msg)) return;
+      }
+      return next(args);
+    });
+
+    console.log("[MisakaChat] ✅ 已初始化 v1.0.0");
+    sendLocal("御坂自动回复 v1.0 已加载");
   }
 
   // 等待页面加载完成
