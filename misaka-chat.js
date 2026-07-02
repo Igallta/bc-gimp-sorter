@@ -36,9 +36,11 @@
   };
 
   // === 记忆系统 (GM_setValue 持久化) ===
+  function storageKey(prefix) { return "misaka_" + prefix; }
+
   function loadMemory() {
     try {
-      const raw = GM_getValue("misaka_memory", "{}");
+      const raw = localStorage.getItem(storageKey("memory")) || "{}";
       return JSON.parse(raw);
     } catch (e) {
       return { profiles: {}, summaries: [] };
@@ -46,7 +48,11 @@
   }
 
   function saveMemory(mem) {
-    GM_setValue("misaka_memory", JSON.stringify(mem));
+    try {
+      localStorage.setItem(storageKey("memory"), JSON.stringify(mem));
+    } catch (e) {
+      console.error("[MisakaChat] 保存记忆失败:", e.message);
+    }
   }
 
   function updateProfile(memberNumber, name, content) {
@@ -113,7 +119,7 @@
 
   // === API 调用 ===
   async function callLLM(systemPrompt, contextMessages) {
-    const apiKey = GM_getValue("misaka_apikey", "");
+    const apiKey = localStorage.getItem(storageKey("apikey")) || "";
     if (!apiKey) {
       console.warn("[MisakaChat] 未设置 API key，用 /misaka key <key> 设置");
       return null;
@@ -313,19 +319,19 @@
       CONFIG.enabled = false;
       sendLocal("⏹ 自动回复已关闭");
     } else if (sub === "key" && parts[1]) {
-      GM_setValue("misaka_apikey", parts[1]);
+      localStorage.setItem(storageKey("apikey"), parts[1]);
       sendLocal("🔑 API key 已保存");
     } else if (sub === "model" && parts[1]) {
-      GM_setValue("misaka_model", parts[1]);
+      localStorage.setItem(storageKey("model"), parts[1]);
       CONFIG.model = parts[1];
       sendLocal("🤖 模型已切换: " + parts[1]);
     } else if (sub === "status") {
       const mem = loadMemory();
-      const apiKeySet = GM_getValue("misaka_apikey", "") ? "✅" : "❌";
-      const model = GM_getValue("misaka_model", CONFIG.model);
+      const apiKeySet = localStorage.getItem(storageKey("apikey")) ? "✅" : "❌";
+      const model = localStorage.getItem(storageKey("model")) || CONFIG.model;
       sendLocal(`状态: ${CONFIG.enabled ? "开启" : "关闭"} | Key: ${apiKeySet} | 模型: ${model} | 认识 ${Object.keys(mem.profiles || {}).length} 人 | 摘要 ${ (mem.summaries || []).length } 条`);
     } else if (sub === "forget") {
-      GM_setValue("misaka_memory", "{}");
+      localStorage.setItem(storageKey("memory"), "{}");
       sendLocal("🧹 记忆已清空");
     } else if (sub === "memory") {
       const mem = loadMemory();
@@ -339,7 +345,7 @@
       }
     } else if (sub === "persona" && parts[1]) {
       // 允许动态修改人设备注
-      GM_setValue("misaka_persona_extra", parts.slice(1).join(" "));
+      localStorage.setItem(storageKey("persona_extra"), parts.slice(1).join(" "));
       sendLocal("📝 人设附加备注已更新");
     } else {
       sendLocal("用法: /misaka on|off|key <key>|model <name>|status|forget|memory|persona <text>");
@@ -371,7 +377,7 @@
     }
 
     // 加载自定义模型
-    const savedModel = GM_getValue("misaka_model", "");
+    const savedModel = localStorage.getItem(storageKey("model")) || "";
     if (savedModel) CONFIG.model = savedModel;
 
     // hook 聊天消息接收
