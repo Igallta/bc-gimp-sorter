@@ -539,16 +539,19 @@
       const char = ChatRoomCharacter.find(c => c.MemberNumber === memberNumber) || Player;
       if (!char) return false;
       let count = 0;
-      for (const a of [...(char.Appearance || [])]) {
-        if (a?.Asset?.Group?.Name?.startsWith("Item") && !a.Property?.LockedBy) {
-          try {
-            directRemoveItem(char, a.Asset.Group.Name);
-            count++;
-          } catch(e) {}
-        }
+      const toRemove = (char.Appearance || [])
+        .filter(a => a?.Asset?.Group?.Name?.startsWith("Item") && !a.Property?.LockedBy)
+        .map(a => a.Asset.Group.Name);
+      console.log("[MisakaChat] itemDelAll 待移除:", toRemove);
+      for (const groupName of toRemove) {
+        try {
+          const ok = directRemoveItem(char, groupName);
+          if (ok) count++;
+          else console.log("[MisakaChat] itemDelall 移除失败:", groupName);
+        } catch(e) { console.error("[MisakaChat] itemDelall 异常:", groupName, e.message); }
       }
       ChatRoomCharacterUpdate(char);
-      console.log(`[MisakaChat] 释放 #${memberNumber} 全部道具: ${count} 件`);
+      console.log(`[MisakaChat] 释放 #${memberNumber} 全部道具: ${count}/${toRemove.length} 件`);
       return count > 0;
     } catch(e) {
       console.error("[MisakaChat] 释放全部失败:", e.message);
