@@ -328,14 +328,16 @@
     if (window.__misakaGlobalBusy) return;
     // 更硬的锁：正在回复中
     if (window.__misakaReplyInProgress) return;
-    window.__misakaGlobalBusy = true;
-    window.__misakaReplyInProgress = true;
 
-    // 频率控制
+    // 频率控制（在设锁之前检查）
     const nowTime = Date.now();
     if (nowTime - state.lastReplyTime < CONFIG.cooldownMs) return;
     const lastUserTime = state.lastUserReplyTime[senderNum] || 0;
     if (nowTime - lastUserTime < CONFIG.perUserCooldownMs) return;
+
+    // 通过所有检查后才设锁
+    window.__misakaGlobalBusy = true;
+    window.__misakaReplyInProgress = true;
 
     // 触发回复
     handleReply(senderNum, senderName, content);
