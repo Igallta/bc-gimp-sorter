@@ -409,15 +409,6 @@
     return 0;
   }
 
-  function scoreDescriptionCandidate(query, candidate) {
-    const q = String(query || "").toLowerCase().trim();
-    const qn = normalizeLookupText(q);
-    const c = String(candidate || "").toLowerCase();
-    const cn = normalizeLookupText(c);
-    if (!qn || qn.length < 2 || !cn) return 0;
-    return (c.includes(q) || cn.includes(qn)) ? 80 : 0;
-  }
-
   // 从 BCE profiles 数据库查询玩家档案
   async function queryProfile(nameOrId) {
     return new Promise((resolve) => {
@@ -564,8 +555,7 @@
         const mn = c.MemberNumber ? c.MemberNumber.toString() : "";
         return scoreLookupCandidate(query, c.Name) > 0
           || scoreLookupCandidate(query, c.Nickname) > 0
-          || scoreLookupCandidate(query, mn) > 0
-          || scoreDescriptionCandidate(query, c.Description) > 0;
+          || scoreLookupCandidate(query, mn) > 0;
       })
       .sort((a, b) => {
         const score = (c) => {
@@ -574,8 +564,7 @@
           return Math.max(
             scoreLookupCandidate(query, c.Name),
             scoreLookupCandidate(query, c.Nickname),
-            scoreLookupCandidate(query, mn),
-            scoreDescriptionCandidate(query, c.Description)
+            scoreLookupCandidate(query, mn)
           );
         };
         return score(b) - score(a);
