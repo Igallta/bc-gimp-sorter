@@ -73,6 +73,108 @@ ${profileText}${summaryText}
 你是房间管理员，清楚谁是娃娃谁是玩家。不要把普通玩家归类为娃娃。`;
   },
 
+  colorName(hex) {
+      if (!hex || hex === "Default") return "默认色";
+      const raw = String(hex);
+      hex = raw.replace("#", "").toUpperCase();
+      if (!/^[0-9A-F]{6}$/.test(hex)) return raw;
+      const r = parseInt(hex.slice(0, 2), 16);
+      const g = parseInt(hex.slice(2, 4), 16);
+      const b = parseInt(hex.slice(4, 6), 16);
+      const max = Math.max(r, g, b), min = Math.min(r, g, b);
+      const l = (max + min) / 2 / 255;
+      const s = max === min ? 0 : (l > 0.5 ? (max - min) / (510 - max - min) : (max - min) / (max + min));
+      let h = 0;
+      if (max !== min) {
+        const d = max - min;
+        switch (max) {
+          case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
+          case g: h = ((b - r) / d + 2) / 6; break;
+          case b: h = ((r - g) / d + 4) / 6; break;
+        }
+      }
+      const hue = h * 360;
+      // 很浅的暖色经常被 HSL 当成白/浅灰，但人眼会觉得是淡金、米色或奶油色。
+      if (l > 0.82 && r >= g && g >= b && (r - b) > 10 && hue >= 25 && hue < 75) {
+        return "淡金";
+      }
+      if (l > 0.75 && s < 0.22 && hue >= 25 && hue < 75) {
+        return "米色";
+      }
+      if (s < 0.1) {
+        if (l > 0.85) return "白色";
+        if (l > 0.6) return "浅灰";
+        if (l > 0.3) return "灰色";
+        if (l > 0.1) return "深灰";
+        return "黑色";
+      }
+      // 低饱和度冷色 — 灰蓝/蓝灰
+      if (s < 0.25 && hue >= 200 && hue < 250) {
+        return l > 0.5 ? "灰蓝" : "深蓝灰";
+      }
+      // 棕色 — 橙红色相但亮度低
+      if (hue >= 15 && hue < 50 && l < 0.45) return "棕色";
+      // 金色 — 黄橙色相且亮度高
+      if (hue >= 25 && hue < 70 && l > 0.6 && s > 0.3) return "金色";
+      // 银色 — 高亮度低饱和
+      if (s < 0.08 && l > 0.8) return "银色";
+      if (hue < 15 || hue >= 345) return "红色";
+      if (hue < 45) return "橙红";
+      if (hue < 70) return "橙色";
+      if (hue < 90) return "黄色";
+      if (hue < 150) return "绿色";
+      if (hue < 180) return "青色";
+      if (hue < 240) return "蓝色";
+      if (hue < 280) return "紫色";
+      if (hue < 320) return "品红";
+      return "粉红";
+  },
+
+  getColorName(color) {
+    const value = Array.isArray(color)
+      ? (color.find(c => c && c !== "Default") || color[0])
+      : color;
+    return this.colorName(value);
+  },
+
+  getEffectiveHairParts(char) {
+    if (!char || !Array.isArray(char.Appearance)) return [];
+    const best = {};
+    for (const a of char.Appearance) {
+      if (!a.Asset || !a.Asset.Group) continue;
+      const gName = a.Asset.Group.Name || "";
+      const gDesc = a.Asset.Group.Description || "";
+      const cleanDesc = gDesc.replace(/^🍔/, "").replace(/\(覆盖\)/, "").trim();
+      const label = `${gName} ${cleanDesc} ${a.Asset.Name || ""}`;
+      let part = "";
+      if (/前发|前髮|HairFront|新前发|新前髮/i.test(label)) part = "前发";
+      else if (/后发|後发|后髮|後髮|HairBack|新后发|新後发|新后髮|新後髮/i.test(label)) part = "后发";
+      else continue;
+
+      const isOverride = /覆盖/.test(gDesc) || /^新/.test(gName) || /_Luzi|Luzi_/i.test(gName);
+      const priority = isOverride ? 100 : 10;
+      const color = Array.isArray(a.Color) ? (a.Color.find(c => c && c !== "Default") || a.Color[0]) : a.Color;
+      const entry = {
+        part,
+        asset: a.Asset.Name || "",
+        colorRaw: color || "Default",
+        color: this.colorName(color),
+        priority
+      };
+      if (!best[part] || best[part].priority <= priority) best[part] = entry;
+    }
+    return ["前发", "后发"].map(p => best[p]).filter(Boolean);
+  },
+
+  hairSummary(char) {
+    const parts = this.getEffectiveHairParts(char);
+    if (parts.length === 0) return "";
+    const uniqueColors = [...new Set(parts.map(p => p.color).filter(Boolean))];
+    const detail = parts.map(p => `${p.part}${p.color}`).join("，");
+    const overall = uniqueColors.length === 1 ? uniqueColors[0] : uniqueColors.join("/");
+    return `${overall}（${detail}）`;
+  },
+
   extractProfile(char) {
     if (!char) return null;
     const desc = char.Description || "";
@@ -97,56 +199,6 @@ ${profileText}${summaryText}
     } else if (char.Lovership && char.Lovership.Name) {
       loverInfo = `恋人: ${char.Lovership.Name}`;
       if (char.Lovership.MemberNumber) loverInfo += ` (#${char.Lovership.MemberNumber})`;
-    }
-    
-    // hex 颜色转中文名
-    function hexToColorName(hex) {
-      if (!hex || hex === "Default") return "默认";
-      hex = hex.replace("#", "").toUpperCase();
-      const r = parseInt(hex.slice(0, 2), 16);
-      const g = parseInt(hex.slice(2, 4), 16);
-      const b = parseInt(hex.slice(4, 6), 16);
-      if (isNaN(r) || isNaN(g) || isNaN(b)) return hex;
-      const max = Math.max(r, g, b), min = Math.min(r, g, b);
-      const l = (max + min) / 2 / 255;
-      const s = max === min ? 0 : (l > 0.5 ? (max - min) / (510 - max - min) : (max - min) / (max + min));
-      let h = 0;
-      if (max !== min) {
-        const d = max - min;
-        switch (max) {
-          case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
-          case g: h = ((b - r) / d + 2) / 6; break;
-          case b: h = ((r - g) / d + 4) / 6; break;
-        }
-      }
-      if (s < 0.1) {
-        if (l > 0.85) return "白色";
-        if (l > 0.6) return "浅灰";
-        if (l > 0.3) return "灰色";
-        if (l > 0.1) return "深灰";
-        return "黑色";
-      }
-      const hue = h * 360;
-      // 低饱和度冷色 — 灰蓝/蓝灰
-      if (s < 0.25 && hue >= 200 && hue < 250) {
-        return l > 0.5 ? "灰蓝" : "深蓝灰";
-      }
-      // 棕色 — 橙红色相但亮度低
-      if (hue >= 15 && hue < 50 && l < 0.45) return "棕色";
-      // 金色 — 黄橙色相且亮度高
-      if (hue >= 25 && hue < 70 && l > 0.6 && s > 0.3) return "金色";
-      // 银色 — 高亮度低饱和
-      if (s < 0.08 && l > 0.8) return "银色";
-      if (hue < 15 || hue >= 345) return "红色";
-      if (hue < 45) return "橙红";
-      if (hue < 70) return "橙色";
-      if (hue < 90) return "黄色";
-      if (hue < 150) return "绿色";
-      if (hue < 180) return "青色";
-      if (hue < 240) return "蓝色";
-      if (hue < 280) return "紫色";
-      if (hue < 320) return "品红";
-      return "粉红";
     }
 
     // 提取穿着信息（所有物品，不只 Item*）
@@ -188,7 +240,7 @@ ${profileText}${summaryText}
         // 加颜色信息（转中文名）
         if (a.Color) {
           let color = Array.isArray(a.Color) ? a.Color[0] : a.Color;
-          item += `(${hexToColorName(color)})`;
+          item += `(${this.colorName(color)})`;
         }
         if (a.Property && a.Property.LockedBy) {
           item += `[锁:${a.Property.LockedBy}]`;

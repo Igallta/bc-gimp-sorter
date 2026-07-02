@@ -409,6 +409,15 @@
     return 0;
   }
 
+  function scoreDescriptionCandidate(query, candidate) {
+    const q = String(query || "").toLowerCase().trim();
+    const qn = normalizeLookupText(q);
+    const c = String(candidate || "").toLowerCase();
+    const cn = normalizeLookupText(c);
+    if (!qn || qn.length < 2 || !cn) return 0;
+    return (c.includes(q) || cn.includes(qn)) ? 80 : 0;
+  }
+
   // 从 BCE profiles 数据库查询玩家档案
   async function queryProfile(nameOrId) {
     return new Promise((resolve) => {
@@ -504,6 +513,8 @@
       /(?:查询|查一下|查查|查)\s*[「「【]?(.+?)[」」】]?\s*$/i,
       /(?:介绍一下|介绍|说说|讲讲|說說|講講)\s*[「「【]?(.+?)[」」】]?\s*$/i,
       /[「「【]?(.+?)[」」】]?\s*(?:的)?(?:资料|資料|信息|档案|檔案)(?:是什么|是什麼|呢|吗|嗎)?\s*$/i,
+      /[「「【]?(.+?)[」」】]?\s*(?:是誰|是谁|是哪位|是哪個|是哪个|什么人|什麼人)\s*$/i,
+      /[「「【]?(.+?)[」」】]?\s*(?:的)?(?:主人|owner|恋人|戀人|lover)(?:是誰|是谁|是|有谁|有誰|呢|吗|嗎)?\s*$/i,
       /[「「【]?(.+?)[」」】]?(?:上次|的).*(?:在线|下线|发言|出现|登录|来过)/i,
       /(?:御坂|御搬|misaka)?[,，、\s]*([A-Za-z0-9_\-\s\u4e00-\u9fff]+?)\s*(?:能不能|能|可以|可不可以)?查(?:询)?到吗/i,
     ];
@@ -537,16 +548,17 @@
     return q || null;
   }
 
-  function queryCurrentRoom(nameOrId) {
-    if (typeof ChatRoomCharacter === "undefined" || !Array.isArray(ChatRoomCharacter)) return null;
+  function findCurrentRoomCharacters(nameOrId) {
+    if (typeof ChatRoomCharacter === "undefined" || !Array.isArray(ChatRoomCharacter)) return [];
     const query = String(nameOrId || "").toLowerCase().trim();
-    if (!query) return null;
-    const matches = ChatRoomCharacter
+    if (!query) return [];
+    return ChatRoomCharacter
       .filter(c => {
         const mn = c.MemberNumber ? c.MemberNumber.toString() : "";
         return scoreLookupCandidate(query, c.Name) > 0
           || scoreLookupCandidate(query, c.Nickname) > 0
-          || scoreLookupCandidate(query, mn) > 0;
+          || scoreLookupCandidate(query, mn) > 0
+          || scoreDescriptionCandidate(query, c.Description) > 0;
       })
       .sort((a, b) => {
         const score = (c) => {
@@ -555,11 +567,16 @@
           return Math.max(
             scoreLookupCandidate(query, c.Name),
             scoreLookupCandidate(query, c.Nickname),
-            scoreLookupCandidate(query, mn)
+            scoreLookupCandidate(query, mn),
+            scoreDescriptionCandidate(query, c.Description)
           );
         };
         return score(b) - score(a);
-      })
+      });
+  }
+
+  function queryCurrentRoom(nameOrId) {
+    const matches = findCurrentRoomCharacters(nameOrId)
       .slice(0, 3)
       .map(c => {
         const p = typeof MisakaPersona !== "undefined" ? MisakaPersona.extractProfile(c) : null;
@@ -593,6 +610,88 @@
     if (r.lovers && r.lovers !== "无") parts.push(`恋人有${r.lovers}`);
     if (r.itemCount !== undefined) parts.push(`${r.itemCount}件束缚${r.lockCount}把锁`);
     return parts.join("，") + "。";
+  }
+
+  function normalizeHairColorName(raw) {
+    const q = String(raw || "").trim();
+    if (/白|white/i.test(q)) return "白色";
+    if (/黑|black/i.test(q)) return "黑色";
+    if (/灰|grey|gray/i.test(q)) return "灰色";
+    if (/淡金|浅金|淺金|金|金发|金髮|blond|blonde/i.test(q)) return "金色";
+    if (/紫|purple/i.test(q)) return "紫色";
+    if (/蓝|藍|blue/i.test(q)) return "蓝色";
+    if (/红|紅|red/i.test(q)) return "红色";
+    if (/粉|pink/i.test(q)) return "粉红";
+    if (/棕|褐|brown/i.test(q)) return "棕色";
+    if (/橙|orange/i.test(q)) return "橙色";
+    if (/黄|黃|yellow/i.test(q)) return "黄色";
+    if (/绿|綠|green/i.test(q)) return "绿色";
+    return q || null;
+  }
+
+  function parseHairColorRequest(content) {
+    if (!/(头发|頭髮|发色|髮色)/i.test(content || "")) return null;
+    const text = String(content || "").replace(/^(御坂|御搬|misaka)[,，、\s]*/i, "").trim();
+    let m = text.match(/(?:房间里|房間裡|这里|這裡|现在|現在)?.*(?:哪些人|谁|誰).*(?:头发|頭髮|发色|髮色).*(?:是|算是|有)?\s*([白黑灰金紫蓝藍红紅粉棕褐橙黄黃绿綠]+色?|white|black|gray|grey|blond|blonde|purple|blue|red|pink|brown|orange|yellow|green)/i);
+    if (m && m[1]) return { type: "list", color: normalizeHairColorName(m[1]) };
+    m = text.match(/(?:房间里|房間裡|这里|這裡|现在|現在)?.*([白黑灰金紫蓝藍红紅粉棕褐橙黄黃绿綠]+色?|white|black|gray|grey|blond|blonde|purple|blue|red|pink|brown|orange|yellow|green).*(?:头发|頭髮|发色|髮色).*(?:是谁|是誰|有哪些|哪些人|谁|誰)/i);
+    if (m && m[1]) return { type: "list", color: normalizeHairColorName(m[1]) };
+    m = text.match(/(.+?)(?:的)?(?:头发|頭髮|发色|髮色).*?(?:什么|什麼|啥|颜色|顏色|色)/i);
+    if (m && m[1]) {
+      const target = normalizeQueryTarget(m[1]);
+      if (target) return { type: "target", target };
+    }
+    return null;
+  }
+
+  function hairMatchesColor(summary, color) {
+    if (!summary || !color) return false;
+    if (color === "白色") return summary.parts.some(p => p.color === "白色");
+    if (color === "金色") return summary.parts.some(p => /金色|淡金|米色/.test(p.color));
+    if (color === "灰色") return summary.parts.some(p => /灰/.test(p.color));
+    if (color === "蓝色") return summary.parts.some(p => /蓝|藍/.test(p.color));
+    if (color === "红色") return summary.parts.some(p => /红|紅/.test(p.color));
+    if (color === "橙色") return summary.parts.some(p => /橙/.test(p.color));
+    return summary.parts.some(p => p.color === color);
+  }
+
+  function getHairSummary(char) {
+    if (typeof MisakaPersona === "undefined" || !MisakaPersona.getEffectiveHairParts) return null;
+    const parts = MisakaPersona.getEffectiveHairParts(char);
+    if (!parts || parts.length === 0) return null;
+    const colors = [...new Set(parts.map(p => p.color).filter(Boolean))];
+    return {
+      name: (char && (char.Nickname || char.Name)) || "",
+      memberNumber: char && char.MemberNumber,
+      colors,
+      parts,
+      text: colors.length === 1 ? colors[0] : colors.join("/"),
+      detail: parts.map(p => `${p.part}${p.color}`).join("，")
+    };
+  }
+
+  function buildDirectHairReply(content) {
+    const req = parseHairColorRequest(content);
+    if (!req) return "";
+    if (req.type === "target") {
+      const char = findCurrentRoomCharacters(req.target)[0];
+      if (!char) return "查-查不到这个人。";
+      const summary = getHairSummary(char);
+      if (!summary) return `${char.Nickname || char.Name} 的头发颜色我这里没读到。`;
+      return `${summary.name} 的头发是${summary.text}，${summary.detail}。`;
+    }
+    if (req.type === "list") {
+      const chars = (typeof ChatRoomCharacter !== "undefined" && Array.isArray(ChatRoomCharacter)) ? ChatRoomCharacter : [];
+      const matches = chars
+        .map(c => getHairSummary(c))
+        .filter(Boolean)
+        .filter(s => hairMatchesColor(s, req.color));
+      if (matches.length === 0) return `我没看到房间里有人是${req.color}头发。`;
+      const names = matches.slice(0, 8).map(s => s.name).join("、");
+      const more = matches.length > 8 ? `，还有${matches.length - 8}个` : "";
+      return `${req.color}头发的有：${names}${more}。`;
+    }
+    return "";
   }
 
   function sanitizeReply(reply) {
@@ -678,6 +777,7 @@
         }));
 
       // 检测是否有查询请求
+      const directHairReply = buildDirectHairReply(content);
       const queryTarget = parseQueryRequest(content);
       let queryInfo = "";
       let directQueryReply = "";
@@ -760,7 +860,7 @@
       }
 
       const systemPrompt = getSystemPrompt() + profileInfo + queryInfo + joinLogInfo;
-      const reply = directQueryReply || await callLLM(systemPrompt, contextMessages);
+      const reply = directHairReply || directQueryReply || await callLLM(systemPrompt, contextMessages);
 
       if (!reply) return;
 
@@ -988,6 +1088,13 @@
   };
   window.__misakaDebugParseQuery = function(content) {
     return parseQueryRequest(content);
+  };
+  window.__misakaDebugHair = function(content) {
+    const req = parseHairColorRequest(content);
+    return {
+      request: req,
+      reply: buildDirectHairReply(content)
+    };
   };
 
   // 等待页面加载完成
