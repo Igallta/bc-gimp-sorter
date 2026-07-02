@@ -387,6 +387,12 @@
     });
   }
 
+  function normalizeLookupText(value) {
+    return String(value || "")
+      .toLowerCase()
+      .replace(/[\s#＃,，、:：;；.!！?？「」【】（）()_\-]+/g, "");
+  }
+
   // 从 BCE profiles 数据库查询玩家档案
   async function queryProfile(nameOrId) {
     return new Promise((resolve) => {
@@ -403,11 +409,15 @@
         allReq.onsuccess = () => {
           const data = allReq.result || [];
           const query = nameOrId.toLowerCase().trim();
+          const queryNorm = normalizeLookupText(query);
           const matches = data.filter(d => {
             const name = (d.name || "").toLowerCase();
             const nick = (d.lastNick || "").toLowerCase();
             const mn = d.memberNumber ? d.memberNumber.toString() : "";
-            return name.includes(query) || nick.includes(query) || mn.includes(query);
+            return name.includes(query) || nick.includes(query) || mn.includes(query)
+              || normalizeLookupText(name).includes(queryNorm)
+              || normalizeLookupText(nick).includes(queryNorm)
+              || normalizeLookupText(mn).includes(queryNorm);
           });
           if (matches.length === 0) {
             resolve(null);
@@ -417,9 +427,13 @@
             const name = (d.name || "").toLowerCase();
             const nick = (d.lastNick || "").toLowerCase();
             const mn = d.memberNumber ? d.memberNumber.toString() : "";
+            const nameNorm = normalizeLookupText(name);
+            const nickNorm = normalizeLookupText(nick);
             if (mn === query) return 1000;
             if (name === query || nick === query) return 900;
+            if (nameNorm === queryNorm || nickNorm === queryNorm) return 850;
             if (name.startsWith(query) || nick.startsWith(query) || mn.startsWith(query)) return 700;
+            if (nameNorm.startsWith(queryNorm) || nickNorm.startsWith(queryNorm)) return 650;
             return 100;
           };
           matches.sort((a, b) => (score(b) - score(a)) || ((b.seen || 0) - (a.seen || 0)));
@@ -506,13 +520,32 @@
   function queryCurrentRoom(nameOrId) {
     if (typeof ChatRoomCharacter === "undefined" || !Array.isArray(ChatRoomCharacter)) return null;
     const query = String(nameOrId || "").toLowerCase().trim();
+    const queryNorm = normalizeLookupText(query);
     if (!query) return null;
     const matches = ChatRoomCharacter
       .filter(c => {
         const mn = c.MemberNumber ? c.MemberNumber.toString() : "";
         const name = (c.Name || "").toLowerCase();
         const nick = (c.Nickname || "").toLowerCase();
-        return mn === query || mn.includes(query) || name.includes(query) || nick.includes(query);
+        return mn === query || mn.includes(query) || name.includes(query) || nick.includes(query)
+          || normalizeLookupText(name).includes(queryNorm)
+          || normalizeLookupText(nick).includes(queryNorm);
+      })
+      .sort((a, b) => {
+        const score = (c) => {
+          const mn = c.MemberNumber ? c.MemberNumber.toString() : "";
+          const name = (c.Name || "").toLowerCase();
+          const nick = (c.Nickname || "").toLowerCase();
+          const nameNorm = normalizeLookupText(name);
+          const nickNorm = normalizeLookupText(nick);
+          if (mn === query) return 1000;
+          if (name === query || nick === query) return 900;
+          if (nameNorm === queryNorm || nickNorm === queryNorm) return 850;
+          if (name.startsWith(query) || nick.startsWith(query) || mn.startsWith(query)) return 700;
+          if (nameNorm.startsWith(queryNorm) || nickNorm.startsWith(queryNorm)) return 650;
+          return 100;
+        };
+        return score(b) - score(a);
       })
       .slice(0, 3)
       .map(c => {
@@ -530,6 +563,36 @@
         };
       });
     return matches.length > 0 ? matches : null;
+  }
+
+  function buildDirectQueryReply(queryTarget, roomlogResult, currentRoomResults, results) {
+    const r = (currentRoomResults && currentRoomResults[0]) || (results && results[0]);
+    if (!r) {
+      if (roomlogResult) return roomlogResult.replace(/^本地记录中最后活动:\s*/, "记录里最后活动是") + "。";
+      return "查-查不到。";
+    }
+
+    const display = r.lastNick || r.name || queryTarget;
+    const parts = [`${display}，编号${r.memberNumber}`];
+    if (r.online) parts.push("在线着呢");
+    if (r.seen && !r.online) parts.push(`档案最后查看${r.seen}`);
+    if (r.owner && r.owner !== "无") parts.push(`主人是${r.owner}`);
+    if (r.lovers && r.lovers !== "无") parts.push(`恋人有${r.lovers}`);
+    if (r.itemCount !== undefined) parts.push(`${r.itemCount}件束缚${r.lockCount}把锁`);
+    return parts.join("，") + "。";
+  }
+
+  function sanitizeReply(reply) {
+    let cleaned = String(reply || "")
+      .replace(/^["""''''']+|["""''''']+$/g, "")
+      .trim();
+    const lines = cleaned
+      .split(/\n+/)
+      .map(line => line.trim().replace(/^(御[搬坂]|Misaka|misaka)\s*[:：]\s*/i, "").trim())
+      .filter(Boolean);
+    cleaned = lines[0] || cleaned;
+    cleaned = cleaned.replace(/^(御[搬坂]|Misaka|misaka)\s*[:：]\s*/i, "");
+    return cleaned.trim().slice(0, 120);
   }
 
   async function handleReply(senderNum, senderName, content) {
@@ -604,6 +667,7 @@
       // 检测是否有查询请求
       const queryTarget = parseQueryRequest(content);
       let queryInfo = "";
+      let directQueryReply = "";
       if (queryTarget) {
         // 先查本地 roomlog（发言/进出时间）
         let roomlogResult = "";
@@ -611,6 +675,7 @@
           const log = JSON.parse(localStorage.getItem("misaka_roomlog") || "[]");
           const matches = log.filter(m => 
             (m.name || "").toLowerCase().includes(queryTarget.toLowerCase())
+              || normalizeLookupText(m.name).includes(normalizeLookupText(queryTarget))
           );
           if (matches.length > 0) {
             const last = matches[matches.length - 1];
@@ -621,6 +686,7 @@
         // 当前房间实时查询优先，再查 BCE profiles（历史快照）
         const currentRoomResults = queryCurrentRoom(queryTarget);
         const results = await queryProfile(queryTarget);
+        directQueryReply = buildDirectQueryReply(queryTarget, roomlogResult, currentRoomResults, results);
         if (currentRoomResults || results) {
           queryInfo = `\n\n【查询结果：${queryTarget}】\n`;
           if (roomlogResult) queryInfo += `${roomlogResult}\n`;
@@ -672,18 +738,11 @@
       }
 
       const systemPrompt = getSystemPrompt() + profileInfo + queryInfo + joinLogInfo;
-      const reply = await callLLM(systemPrompt, contextMessages);
+      const reply = directQueryReply || await callLLM(systemPrompt, contextMessages);
 
       if (!reply) return;
 
-      // 后处理：去掉开头的名字前缀（御坂: / 御搬: / Misaka: 等）
-      let finalReply = reply.replace(/^(御[搬坂]|Misaka|misaka)\s*[:：]\s*/i, "");
-      // 去掉两侧引号
-      finalReply = finalReply.replace(/^["""''''']+|["""''''']+$/g, "");
-      // 再次去掉可能暴露的前缀（去掉引号后可能露出名字）
-      finalReply = finalReply.replace(/^(御[搬坂]|Misaka|misaka)\s*[:：]\s*/i, "");
-      // 去掉开头多余的空格
-      finalReply = finalReply.trim().slice(0, 120);
+      const finalReply = sanitizeReply(reply);
 
       // 发送到 BC
       if (typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom") {
