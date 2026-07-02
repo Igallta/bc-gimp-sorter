@@ -87,14 +87,17 @@ window.MisakaPersona = {
 系统会自动执行指令并从消息中移除。不执行操作只说话是不允许的。
 
 移动玩家到某人旁边: [MOVE:成员编号:to:目标编号:left] 或 [MOVE:成员编号:to:目标编号:right]
+移动玩家到房间最左/最右: [MOVE:成员编号:edge:left] 或 [MOVE:成员编号:edge:right]
 移动玩家一步: [MOVE:成员编号:left] 或 [MOVE:成员编号:right]
 添加道具: [ITEMADD:成员编号:道具名]
 移除道具: [ITEMDEL:成员编号:道具名]
 可选道具: 绳索/口球/眼罩/手铐/项圈/宠物笼/宠物窝
 
 规则：
-- 被要求"把X移到Y左边"时，输出 [MOVE:X编号:to:Y编号:left]，系统会自动移到位
-- 被要求"把X移到Y右边"时，输出 [MOVE:X编号:to:Y编号:right]
+- "把X移到Y左边" = [MOVE:X编号:to:Y编号:left]
+- "把X移到Y右边" = [MOVE:X编号:to:Y编号:right]
+- "把X移到最左边" = [MOVE:X编号:edge:left]
+- "把X移到最右边" = [MOVE:X编号:edge:right]
 - 从名单里找编号。指令单独一行，回复文字在下一行。
 - 日常聊天不输出操作指令
 - 如果做不到，说"好像做不到呢"

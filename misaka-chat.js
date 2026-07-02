@@ -197,6 +197,10 @@
         commands.push({ type: "moveTo", memberNumber: parseInt(mn), targetNumber: parseInt(target), side: side.toLowerCase() });
         return "";
       })
+      .replace(/\[MOVE:(\d+):edge:(left|right)\]/gi, (m, mn, edge) => {
+        commands.push({ type: "moveEdge", memberNumber: parseInt(mn), edge: edge.toLowerCase() });
+        return "";
+      })
       .replace(/\[MOVE:(\d+):(left|right)\]/gi, (m, mn, dir) => {
         commands.push({ type: "move", memberNumber: parseInt(mn), direction: dir.toLowerCase() });
         return "";
@@ -273,6 +277,32 @@
     }
   }
 
+  // 把 memberNumber 移到房间最左或最右（循环到头）
+  async function executeMoveEdge(memberNumber, edge) {
+    try {
+      const findIdx = (mn) => ChatRoomCharacter.findIndex(c => c.MemberNumber === mn);
+      let steps = 0;
+      const maxSteps = 20;
+      const lastIdx = () => ChatRoomCharacter.length - 1;
+      while (steps < maxSteps) {
+        const srcIdx = findIdx(memberNumber);
+        if (srcIdx < 0) break;
+        if (edge === "left" && srcIdx === 0) break;   // 已经在最左
+        if (edge === "right" && srcIdx === lastIdx()) break; // 已经在最右
+        const action = edge === "left" ? "MoveLeft" : "MoveRight";
+        ServerSend("ChatRoomAdmin", { MemberNumber: memberNumber, Action: action, Publish: false });
+        steps++;
+        await new Promise(r => setTimeout(r, 400));
+      }
+      state.lastMoveTime = Date.now();
+      console.log(`[MisakaChat] moveEdge #${memberNumber} ${edge}, ${steps}步`);
+      return steps > 0;
+    } catch(e) {
+      console.error("[MisakaChat] moveEdge 失败:", e.message);
+      return false;
+    }
+  }
+
   // BC 道具名映射 → Asset 查找
   const ITEM_MAP = {
     "绳索": { group: "ItemArms", asset: "Rope" },
@@ -327,6 +357,8 @@
         moveOk = executeMove(cmd.memberNumber, cmd.direction);
       } else if (cmd.type === "moveTo") {
         moveOk = await executeMoveTo(cmd.memberNumber, cmd.targetNumber, cmd.side);
+      } else if (cmd.type === "moveEdge") {
+        moveOk = await executeMoveEdge(cmd.memberNumber, cmd.edge);
       } else if (cmd.type === "itemadd") {
         itemOk = executeItemAdd(cmd.memberNumber, cmd.item);
       } else if (cmd.type === "itemdel") {
