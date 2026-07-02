@@ -374,18 +374,19 @@
           if (profile.appearance) profileInfo += `\n穿着: ${profile.appearance}`;
         }
         
-        // 房间里所有角色的简要信息
-        const roomRoster = ChatRoomCharacter.map(c => {
-          const p = MisakaPersona.extractProfile(c);
-          let line = `${p.name} (#${p.memberNumber})`;
-          if (p.owner) line += ` — ${p.owner}`;
-          else line += ` — 无主人`;
-          if (p.lover) line += ` — ${p.lover}`;
-          else line += ` — 无恋人`;
-          return line;
-        }).join("\n");
-        if (roomRoster) {
-          profileInfo += `\n\n【房间里的人】\n${roomRoster}`;
+        // 房间里所有其他角色的完整资料（含描述）
+        const others = ChatRoomCharacter
+          .filter(c => c.MemberNumber !== Player.MemberNumber && c.MemberNumber !== senderNum)
+          .map(c => {
+            const p = MisakaPersona.extractProfile(c);
+            let line = `${p.name} (#${p.memberNumber})`;
+            if (p.owner) line += ` | ${p.owner}`;
+            if (p.lover) line += ` | ${p.lover}`;
+            if (p.description) line += `\n描述: ${p.description.slice(0, 300)}`;
+            return line;
+          }).join("\n");
+        if (others) {
+          profileInfo += `\n\n【房间里的其他人】\n${others}`;
         }
       }
 
@@ -413,11 +414,8 @@
         
         // 根据回复内容选择发送方式
         // BC 的 ChatRoomSendChat 会自动检测 * 开头并走 ChatRoomSendEmote
-        // 所以直接用 ElementValue + ChatRoomSendChat 就能自动处理两种类型
         ElementValue("InputChat", finalReply);
         ChatRoomSendChat();
-        // 立即清空输入框，防止重复发送
-        ElementValue("InputChat", "");
         console.log("[MisakaChat] ChatRoomSendChat 已调用");
         
         // 记录自己的回复
