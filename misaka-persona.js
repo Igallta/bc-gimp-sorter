@@ -141,15 +141,38 @@ GIMP XXX 中的数字是编号。`;
     }
 
     // 提取穿着信息（所有物品，不只 Item*）
+    // 优先保留 mod 覆盖版本（Description 包含"覆盖"）
     let appearance = "";
     let lockCount = 0;
     let itemCount = 0;
     if (char.Appearance && Array.isArray(char.Appearance)) {
+      // 先识别哪些 group 有 mod 覆盖版本
+      const overrideGroups = new Set();
+      for (const a of char.Appearance) {
+        if (a.Asset && a.Asset.Group && a.Asset.Group.Description && /覆盖/.test(a.Asset.Group.Description)) {
+          // 找到覆盖的原始 group 名（如 "新前发_Luzi" 覆盖 "HairFront"）
+          const gName = a.Asset.Group.Name;
+          const origGroup = gName.replace(/_.*Luzi.*$/, "").replace(/新/, "");
+          if (origGroup) overrideGroups.add(origGroup);
+        }
+      }
+      
       for (const a of char.Appearance) {
         if (!a.Asset || !a.Asset.Name) continue;
-        const isItem = a.Asset.Group.Name.startsWith("Item");
+        const gName = a.Asset.Group.Name;
+        const gDesc = a.Asset.Group.Description || "";
+        const isItem = gName.startsWith("Item");
         if (isItem) itemCount++;
-        let item = `${a.Asset.Group.Name}/${a.Asset.Name}`;
+        
+        // 如果原版 group 被某 mod 覆盖了，跳过原版
+        if (overrideGroups.has(gName) && !/覆盖/.test(gDesc)) continue;
+        
+        // 用更友好的名称：优先用 Description
+        let label = gName;
+        if (gDesc) {
+          label = gDesc.replace(/^🍔/, "").replace(/\(覆盖\)/, "").trim();
+        }
+        let item = `${label}/${a.Asset.Name}`;
         // 加颜色信息（转中文名）
         if (a.Color) {
           let color = Array.isArray(a.Color) ? a.Color[0] : a.Color;
