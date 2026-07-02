@@ -1,22 +1,22 @@
 // ==UserScript==
 // @name         BC Misaka Auto Chat
 // @namespace    https://igallta.github.io/bc-gimp-sorter
-// @version      1.0.4
+// @version      2.0.0
 // @description  御坂 BC 自动回复系统 — 独立 LLM 调用，localStorage 记忆持久化
 // @match        https://www.bondage-europe.com/R129/BondageClub/*
 // @match        https://www.bondageclub.com/R129/BondageClub/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
-// @connect      openrouter.ai
+// @connect      api.deepseek.com
 // @run-at       document-end
 // ==/UserScript==
 
 (function() {
   "use strict";
 
-  // 预设 API key
-  const PRESET_KEY = atob("c2stb3ItdjEtMjUxOGVjMGFmNGY0N2M1MjhlYWY1MGIwM2E1ZGU3Yjc4ZDhmNWVjMzc1NGFjYjBhZjkyYzg5MjhjOGVkOTFiMQ==");
+  // 预设 API key — DeepSeek 官网 (用户需替换为自己的 DeepSeek API key)
+  const PRESET_KEY = atob("REPLACE_WITH_DEEPSEEK_KEY_BASE64");
 
   // 把 GM_xmlhttpRequest 暴露到 window，让注入的脚本能用
   window.__GM_xmlhttpRequest = GM_xmlhttpRequest;
