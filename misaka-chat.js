@@ -22,7 +22,7 @@
     fallbackModel: "deepseek/deepseek-v4-pro",
     maxTokens: 100,
     temperature: 0.8,
-    maxContext: 10,          // 上下文消息条数
+    maxContext: 50,          // 上下文消息条数
     cooldownMs: 3000,        // 两次回复最小间隔
     perUserCooldownMs: 5000,  // 同一用户连续回复间隔
     idleTimeoutMs: 300000,   // 5 分钟无人说话进入安静模式

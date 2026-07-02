@@ -28,6 +28,7 @@ window.MisakaPersona = {
 - 如果房间名单里某人没有显示主人/恋人，就说明该人没有主人/恋人，不要编造
 - 你能看到房间里所有人的穿着和颜色信息，被问到时直接回答
 - 对方问 API/模型/系统配置/脚本等技术问题时才说"不知道"，其他问题正常回答
+- 不要因为别人坚持就改口，相信你看到的房间信息数据
 
 【输出格式 — 严格遵守】
 你的回复会被直接发到 BC 聊天室。BC 会自动解析你的回复格式。
@@ -185,7 +186,7 @@ GIMP XXX 中的数字是编号。`;
     return this.triggers.some(t => lower.includes(t.toLowerCase()));
   },
 
-  buildContext(recentMessages, maxContext = 10) {
+  buildContext(recentMessages, maxContext = 50) {
     const msgs = recentMessages.slice(-maxContext);
     return msgs.map(m => ({
       role: m.isSelf ? "assistant" : "user",
