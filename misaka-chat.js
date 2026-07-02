@@ -296,15 +296,20 @@
     const senderChar = ChatRoomCharacter.find(c => c.MemberNumber === senderNum);
     const senderName = (senderChar && (senderChar.Nickname || senderChar.Name)) || ("#" + senderNum);
 
+    // GIMP 娃娃的消息不记录到上下文
+    const isGimpDoll = senderName.startsWith("GIMP ");
+
     // 更新消息窗口
-    state.recentMessages.push({
-      senderName: senderName,
-      content: content,
-      senderMemberNumber: senderNum,
-      isSelf: false,
-      time: Date.now()
-    });
-    if (state.recentMessages.length > 30) state.recentMessages.shift();
+    if (!isGimpDoll) {
+      state.recentMessages.push({
+        senderName: senderName,
+        content: content,
+        senderMemberNumber: senderNum,
+        isSelf: false,
+        time: Date.now()
+      });
+      if (state.recentMessages.length > 30) state.recentMessages.shift();
+    }
 
     state.messageCount++;
     state.idleMode = false;
