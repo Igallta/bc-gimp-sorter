@@ -400,7 +400,7 @@
         return next(args);
       });
 
-      mod.hookFunction("ChatRoomSendChat", 1, (args, next) => {
+      mod.hookFunction("ChatRoomSendChat", 10, (args, next) => {
         const msg = args[0];
         if (msg && msg.startsWith("/misaka")) {
           if (handleCommand(msg)) return;

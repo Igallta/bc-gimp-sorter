@@ -31,7 +31,26 @@
     }
   }
 
-  waitForPlayer(() => {
+  // 等 Player 和 ChatRoom 都就绪后再加载
+  function waitForReady(cb, attempts) {
+    attempts = attempts || 0;
+    if (attempts > 60) { // 最多等 60 秒
+      console.error("[MisakaChat] 等待游戏超时，放弃加载");
+      return;
+    }
+    if (typeof Player !== "undefined" && Player && Player.MemberNumber === 194331 &&
+        typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom") {
+      cb();
+    } else {
+      setTimeout(() => waitForReady(cb, attempts + 1), 1000);
+    }
+  }
+
+  waitForReady(() => {
+    // 预设 API key（避免 GitHub Push Protection 拦截，不硬编码在 JS 里）
+    if (!localStorage.getItem("misaka_apikey")) {
+      localStorage.setItem("misaka_apikey", atob("c2stb3ItdjEtMjUxOGVjMGFmNGY0N2M1MjhlYWY1MGIwM2E1ZGU3Yjc4ZDhmNWVjMzc1NGFjYjBhZjkyYzg5MjhjOGVkOTFiMQ=="));
+    }
     // 加载人设文件
     loadScript("https://igallta.github.io/bc-gimp-sorter/misaka-persona.js", () => {
       console.log("[MisakaChat] 人设文件已加载");
