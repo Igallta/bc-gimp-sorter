@@ -238,7 +238,7 @@ ${profileText}${summaryText}
         if (gDesc) {
           label = gDesc.replace(/^🍔/, "").replace(/\(覆盖\)/, "").trim();
         }
-        let item = `${label}/${a.Asset.Name}`;
+        let item = `${label}/${a.Asset.Description || a.Asset.Name}`;
         // 加颜色信息（转中文名）
         if (a.Color) {
           const colorSlots = Array.isArray(a.Color) ? a.Color : [a.Color];
