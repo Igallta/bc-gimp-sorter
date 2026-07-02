@@ -42,7 +42,16 @@
     messageCount: 0,
     idleMode: false,
     busy: false,
+    roomJoinLog: [],      // 房间进出记录
   };
+  
+  // 从 localStorage 加载持久化的 joinLog
+  try {
+    const savedLog = JSON.parse(localStorage.getItem("misaka_joinlog") || "[]");
+    if (Array.isArray(savedLog) && savedLog.length > 0) {
+      state.roomJoinLog = savedLog;
+    }
+  } catch(e) {}
 
   // === 记忆系统 (GM_setValue 持久化) ===
   function storageKey(prefix) { return "misaka_" + prefix; }
@@ -330,6 +339,8 @@
         state.roomJoinLog = state.roomJoinLog || [];
         state.roomJoinLog.push({ name: who, memberNum: data.Sender, time: Date.now(), action: "join" });
         if (state.roomJoinLog.length > 50) state.roomJoinLog.shift();
+        // 持久化
+        try { localStorage.setItem("misaka_joinlog", JSON.stringify(state.roomJoinLog)); } catch(e) {}
       }
       if (/掉了|掉线了|离开了|退出了/.test(content) || data.Content === "ServerLeave" || data.Content === "ServerDisconnect") {
         let who = senderName;
@@ -343,6 +354,8 @@
         state.roomJoinLog = state.roomJoinLog || [];
         state.roomJoinLog.push({ name: who, memberNum: data.Sender, time: Date.now(), action: "leave" });
         if (state.roomJoinLog.length > 50) state.roomJoinLog.shift();
+        // 持久化
+        try { localStorage.setItem("misaka_joinlog", JSON.stringify(state.roomJoinLog)); } catch(e) {}
       }
     }
 
