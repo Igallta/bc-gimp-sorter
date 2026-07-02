@@ -452,17 +452,22 @@
     if (typeof ServerSocket !== "undefined" && typeof ServerSocket.on === "function") {
       ServerSocket.on("ChatRoomMessage", onChatRoomMessage);
       console.log("[MisakaChat] 监听 ServerSocket ChatRoomMessage 事件");
-    } else {
-      console.error("[MisakaChat] ServerSocket 不可用，回退到 hookFunction");
-      mod.hookFunction("ChatRoomMessage", 0, (args, next) => {
-        try {
-          if (args && args[0]) onChatRoomMessage(args[0]);
-        } catch (e) {
-          console.error("[MisakaChat] 消息处理错误:", e.message);
-        }
-        return next(args);
-      });
     }
+
+    // 同时 hook window.ChatRoomMessage 函数作为双保险
+    // （ServerSocket.on 在某些 BC 版本可能不触发）
+    const origChatRoomMessage = window.ChatRoomMessage;
+    window.__misakaOnMessage = onChatRoomMessage;
+    window.ChatRoomMessage = function(data) {
+      try {
+        if (data && data.Content) {
+          onChatRoomMessage(data);
+        }
+      } catch(e) {
+        console.error("[MisakaChat] wrapper error:", e.message);
+      }
+      return origChatRoomMessage.apply(this, arguments);
+    };
 
     // hook 聊天命令
     mod.hookFunction("ChatRoomSendChat", 10, (args, next) => {
