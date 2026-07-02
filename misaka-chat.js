@@ -346,27 +346,67 @@
   }
 
   // 动态道具查找 — 从 BC Asset 数组里按中文名搜索
-  // 不再硬编码 ITEM_MAP，运行时遍历所有 Item group 的 Asset.Description
+  // 优先束缚类 group，避免误配到 ItemHandheld
+  const RESTRAINT_GROUPS = [
+    "ItemMouth","ItemMouth2","ItemMouth3","ItemHead","ItemHood","ItemEars",
+    "ItemNeck","ItemNeckAccessories","ItemArms","ItemHands","ItemFeet",
+    "ItemLegs","ItemBoots","ItemTorso","ItemTorso2","ItemPelvis",
+    "ItemBreast","ItemNipples","ItemNipplesPiercings","ItemVulva",
+    "ItemVulvaPiercings","ItemButt","ItemDevices","ItemClit"
+  ];
+  const LOW_PRIORITY_GROUPS = ["ItemHandheld","ItemScript"];
+  
   function findItemAsset(itemName) {
     if (!itemName) return null;
     if (typeof Asset === "undefined" || !Array.isArray(Asset)) return null;
     const family = Player.AssetFamily;
-    // 1. 精确匹配 Asset.Description
-    for (const a of Asset) {
-      if (a?.Group?.Name?.startsWith("Item") && a.Description === itemName) {
-        return { group: a.Group.Name, asset: a.Name };
+    
+    // 按优先级分组查找
+    const priorityOrder = [
+      ...RESTRAINT_GROUPS,
+      null, // 其他 Item group
+      ...LOW_PRIORITY_GROUPS
+    ];
+    
+    for (const priorityGroup of priorityOrder) {
+      // 1. 精确匹配
+      for (const a of Asset) {
+        const gName = a?.Group?.Name || "";
+        if (!gName.startsWith("Item")) continue;
+        const isMatch = priorityGroup === null 
+          ? !RESTRAINT_GROUPS.includes(gName) && !LOW_PRIORITY_GROUPS.includes(gName)
+          : gName === priorityGroup;
+        if (isMatch && a.Description === itemName) {
+          return { group: gName, asset: a.Name };
+        }
       }
     }
-    // 2. 包含匹配
-    for (const a of Asset) {
-      if (a?.Group?.Name?.startsWith("Item") && a.Description && a.Description.includes(itemName)) {
-        return { group: a.Group.Name, asset: a.Name };
+    
+    for (const priorityGroup of priorityOrder) {
+      // 2. 包含匹配
+      for (const a of Asset) {
+        const gName = a?.Group?.Name || "";
+        if (!gName.startsWith("Item")) continue;
+        const isMatch = priorityGroup === null 
+          ? !RESTRAINT_GROUPS.includes(gName) && !LOW_PRIORITY_GROUPS.includes(gName)
+          : gName === priorityGroup;
+        if (isMatch && a.Description && a.Description.includes(itemName)) {
+          return { group: gName, asset: a.Name };
+        }
       }
     }
-    // 3. 反向包含
-    for (const a of Asset) {
-      if (a?.Group?.Name?.startsWith("Item") && a.Description && itemName.includes(a.Description)) {
-        return { group: a.Group.Name, asset: a.Name };
+    
+    for (const priorityGroup of priorityOrder) {
+      // 3. 反向包含
+      for (const a of Asset) {
+        const gName = a?.Group?.Name || "";
+        if (!gName.startsWith("Item")) continue;
+        const isMatch = priorityGroup === null 
+          ? !RESTRAINT_GROUPS.includes(gName) && !LOW_PRIORITY_GROUPS.includes(gName)
+          : gName === priorityGroup;
+        if (isMatch && a.Description && itemName.includes(a.Description)) {
+          return { group: gName, asset: a.Name };
+        }
       }
     }
     return null;
