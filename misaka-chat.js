@@ -479,16 +479,14 @@
     }
 
     // 监听 ServerSocket 的 ChatRoomMessage 事件
-    if (typeof ServerSocket !== "undefined" && typeof ServerSocket.on === "function") {
+    // 只在新实例上注册，旧实例的监听器无法移除但会被 isCurrent() 拦截
+    if (typeof ServerSocket !== "undefined" && typeof ServerSocket.on === "function" && isCurrent()) {
       ServerSocket.on("ChatRoomMessage", onChatRoomMessage);
       console.log("[MisakaChat] 监听 ServerSocket ChatRoomMessage 事件");
     }
 
-    // 暴露给外部 wrapper（只绑一次，旧实例不覆盖）
-    if (!window.__misakaOnMessageBound) {
-      window.__misakaOnMessage = onChatRoomMessage;
-      window.__misakaOnMessageBound = true;
-    }
+    // 暴露给外部 wrapper（只在新实例上绑定）
+    window.__misakaOnMessage = onChatRoomMessage;
     // 不再 wrap window.ChatRoomMessage（多次 wrap 会导致重复调用）
 
     // hook 聊天命令
