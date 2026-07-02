@@ -937,6 +937,30 @@
     await handleReply(senderNum, senderName, content);
     return window.__misakaGetState();
   };
+  window.__misakaDebugQuery = async function(target) {
+    const queryTarget = normalizeQueryTarget(target);
+    let roomlogResult = "";
+    try {
+      const log = JSON.parse(localStorage.getItem("misaka_roomlog") || "[]");
+      const matches = log.filter(m =>
+        (m.name || "").toLowerCase().includes(queryTarget.toLowerCase())
+          || normalizeLookupText(m.name).includes(normalizeLookupText(queryTarget))
+      );
+      if (matches.length > 0) {
+        const last = matches[matches.length - 1];
+        roomlogResult = `本地记录中最后活动: ${last.name} 于 ${new Date(last.time).toLocaleString("zh-CN")} ${last.type === "Chat" || last.type === "Talk" ? "发言" : last.type === "Emote" ? "动作" : last.type}`;
+      }
+    } catch(e) {}
+    const currentRoomResults = queryCurrentRoom(queryTarget);
+    const results = await queryProfile(queryTarget);
+    return {
+      queryTarget,
+      currentRoomResults,
+      bceProfileResults: results,
+      roomlogResult,
+      directReply: buildDirectQueryReply(queryTarget, roomlogResult, currentRoomResults, results)
+    };
+  };
 
   // 等待页面加载完成
   if (document.readyState === "complete" || document.readyState === "interactive") {
