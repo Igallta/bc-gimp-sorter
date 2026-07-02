@@ -298,6 +298,24 @@
 
     // GIMP 娃娃的消息不记录到上下文
     const isGimpDoll = senderName.startsWith("GIMP ");
+    
+    // 记录房间进出事件（系统消息）
+    if (data.Type === "Action" || data.Type === "LocalMessage" || data.Type === "ServerMessage") {
+      if (/进来了|进入了|加入了/.test(content)) {
+        const match = content.match(/^(.+?)\s*进[来了入]|^(.+?)\s*加入了/);
+        const who = match ? (match[1] || match[2]).trim() : senderName;
+        state.roomJoinLog = state.roomJoinLog || [];
+        state.roomJoinLog.push({ name: who, time: Date.now(), action: "join" });
+        if (state.roomJoinLog.length > 50) state.roomJoinLog.shift();
+      }
+      if (/掉了|掉线了|离开了|退出了/.test(content)) {
+        const match = content.match(/^(.+?)\s*(?:掉了|掉线了|离开了|退出了)/);
+        const who = match ? match[1].trim() : senderName;
+        state.roomJoinLog = state.roomJoinLog || [];
+        state.roomJoinLog.push({ name: who, time: Date.now(), action: "leave" });
+        if (state.roomJoinLog.length > 50) state.roomJoinLog.shift();
+      }
+    }
 
     // 更新消息窗口
     if (!isGimpDoll) {
@@ -485,8 +503,18 @@
           queryInfo = `\n\n【查询结果：${queryTarget}】\n未找到该玩家的档案记录。如实告诉用户查不到。`;
         }
       }
+      
+      // 房间进出记录
+      let joinLogInfo = "";
+      if (state.roomJoinLog && state.roomJoinLog.length > 0) {
+        const recent = state.roomJoinLog.slice(-10);
+        joinLogInfo = "\n\n【房间进出记录（最近）】\n";
+        joinLogInfo += recent.map(e => 
+          `${new Date(e.time).toLocaleString("zh-CN", {hour: "2-digit", minute: "2-digit"})} ${e.name} ${e.action === "join" ? "进入" : "离开"}房间`
+        ).join("\n");
+      }
 
-      const systemPrompt = getSystemPrompt() + profileInfo + queryInfo;
+      const systemPrompt = getSystemPrompt() + profileInfo + queryInfo + joinLogInfo;
       const reply = await callLLM(systemPrompt, contextMessages);
 
       if (!reply) return;
