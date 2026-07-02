@@ -490,6 +490,26 @@
     sendLocal("御坂自动回复 v1.0 已加载");
   }
 
+  // 暴露 debug 接口
+  window.__misakaGetState = function() {
+    return {
+      enabled: CONFIG.enabled,
+      busy: state.busy,
+      lastReplyTime: state.lastReplyTime,
+      messageCount: state.messageCount,
+      recentMsgs: state.recentMessages.slice(-5),
+      model: CONFIG.model,
+      hasApiKey: !!(localStorage.getItem(storageKey("apikey")) || ""),
+      hasPersona: typeof MisakaPersona !== "undefined"
+    };
+  };
+  window.__misakaForceReply = async function(senderNum, senderName, content) {
+    console.log("[MisakaChat] force reply triggered");
+    state.busy = false; // 强制解锁
+    await handleReply(senderNum, senderName, content);
+    return window.__misakaGetState();
+  };
+
   // 等待页面加载完成
   if (document.readyState === "complete" || document.readyState === "interactive") {
     setTimeout(init, 2000);
