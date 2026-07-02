@@ -18,7 +18,7 @@
   const CONFIG = {
     enabled: true,
     apiBase: "https://openrouter.ai/api/v1/chat/completions",
-    model: "deepseek/deepseek-chat",
+    model: "deepseek/deepseek-v4-pro",
     fallbackModel: "meta-llama/llama-3.3-70b-instruct",
     maxTokens: 100,
     temperature: 0.8,
@@ -335,12 +335,26 @@
 
   async function handleReply(senderNum, senderName, content) {
     state.busy = true;
+    window.__misakaGlobalBusy = true;
     state.lastReplyTime = Date.now();
     state.lastUserReplyTime[senderNum] = Date.now();
 
     try {
       // 等待最小延迟
       await new Promise(r => setTimeout(r, CONFIG.replyDelayMs));
+
+      // 读取发送者的 BC profile
+      let profileInfo = "";
+      if (typeof MisakaPersona !== "undefined" && typeof ChatRoomCharacter !== "undefined") {
+        const char = ChatRoomCharacter.find(c => c.MemberNumber === senderNum);
+        const profile = MisakaPersona.extractProfile(char);
+        if (profile) {
+          profileInfo = `\n\n【发送者资料】${profile.name} (#${profile.memberNumber})`;
+          if (profile.ds) profileInfo += ` | ${profile.ds}`;
+          if (profile.languages) profileInfo += ` | ${profile.languages.join("/")}`;
+          if (profile.about) profileInfo += `\n简介: ${profile.about}`;
+        }
+      }
 
       // 构建上下文
       const contextMessages = state.recentMessages
@@ -350,7 +364,7 @@
           content: `${m.senderName}: ${m.content}`
         }));
 
-      const systemPrompt = getSystemPrompt();
+      const systemPrompt = getSystemPrompt() + profileInfo;
       const reply = await callLLM(systemPrompt, contextMessages);
 
       if (!reply) return;
