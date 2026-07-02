@@ -9,8 +9,8 @@
   const CONFIG = {
     enabled: true,
     apiBase: "https://openrouter.ai/api/v1/chat/completions",
-    model: "meta-llama/llama-3.1-8b-instruct",
-    fallbackModel: "meta-llama/llama-3.1-8b-instruct:free",
+    model: "deepseek/deepseek-chat",
+    fallbackModel: "meta-llama/llama-3.3-70b-instruct",
     maxTokens: 100,
     temperature: 0.8,
     maxContext: 10,          // 上下文消息条数
