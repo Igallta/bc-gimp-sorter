@@ -595,7 +595,7 @@
     return matches.length > 0 ? matches : null;
   }
 
-  function buildDirectQueryReply(queryTarget, roomlogResult, currentRoomResults, results) {
+  function buildDirectQueryReply(queryTarget, roomlogResult, currentRoomResults, results, content = "") {
     const r = (currentRoomResults && currentRoomResults[0]) || (results && results[0]);
     if (!r) {
       if (roomlogResult) return roomlogResult.replace(/^本地记录中最后活动:\s*/, "记录里最后活动是") + "。";
@@ -603,6 +603,16 @@
     }
 
     const display = r.lastNick || r.name || queryTarget;
+    if (/(主人|owner)/i.test(content)) {
+      return r.owner && r.owner !== "无"
+        ? `${display} 的主人是${r.owner}。`
+        : `${display} 没有主人。`;
+    }
+    if (/(恋人|戀人|lover)/i.test(content)) {
+      return r.lovers && r.lovers !== "无"
+        ? `${display} 的恋人有${r.lovers}。`
+        : `${display} 没有恋人。`;
+    }
     const parts = [`${display}，编号${r.memberNumber}`];
     if (r.online) parts.push("在线着呢");
     if (r.seen && !r.online) parts.push(`档案最后查看${r.seen}`);
@@ -799,7 +809,7 @@
         // 当前房间实时查询优先，再查 BCE profiles（历史快照）
         const currentRoomResults = queryCurrentRoom(queryTarget);
         const results = await queryProfile(queryTarget);
-        directQueryReply = buildDirectQueryReply(queryTarget, roomlogResult, currentRoomResults, results);
+        directQueryReply = buildDirectQueryReply(queryTarget, roomlogResult, currentRoomResults, results, content);
         if (directQueryReply && directQueryReply !== "查-查不到。") {
           try {
             localStorage.setItem("misaka_last_query", JSON.stringify({
@@ -1083,7 +1093,7 @@
       currentRoomResults,
       bceProfileResults: results,
       roomlogResult,
-      directReply: buildDirectQueryReply(queryTarget, roomlogResult, currentRoomResults, results)
+      directReply: buildDirectQueryReply(queryTarget, roomlogResult, currentRoomResults, results, target)
     };
   };
   window.__misakaDebugParseQuery = function(content) {
