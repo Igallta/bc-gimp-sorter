@@ -356,6 +356,18 @@
           if (profile.lover) profileInfo += ` | ${profile.lover}`;
           if (profile.about) profileInfo += `\n简介: ${profile.about}`;
         }
+        
+        // 同时提供房间里所有角色的简要信息（名字 + 主人 + 恋人）
+        const roomRoster = ChatRoomCharacter.map(c => {
+          const p = MisakaPersona.extractProfile(c);
+          let line = `${p.name} (#${p.memberNumber})`;
+          if (p.owner) line += ` — ${p.owner}`;
+          if (p.lover) line += ` — ${p.lover}`;
+          return line;
+        }).join("\n");
+        if (roomRoster) {
+          profileInfo += `\n\n【房间里的人】\n${roomRoster}`;
+        }
       }
 
       // 构建上下文
