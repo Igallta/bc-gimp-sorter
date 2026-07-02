@@ -416,6 +416,8 @@
         // 所以直接用 ElementValue + ChatRoomSendChat 就能自动处理两种类型
         ElementValue("InputChat", finalReply);
         ChatRoomSendChat();
+        // 立即清空输入框，防止重复发送
+        ElementValue("InputChat", "");
         console.log("[MisakaChat] ChatRoomSendChat 已调用");
         
         // 记录自己的回复
