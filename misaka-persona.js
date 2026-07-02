@@ -60,7 +60,6 @@ ${profileText}${summaryText}
     const desc = char.Description || "";
     const dsMatch = desc.match(/D%(\d+)\/S%(\d+)/);
     const langMatch = desc.match(/(EN|CN|JP|中文|英文|日文)/gi);
-    const aboutMatch = desc.match(/ABOUT.*?\n([\s\S]*?)(?:\n\n|\n∘|$)/i);
     
     // 提取主人/恋人信息
     let ownerInfo = "";
@@ -82,15 +81,29 @@ ${profileText}${summaryText}
       if (char.Lovership.MemberNumber) loverInfo += ` (#${char.Lovership.MemberNumber})`;
     }
     
+    // 提取穿着信息
+    let appearance = "";
+    if (char.Appearance && Array.isArray(char.Appearance)) {
+      const items = char.Appearance
+        .filter(a => a.Asset && a.Asset.Name)
+        .map(a => {
+          let item = `${a.Asset.Group.Name}/${a.Asset.Name}`;
+          if (a.Property && a.Property.LockedBy) item += `(锁:${a.Property.LockedBy})`;
+          return item;
+        })
+        .join(", ");
+      appearance = items.slice(0, 800); // 截断防止太长
+    }
+    
     return {
       name: char.Nickname || char.Name,
       memberNumber: char.MemberNumber,
       ds: dsMatch ? `D${dsMatch[1]}/S${dsMatch[2]}` : null,
       languages: langMatch ? [...new Set(langMatch)] : null,
-      about: aboutMatch ? aboutMatch[1].trim().slice(0, 200) : null,
       description: desc.slice(0, 500),
       owner: ownerInfo || null,
-      lover: loverInfo || null
+      lover: loverInfo || null,
+      appearance: appearance || null
     };
   },
 
