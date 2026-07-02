@@ -352,6 +352,8 @@
           profileInfo = `\n\n【发送者资料】${profile.name} (#${profile.memberNumber})`;
           if (profile.ds) profileInfo += ` | ${profile.ds}`;
           if (profile.languages) profileInfo += ` | ${profile.languages.join("/")}`;
+          if (profile.owner) profileInfo += ` | ${profile.owner}`;
+          if (profile.lover) profileInfo += ` | ${profile.lover}`;
           if (profile.about) profileInfo += `\n简介: ${profile.about}`;
         }
       }
@@ -495,12 +497,8 @@
       });
     }
 
-    // 监听 ServerSocket 的 ChatRoomMessage 事件
-    // 只在新实例上注册，旧实例的监听器无法移除但会被 isCurrent() 拦截
-    if (typeof ServerSocket !== "undefined" && typeof ServerSocket.on === "function" && isCurrent()) {
-      ServerSocket.on("ChatRoomMessage", onChatRoomMessage);
-      console.log("[MisakaChat] 监听 ServerSocket ChatRoomMessage 事件");
-    }
+    // 不用 ServerSocket.on（BC 的 ServerSocket 不是标准 socket.io，不触发）
+    // 只靠 window.ChatRoomMessage wrapper
 
     // 暴露给外部
     window.__misakaOnMessage = onChatRoomMessage;

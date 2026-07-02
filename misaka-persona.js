@@ -59,13 +59,28 @@ ${profileText}${summaryText}
     const dsMatch = desc.match(/D%(\d+)\/S%(\d+)/);
     const langMatch = desc.match(/(EN|CN|JP|中文|英文|日文)/gi);
     const aboutMatch = desc.match(/ABOUT.*?\n([\s\S]*?)(?:\n\n|\n∘|$)/i);
+    
+    // 提取主人/恋人信息
+    let ownerInfo = "";
+    if (char.Ownership && char.Ownership.Name) {
+      ownerInfo = `主人: ${char.Ownership.Name}`;
+      if (char.Ownership.MemberNumber) ownerInfo += ` (#${char.Ownership.MemberNumber})`;
+    }
+    let loverInfo = "";
+    if (char.Lovership && char.Lovership.Name) {
+      loverInfo = `恋人: ${char.Lovership.Name}`;
+      if (char.Lovership.MemberNumber) loverInfo += ` (#${char.Lovership.MemberNumber})`;
+    }
+    
     return {
       name: char.Nickname || char.Name,
       memberNumber: char.MemberNumber,
       ds: dsMatch ? `D${dsMatch[1]}/S${dsMatch[2]}` : null,
       languages: langMatch ? [...new Set(langMatch)] : null,
       about: aboutMatch ? aboutMatch[1].trim().slice(0, 200) : null,
-      description: desc.slice(0, 500)
+      description: desc.slice(0, 500),
+      owner: ownerInfo || null,
+      lover: loverInfo || null
     };
   },
 
