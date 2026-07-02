@@ -299,6 +299,20 @@
     // GIMP 娃娃的消息不记录到上下文
     const isGimpDoll = senderName.startsWith("GIMP ");
     
+    // 记录到本地 roomlog（所有消息，包括系统消息）
+    try {
+      let log = JSON.parse(localStorage.getItem("misaka_roomlog") || "[]");
+      log.push({
+        name: senderName,
+        memberNum: senderNum,
+        content: content.slice(0, 200),
+        type: data.Type,
+        time: Date.now()
+      });
+      if (log.length > 500) log = log.slice(-500);
+      localStorage.setItem("misaka_roomlog", JSON.stringify(log));
+    } catch(e) {}
+    
     // 记录房间进出事件（系统消息）
     if (data.Type === "Action" || data.Type === "LocalMessage" || data.Type === "ServerMessage") {
       if (/进来了|进入了|加入了/.test(content)) {
@@ -373,11 +387,10 @@
         }
         const tx = db.transaction("profiles", "readonly");
         const store = tx.objectStore("profiles");
-        const allReq = store.getAll();
+        allReq = store.getAll();
         allReq.onsuccess = () => {
           const data = allReq.result || [];
           const query = nameOrId.toLowerCase().trim();
-          // 按名字、昵称或 ID 匹配
           const matches = data.filter(d => {
             const name = (d.name || "").toLowerCase();
             const nick = (d.lastNick || "").toLowerCase();
@@ -388,14 +401,42 @@
             resolve(null);
             return;
           }
-          // 取最近查看的 5 条
           matches.sort((a, b) => (b.seen || 0) - (a.seen || 0));
-          const top = matches.slice(0, 5).map(d => ({
-            name: d.name,
-            lastNick: d.lastNick || "",
-            memberNumber: d.memberNumber,
-            seen: d.seen ? new Date(d.seen).toLocaleString("zh-CN") : "未知"
-          }));
+          const top = matches.slice(0, 3).map(d => {
+            const info = {
+              name: d.name,
+              lastNick: d.lastNick || "",
+              memberNumber: d.memberNumber,
+              seen: d.seen ? new Date(d.seen).toLocaleString("zh-CN") : "未知"
+            };
+            // 解析 characterBundle 获取更多详情
+            if (d.characterBundle) {
+              try {
+                const bundle = typeof d.characterBundle === "string" 
+                  ? JSON.parse(d.characterBundle) 
+                  : d.characterBundle;
+                info.nickname = bundle.Nickname || "";
+                info.owner = bundle.Ownership && bundle.Ownership.Name 
+                  ? `${bundle.Ownership.Name} (#${bundle.Ownership.MemberNumber})` 
+                  : "无";
+                info.lovers = Array.isArray(bundle.Lovership) 
+                  ? bundle.Lovership.map(l => `${l.Name}${l.Stage === 2 ? "(正式)" : ""}`).join(", ")
+                  : "无";
+                info.description = (bundle.Description || "").slice(0, 200);
+                // 穿着统计
+                if (Array.isArray(bundle.Appearance)) {
+                  let lockCount = 0, itemCount = 0;
+                  for (const a of bundle.Appearance) {
+                    if (a.Asset && a.Asset.Group && a.Asset.Group.Name.startsWith("Item")) itemCount++;
+                    if (a.Property && a.Property.LockedBy) lockCount++;
+                  }
+                  info.itemCount = itemCount;
+                  info.lockCount = lockCount;
+                }
+              } catch(e) {}
+            }
+            return info;
+          });
           resolve(top);
         };
         allReq.onerror = () => resolve(null);
@@ -492,15 +533,37 @@
       const queryTarget = parseQueryRequest(content);
       let queryInfo = "";
       if (queryTarget) {
+        // 先查本地 roomlog（发言/进出时间）
+        let roomlogResult = "";
+        try {
+          const log = JSON.parse(localStorage.getItem("misaka_roomlog") || "[]");
+          const matches = log.filter(m => 
+            (m.name || "").toLowerCase().includes(queryTarget.toLowerCase())
+          );
+          if (matches.length > 0) {
+            const last = matches[matches.length - 1];
+            roomlogResult = `本地记录中最后活动: ${last.name} 于 ${new Date(last.time).toLocaleString("zh-CN")} ${last.type === "Chat" || last.type === "Talk" ? "发言" : last.type === "Emote" ? "动作" : last.type}`;
+          }
+        } catch(e) {}
+        
+        // 再查 BCE profiles（历史快照）
         const results = await queryProfile(queryTarget);
         if (results) {
-          queryInfo = "\n\n【查询结果：" + queryTarget + "】\n";
-          queryInfo += results.map(r => 
-            `${r.lastNick || r.name} (#${r.memberNumber}) - 上次查看: ${r.seen}`
-          ).join("\n");
-          queryInfo += "\n（以上是 BCE 档案数据库中的记录，你可以基于此回答用户的问题）";
+          queryInfo = `\n\n【查询结果：${queryTarget}】\n`;
+          if (roomlogResult) queryInfo += `${roomlogResult}\n`;
+          queryInfo += results.map(r => {
+            let line = `${r.lastNick || r.name} (#${r.memberNumber}) - 档案查看: ${r.seen}`;
+            if (r.owner) line += ` | 主人: ${r.owner}`;
+            if (r.lovers) line += ` | 恋人: ${r.lovers}`;
+            if (r.itemCount !== undefined) line += ` | ${r.itemCount}件束缚, ${r.lockCount}把锁`;
+            if (r.description) line += `\n描述: ${r.description}`;
+            return line;
+          }).join("\n");
+          queryInfo += "\n（以上是档案数据库中的记录，你可以基于此回答用户的问题）";
+        } else if (roomlogResult) {
+          queryInfo = `\n\n【查询结果：${queryTarget}】\n${roomlogResult}\n（未找到 BCE 档案记录）`;
         } else {
-          queryInfo = `\n\n【查询结果：${queryTarget}】\n未找到该玩家的档案记录。如实告诉用户查不到。`;
+          queryInfo = `\n\n【查询结果：${queryTarget}】\n未找到该玩家的任何记录。如实告诉用户查不到。`;
         }
       }
       
