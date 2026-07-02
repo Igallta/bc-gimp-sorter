@@ -371,6 +371,9 @@
     if (!itemName) return null;
     // 同义词转换
     itemName = SYNONYMS[itemName] || itemName;
+    // 模糊同义词：包含"绳"字的都映射到"麻绳"
+    if (itemName.includes("绳") && !itemName.includes("颈") && !itemName.includes("纯")) itemName = "麻绳";
+    if (itemName.includes("口塞") && !itemName.includes("模块")) itemName = "口球";
     if (typeof Asset === "undefined" || !Array.isArray(Asset)) return null;
     const family = Player.AssetFamily;
     
