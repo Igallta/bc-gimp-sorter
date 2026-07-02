@@ -88,7 +88,7 @@ GIMP XXX 中的数字是娃娃编号，不是被绑次数或其他数据。
       if (char.Lovership.MemberNumber) loverInfo += ` (#${char.Lovership.MemberNumber})`;
     }
     
-    // 提取穿着信息
+    // 提取穿着信息（所有物品，不只 Item*）
     let appearance = "";
     let lockCount = 0;
     let itemCount = 0;
@@ -107,9 +107,10 @@ GIMP XXX 中的数字是娃娃编号，不是被绑次数或其他数据。
           item += `[锁:${a.Property.LockedBy}]`;
           lockCount++;
         }
-        if (isItem) appearance += item + ", ";
+        // 所有物品都记录，不只 Item*
+        appearance += item + ", ";
       }
-      appearance = appearance.slice(0, 1000);
+      appearance = appearance.slice(0, 1500);
     }
     
     return {
