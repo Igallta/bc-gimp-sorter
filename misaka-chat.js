@@ -543,9 +543,34 @@
       if (!char) return false;
       const asset = AssetGet(char.AssetFamily, mapping.group, mapping.asset);
       if (!asset) { console.log(`[MisakaChat] Asset 不存在: ${mapping.group}/${mapping.asset}`); return false; }
+      
+      // 如果该 group 已有道具，尝试同名 asset 的其他 group
+      const existing = char.Appearance.find(a => a.Asset?.Group?.Name === mapping.group);
+      if (existing) {
+        // 查找同名 asset 的其他空 group
+        const altGroups = [];
+        for (const a of Asset) {
+          if (a?.Group?.Name?.startsWith("Item") && a.Name === mapping.asset && a.Group.Name !== mapping.group) {
+            altGroups.push(a.Group.Name);
+          }
+        }
+        for (const g of altGroups) {
+          const hasItem = char.Appearance.find(a => a.Asset?.Group?.Name === g);
+          if (!hasItem) {
+            const altAsset = AssetGet(char.AssetFamily, g, mapping.asset);
+            if (altAsset) {
+              directSetItem(char, g, altAsset);
+              ChatRoomCharacterUpdate(char);
+              console.log(`[MisakaChat] 已给 #${memberNumber} 添加 ${itemName} (group: ${g})`);
+              return true;
+            }
+          }
+        }
+        // 所有 group 都有道具了，覆盖原 group
+      }
       directSetItem(char, mapping.group, asset);
       ChatRoomCharacterUpdate(char);
-      console.log(`[MisakaChat] 已给 #${memberNumber} 添加 ${itemName}`);
+      console.log(`[MisakaChat] 已给 #${memberNumber} 添加 ${itemName} (group: ${mapping.group})`);
       return true;
     } catch(e) {
       console.error("[MisakaChat] 添加道具失败:", e.message);
