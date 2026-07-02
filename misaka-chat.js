@@ -345,6 +345,17 @@
     }
   }
 
+  // 同义词映射 — 用户/LLM 常用泛称 → BC 实际道具名
+  const SYNONYMS = {
+    "绳子": "麻绳", "绳索": "麻绳", "绳缚": "麻绳",
+    "口塞": "口球", "堵嘴": "麻绳堵嘴",
+    "眼罩": "皮制眼罩", "蒙眼": "皮制眼罩",
+    "手铐": "金属手铐", "铐": "金属手铐",
+    "贞操": "高科技贞操带", "锁": "金属贞操带",
+    "单手套": "皮制单手套", "臂袋": "皮制单手套",
+    "高跟": "芭蕾高跟鞋", "芭蕾": "芭蕾高跟鞋",
+  };
+
   // 动态道具查找 — 从 BC Asset 数组里按中文名搜索
   // 优先束缚类 group，避免误配到 ItemHandheld
   const RESTRAINT_GROUPS = [
@@ -354,10 +365,12 @@
     "ItemBreast","ItemNipples","ItemNipplesPiercings","ItemVulva",
     "ItemVulvaPiercings","ItemButt","ItemDevices","ItemClit"
   ];
-  const LOW_PRIORITY_GROUPS = ["ItemHandheld","ItemScript"];
+  const LOW_PRIORITY_GROUPS = ["ItemHandheld","ItemScript","ItemAddon","ItemMisc","ItemNeckRestraints"];
   
   function findItemAsset(itemName) {
     if (!itemName) return null;
+    // 同义词转换
+    itemName = SYNONYMS[itemName] || itemName;
     if (typeof Asset === "undefined" || !Array.isArray(Asset)) return null;
     const family = Player.AssetFamily;
     
@@ -543,15 +556,24 @@
       if (!char) return false;
       
       // 优先从玩家身上找匹配的道具（解决多层 group：ItemMouth/ItemMouth2/ItemMouth3, ItemTorso/ItemTorso2, ItemHead/ItemHood）
+      // 同义词转换
+      const searchName = SYNONYMS[itemName] || itemName;
       // 1. 精确匹配 Description
       let target = char.Appearance.find(a => 
         a?.Asset?.Group?.Name?.startsWith("Item") && 
-        a?.Asset?.Description === itemName
+        a?.Asset?.Description === searchName
       );
+      // 1.5 也试试原名（以防同义词转换后反而不匹配）
+      if (!target && searchName !== itemName) {
+        target = char.Appearance.find(a => 
+          a?.Asset?.Group?.Name?.startsWith("Item") && 
+          a?.Asset?.Description === itemName
+        );
+      }
       // 2. 包含匹配
       if (!target) target = char.Appearance.find(a => 
         a?.Asset?.Group?.Name?.startsWith("Item") && 
-        a?.Asset?.Description?.includes(itemName)
+        (a?.Asset?.Description?.includes(searchName) || a?.Asset?.Description?.includes(itemName))
       );
       // 3. fallback: findItemAsset mapping
       if (!target) {
