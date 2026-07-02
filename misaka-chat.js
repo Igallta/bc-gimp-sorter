@@ -193,6 +193,18 @@
   function parseActionCommands(reply) {
     const commands = [];
     const cleaned = String(reply || "")
+      .replace(/\[SNAPSHOT:save:(\d+)\]/gi, (m, mn) => {
+        commands.push({ type: "snapshotSave", memberNumber: parseInt(mn) });
+        return "";
+      })
+      .replace(/\[SNAPSHOT:restore:(\d+)\]/gi, (m, mn) => {
+        commands.push({ type: "snapshotRestore", memberNumber: parseInt(mn) });
+        return "";
+      })
+      .replace(/\[COPY:(\d+):to:(\d+)\]/gi, (m, src, dst) => {
+        commands.push({ type: "copyBonds", srcNumber: parseInt(src), dstNumber: parseInt(dst) });
+        return "";
+      })
       .replace(/\[MOVE:(\d+):to:(\d+):(left|right)\]/gi, (m, mn, target, side) => {
         commands.push({ type: "moveTo", memberNumber: parseInt(mn), targetNumber: parseInt(target), side: side.toLowerCase() });
         return "";
@@ -310,81 +322,114 @@
     }
   }
 
-  // BC 道具名映射 → group + asset
-  // LLM 输出中文道具名，代码映射到 BC 内部 Asset
-  const ITEM_MAP = {
-    // 嘴巴
-    "口球": { group: "ItemMouth", asset: "BallGag" },
-    "布团": { group: "ItemMouth", asset: "ClothGag" },
-    "胶带": { group: "ItemMouth", asset: "DuctTape" },
-    "圆环口塞": { group: "ItemMouth", asset: "RingGag" },
-    "奶嘴": { group: "ItemMouth", asset: "PacifierGag" },
-    "马具口球": { group: "ItemMouth", asset: "HarnessBallGag" },
-    // 眼/头
-    "眼罩": { group: "ItemHead", asset: "LeatherBlindfold" },
-    "皮革眼罩": { group: "ItemHead", asset: "LeatherBlindfold" },
-    "催眠眼镜": { group: "ItemHead", asset: "HypnoticVisor" },
-    "头罩": { group: "ItemHood", asset: "LeatherHoodSealed" },
-    "皮革头罩": { group: "ItemHood", asset: "LeatherHoodSealed" },
-    "耳塞": { group: "ItemEars", asset: "HeavyDutyEarPlugs" },
-    // 颈
-    "项圈": { group: "ItemNeck", asset: "LeatherCollar" },
-    "皮革项圈": { group: "ItemNeck", asset: "LeatherCollar" },
-    "宠物项圈": { group: "ItemNeck", asset: "PetCollar" },
-    "铃铛项圈": { group: "ItemNeck", asset: "LeatherCollarBell" },
-    "电击项圈": { group: "ItemNeck", asset: "ShockCollar" },
-    "奴隶项圈": { group: "ItemNeck", asset: "SlaveCollar" },
-    // 手臂
-    "手铐": { group: "ItemArms", asset: "MetalCuffs" },
-    "金属手铐": { group: "ItemArms", asset: "MetalCuffs" },
-    "绳索": { group: "ItemArms", asset: "NylonRope" },
-    "尼龙绳": { group: "ItemArms", asset: "NylonRope" },
-    "麻绳": { group: "ItemArms", asset: "HempRope" },
-    "皮带": { group: "ItemArms", asset: "LeatherBelt" },
-    "单手套": { group: "ItemArms", asset: "LeatherArmbinder" },
-    "连指手套": { group: "ItemHands", asset: "PaddedMittens" },
-    // 脚/腿
-    "脚铐": { group: "ItemFeet", asset: "HeavyAnkleCuffs" },
-    "腿铐": { group: "ItemLegs", asset: "LeatherLegCuffs" },
-    "芭蕾高跟鞋": { group: "ItemBoots", asset: "BalletHeels" },
-    // 躯干
-    "束带": { group: "ItemTorso", asset: "LeatherHarness" },
-    "贞操带": { group: "ItemPelvis", asset: "LeatherChastityBelt" },
-    "贞操文胸": { group: "ItemBreast", asset: "MetalChastityBra" },
-    // 道具
-    "宠物窝": { group: "ItemDevices", asset: "PetBed" },
-    "笼子": { group: "ItemDevices", asset: "Cage" },
-    "站立笼": { group: "ItemDevices", asset: "Cage" },
-    "狗窝": { group: "ItemDevices", asset: "LowCage" },
-    // 手持
-    "硬鞭": { group: "ItemHandheld", asset: "Crop" },
-    "板子": { group: "ItemHandheld", asset: "Paddle" },
-    "鞭笞": { group: "ItemHandheld", asset: "Flogger" },
-    // 其他
-    "跳蛋": { group: "ItemVulva", asset: "VibratingEgg" },
-    "肛塞": { group: "ItemButt", asset: "BlackButtPlug" },
-    "猫尾肛塞": { group: "ItemButt", asset: "TailButtPlug" },
-  };
-
-  // 模糊匹配道具名
+  // 动态道具查找 — 从 BC Asset 数组里按中文名搜索
+  // 不再硬编码 ITEM_MAP，运行时遍历所有 Item group 的 Asset.Description
   function findItemAsset(itemName) {
-    // 精确匹配
-    if (ITEM_MAP[itemName]) return ITEM_MAP[itemName];
-    // 模糊匹配
-    const lower = itemName.toLowerCase();
-    for (const [key, val] of Object.entries(ITEM_MAP)) {
-      if (key.includes(itemName) || itemName.includes(key)) return val;
-    }
-    // 尝试直接用 Asset.Description 匹配
+    if (!itemName) return null;
+    if (typeof Asset === "undefined" || !Array.isArray(Asset)) return null;
     const family = Player.AssetFamily;
-    if (typeof Asset !== "undefined" && Array.isArray(Asset)) {
-      for (const a of Asset) {
-        if (a?.Group?.Name?.startsWith("Item") && a.Description === itemName) {
-          return { group: a.Group.Name, asset: a.Name };
-        }
+    // 1. 精确匹配 Asset.Description
+    for (const a of Asset) {
+      if (a?.Group?.Name?.startsWith("Item") && a.Description === itemName) {
+        return { group: a.Group.Name, asset: a.Name };
+      }
+    }
+    // 2. 包含匹配
+    for (const a of Asset) {
+      if (a?.Group?.Name?.startsWith("Item") && a.Description && a.Description.includes(itemName)) {
+        return { group: a.Group.Name, asset: a.Name };
+      }
+    }
+    // 3. 反向包含
+    for (const a of Asset) {
+      if (a?.Group?.Name?.startsWith("Item") && a.Description && itemName.includes(a.Description)) {
+        return { group: a.Group.Name, asset: a.Name };
       }
     }
     return null;
+  }
+
+  // 拘束快照系统 — 存储玩家当前道具状态，用于"绑回去"
+  function saveSnapshot(memberNumber) {
+    const char = ChatRoomCharacter.find(c => c.MemberNumber === memberNumber);
+    if (!char) return null;
+    const items = (char.Appearance || [])
+      .filter(a => a?.Asset?.Group?.Name?.startsWith("Item"))
+      .map(a => ({ group: a.Asset.Group.Name, asset: a.Asset.Name, desc: a.Asset.Description || a.Asset.Name }));
+    const snapshot = { memberNumber, name: char.Nickname || char.Name, items, time: Date.now() };
+    try {
+      localStorage.setItem("misaka_snapshot_" + memberNumber, JSON.stringify(snapshot));
+    } catch(e) {}
+    return snapshot;
+  }
+
+  function loadSnapshot(memberNumber) {
+    try {
+      return JSON.parse(localStorage.getItem("misaka_snapshot_" + memberNumber) || "null");
+    } catch(e) { return null; }
+  }
+
+  // 按 snapshot 恢复玩家道具
+  async function executeRestoreSnapshot(memberNumber) {
+    const snapshot = loadSnapshot(memberNumber);
+    if (!snapshot) return false;
+    const char = ChatRoomCharacter.find(c => c.MemberNumber === memberNumber);
+    if (!char) return false;
+    // 先清除当前所有未锁的 Item
+    for (const a of [...(char.Appearance || [])]) {
+      if (a?.Asset?.Group?.Name?.startsWith("Item") && !a.Property?.LockedBy) {
+        try {
+          CharacterAppearanceSetItem(char, a.Asset.Group.Name, null, null, false);
+        } catch(e) {}
+      }
+    }
+    // 逐个恢复
+    let count = 0;
+    for (const item of snapshot.items) {
+      try {
+        const asset = AssetGet(char.AssetFamily, item.group, item.asset);
+        if (asset) {
+          CharacterAppearanceSetItem(char, item.group, asset, null, false);
+          count++;
+          await new Promise(r => setTimeout(r, 100));
+        }
+      } catch(e) {}
+    }
+    ChatRoomCharacterUpdate(char);
+    console.log(`[MisakaChat] 恢复快照 #${memberNumber}: ${count}/${snapshot.items.length} 件道具`);
+    return count > 0;
+  }
+
+  // 复制 src 玩家的道具到 dst 玩家
+  async function executeCopyBonds(srcNumber, dstNumber) {
+    const srcChar = ChatRoomCharacter.find(c => c.MemberNumber === srcNumber);
+    const dstChar = ChatRoomCharacter.find(c => c.MemberNumber === dstNumber);
+    if (!srcChar || !dstChar) return false;
+    // 保存 src 的快照
+    const snapshot = saveSnapshot(srcNumber);
+    if (!snapshot) return false;
+    // 用快照恢复到 dst
+    // 先清除 dst 所有未锁的 Item
+    for (const a of [...(dstChar.Appearance || [])]) {
+      if (a?.Asset?.Group?.Name?.startsWith("Item") && !a.Property?.LockedBy) {
+        try { CharacterAppearanceSetItem(dstChar, a.Asset.Group.Name, null, null, false); } catch(e) {}
+      }
+    }
+    // 逐个添加 src 的道具到 dst
+    let count = 0;
+    for (const item of snapshot.items) {
+      try {
+        const asset = AssetGet(dstChar.AssetFamily, item.group, item.asset);
+        if (asset) {
+          CharacterAppearanceSetItem(dstChar, item.group, asset, null, false);
+          count++;
+          await new Promise(r => setTimeout(r, 100));
+        }
+      } catch(e) {}
+    }
+    ChatRoomCharacterUpdate(dstChar);
+    console.log(`[MisakaChat] 复制束缚 #${srcNumber} → #${dstNumber}: ${count} 件`);
+    return count > 0;
   }
 
   function executeItemAdd(memberNumber, itemName) {
@@ -442,7 +487,7 @@
   }
 
   async function executeCommands(commands) {
-    let moveOk = true, itemOk = true;
+    let moveOk = true, itemOk = true, snapOk = true;
     for (const cmd of commands) {
       if (cmd.type === "move") {
         moveOk = executeMove(cmd.memberNumber, cmd.direction);
@@ -454,9 +499,15 @@
         itemOk = executeItemAdd(cmd.memberNumber, cmd.item);
       } else if (cmd.type === "itemdel") {
         itemOk = executeItemDel(cmd.memberNumber, cmd.item);
+      } else if (cmd.type === "snapshotSave") {
+        snapOk = saveSnapshot(cmd.memberNumber);
+      } else if (cmd.type === "snapshotRestore") {
+        snapOk = await executeRestoreSnapshot(cmd.memberNumber);
+      } else if (cmd.type === "copyBonds") {
+        snapOk = await executeCopyBonds(cmd.srcNumber, cmd.dstNumber);
       }
     }
-    return { moveOk, itemOk };
+    return { moveOk, itemOk, snapOk };
   }
 
   // === 消息处理 ===
