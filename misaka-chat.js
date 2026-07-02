@@ -15,7 +15,7 @@
     apiBase: "https://api.deepseek.com/chat/completions",
     model: "deepseek-v4-pro",
     fallbackModel: "deepseek-v4-flash",
-    maxTokens: 500,
+    maxTokens: 800,
     temperature: 0.8,
     maxContext: 50,
     cooldownMs: 3000,
@@ -221,8 +221,31 @@
         commands.push({ type: "itemadd", memberNumber: parseInt(mn), item: item.trim() });
         return "";
       })
+      .replace(/\[ITEMDEL:(\d+):all\]/gi, (m, mn) => {
+        commands.push({ type: "itemdelall", memberNumber: parseInt(mn) });
+        return "";
+      })
       .replace(/\[ITEMDEL:(\d+):([^\]]+)\]/gi, (m, mn, item) => {
         commands.push({ type: "itemdel", memberNumber: parseInt(mn), item: item.trim() });
+        return "";
+      })
+      // 处理被截断的指令 — [ITEMDEL:123 后面没有 ]
+      .replace(/\[ITEMADD:(\d+)$/gi, (m, mn) => {
+        console.log("[MisakaChat] 检测到截断的 ITEMADD 指令: " + m);
+        return "";
+      })
+      .replace(/\[ITEMDEL:(\d+)$/gi, (m, mn) => {
+        // 截断的 ITEMDEL — 当作"释放全部"处理
+        commands.push({ type: "itemdelall", memberNumber: parseInt(mn) });
+        console.log("[MisakaChat] 截断的 ITEMDEL 当作释放全部: #" + mn);
+        return "";
+      })
+      .replace(/\[MOVE:(\d+)$/gi, (m, mn) => {
+        console.log("[MisakaChat] 检测到截断的 MOVE 指令: " + m);
+        return "";
+      })
+      .replace(/\[COPY:(\d+)$/gi, (m, mn) => {
+        console.log("[MisakaChat] 检测到截断的 COPY 指令: " + m);
         return "";
       });
     return { commands, cleaned: cleaned.trim() };
@@ -486,6 +509,29 @@
     }
   }
 
+  // 释放全部未锁道具
+  function executeItemDelAll(memberNumber) {
+    try {
+      const char = ChatRoomCharacter.find(c => c.MemberNumber === memberNumber) || Player;
+      if (!char) return false;
+      let count = 0;
+      for (const a of [...(char.Appearance || [])]) {
+        if (a?.Asset?.Group?.Name?.startsWith("Item") && !a.Property?.LockedBy) {
+          try {
+            CharacterAppearanceSetItem(char, a.Asset.Group.Name, null, null, false);
+            count++;
+          } catch(e) {}
+        }
+      }
+      ChatRoomCharacterUpdate(char);
+      console.log(`[MisakaChat] 释放 #${memberNumber} 全部道具: ${count} 件`);
+      return count > 0;
+    } catch(e) {
+      console.error("[MisakaChat] 释放全部失败:", e.message);
+      return false;
+    }
+  }
+
   async function executeCommands(commands) {
     let moveOk = true, itemOk = true, snapOk = true;
     for (const cmd of commands) {
@@ -499,6 +545,8 @@
         itemOk = executeItemAdd(cmd.memberNumber, cmd.item);
       } else if (cmd.type === "itemdel") {
         itemOk = executeItemDel(cmd.memberNumber, cmd.item);
+      } else if (cmd.type === "itemdelall") {
+        itemOk = executeItemDelAll(cmd.memberNumber);
       } else if (cmd.type === "snapshotSave") {
         snapOk = saveSnapshot(cmd.memberNumber);
       } else if (cmd.type === "snapshotRestore") {
