@@ -102,7 +102,7 @@ ${profileText}${summaryText}
         return "米色";
       }
       if (s < 0.1) {
-        if (l > 0.85) return "白色";
+        if (l > 0.93) return "白色";
         if (l > 0.6) return "浅灰";
         if (l > 0.3) return "灰色";
         if (l > 0.1) return "深灰";
