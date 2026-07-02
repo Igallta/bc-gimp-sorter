@@ -374,8 +374,11 @@
 
       // 发送到 BC
       if (typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom") {
-        // BC R129 正确发送方式：设置输入框 + 调用 ChatRoomSendChat
         console.log("[MisakaChat] 准备发送回复:", finalReply);
+        
+        // 根据回复内容选择发送方式
+        // BC 的 ChatRoomSendChat 会自动检测 * 开头并走 ChatRoomSendEmote
+        // 所以直接用 ElementValue + ChatRoomSendChat 就能自动处理两种类型
         ElementValue("InputChat", finalReply);
         ChatRoomSendChat();
         console.log("[MisakaChat] ChatRoomSendChat 已调用");
