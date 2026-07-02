@@ -406,7 +406,7 @@
         } catch(e) {}
       }
     }
-    // 逐个恢复
+    // 逐个恢复，每件道具后都同步
     let count = 0;
     for (const item of snapshot.items) {
       try {
@@ -414,9 +414,9 @@
         if (asset) {
           CharacterAppearanceSetItem(char, item.group, asset, null, false);
           count++;
-          await new Promise(r => setTimeout(r, 100));
+          await new Promise(r => setTimeout(r, 150));
         }
-      } catch(e) {}
+      } catch(e) { console.warn("[MisakaChat] 恢复道具失败:", item.desc, e.message); }
     }
     ChatRoomCharacterUpdate(char);
     console.log(`[MisakaChat] 恢复快照 #${memberNumber}: ${count}/${snapshot.items.length} 件道具`);
@@ -438,21 +438,27 @@
         try { CharacterAppearanceSetItem(dstChar, a.Asset.Group.Name, null, null, false); } catch(e) {}
       }
     }
-    // 逐个添加 src 的道具到 dst
+    // 逐个添加 src 的道具到 dst，每件后同步
     let count = 0;
+    let failed = [];
     for (const item of snapshot.items) {
       try {
         const asset = AssetGet(dstChar.AssetFamily, item.group, item.asset);
         if (asset) {
           CharacterAppearanceSetItem(dstChar, item.group, asset, null, false);
           count++;
-          await new Promise(r => setTimeout(r, 100));
+          await new Promise(r => setTimeout(r, 150));
+        } else {
+          failed.push(item.desc || item.asset);
         }
-      } catch(e) {}
+      } catch(e) { 
+        failed.push(item.desc || item.asset);
+        console.warn("[MisakaChat] 复制道具失败:", item.desc, e.message); 
+      }
     }
     ChatRoomCharacterUpdate(dstChar);
-    console.log(`[MisakaChat] 复制束缚 #${srcNumber} → #${dstNumber}: ${count} 件`);
-    return count > 0;
+    console.log(`[MisakaChat] 复制束缚 #${srcNumber} → #${dstNumber}: ${count}/${snapshot.items.length} 件, 失败: ${failed.join(",")}`);
+    return { ok: count > 0, count, total: snapshot.items.length, failed };
   }
 
   function executeItemAdd(memberNumber, itemName) {
