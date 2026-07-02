@@ -98,13 +98,21 @@ GIMP XXX 中的数字是娃娃编号，不是被绑次数或其他数据。
         const isItem = a.Asset.Group.Name.startsWith("Item");
         if (isItem) itemCount++;
         let item = `${a.Asset.Group.Name}/${a.Asset.Name}`;
+        // 加颜色信息（只取第一个颜色值）
+        if (a.Color) {
+          if (Array.isArray(a.Color) && a.Color.length > 0 && a.Color[0] !== "Default") {
+            item += `(${a.Color[0]})`;
+          } else if (typeof a.Color === "string" && a.Color !== "Default") {
+            item += `(${a.Color})`;
+          }
+        }
         if (a.Property && a.Property.LockedBy) {
-          item += `(锁:${a.Property.LockedBy})`;
+          item += `[锁:${a.Property.LockedBy}]`;
           lockCount++;
         }
         if (isItem) appearance += item + ", ";
       }
-      appearance = appearance.slice(0, 800);
+      appearance = appearance.slice(0, 1000);
     }
     
     return {
