@@ -204,11 +204,14 @@
     if (!CONFIG.enabled) return;
     if (typeof Player === "undefined" || !Player) return;
     
+    // BC 消息字段是 Chat，不是 Content
+    const content = data.Chat || data.Content || "";
+    
     // 忽略自己的消息
     if (data.SenderMemberNumber === Player.MemberNumber) {
       state.recentMessages.push({
         senderName: "御搬",
-        content: data.Content,
+        content: content,
         isSelf: true,
         time: Date.now()
       });
@@ -216,7 +219,6 @@
     }
 
     const senderName = data.SenderName || data.SenderNickname || "Unknown";
-    const content = data.Content || "";
 
     // 更新消息窗口
     state.recentMessages.push({
