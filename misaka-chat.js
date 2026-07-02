@@ -217,12 +217,22 @@
         commands.push({ type: "move", memberNumber: parseInt(mn), direction: dir.toLowerCase() });
         return "";
       })
+      .replace(/\[ITEMADD:(\d+):([^\]:]+):([^\]]+)\]/gi, (m, mn, item, part) => {
+        // [ITEMADD:编号:道具名:部位] — 指定部位添加
+        commands.push({ type: "itemadd", memberNumber: parseInt(mn), item: item.trim(), part: part.trim() });
+        return "";
+      })
       .replace(/\[ITEMADD:(\d+):([^\]]+)\]/gi, (m, mn, item) => {
         commands.push({ type: "itemadd", memberNumber: parseInt(mn), item: item.trim() });
         return "";
       })
       .replace(/\[ITEMDEL:(\d+):all\]/gi, (m, mn) => {
         commands.push({ type: "itemdelall", memberNumber: parseInt(mn) });
+        return "";
+      })
+      .replace(/\[ITEMDEL:(\d+):([^\]:]+):([^\]]+)\]/gi, (m, mn, item, part) => {
+        // [ITEMDEL:编号:道具名:部位] — 指定部位移除
+        commands.push({ type: "itemdel", memberNumber: parseInt(mn), item: item.trim(), part: part.trim() });
         return "";
       })
       .replace(/\[ITEMDEL:(\d+):([^\]]+)\]/gi, (m, mn, item) => {
@@ -355,6 +365,63 @@
     "单手套": "皮制单手套", "臂袋": "皮制单手套",
     "高跟": "芭蕾高跟鞋", "芭蕾": "芭蕾高跟鞋",
   };
+
+  // 部位名 → BC Item group 列表（按优先级）
+  const BODY_PART_GROUPS = {
+    "手臂": ["ItemArms"],
+    "手": ["ItemHands"],
+    "腿": ["ItemLegs"],
+    "脚": ["ItemFeet"],
+    "嘴": ["ItemMouth", "ItemMouth2", "ItemMouth3"],
+    "口": ["ItemMouth", "ItemMouth2", "ItemMouth3"],
+    "头": ["ItemHead", "ItemHood"],
+    "脖子": ["ItemNeck", "ItemNeckRestraints"],
+    "颈": ["ItemNeck", "ItemNeckRestraints"],
+    "身体": ["ItemTorso", "ItemTorso2"],
+    "躯": ["ItemTorso", "ItemTorso2"],
+    "腰": ["ItemPelvis"],
+    "胸": ["ItemBreast", "ItemNipples", "ItemNipplesPiercings"],
+    "眼": ["ItemHead"],
+    "耳": ["ItemEars"],
+    "下体": ["ItemVulva", "ItemVulvaPiercings", "ItemButt", "ItemClit"],
+    "道具": ["ItemDevices"],
+  };
+
+  function findItemByPart(char, itemName, part) {
+    if (!char) return null;
+    const searchName = SYNONYMS[itemName] || itemName;
+    // 限定部位
+    if (part) {
+      const groups = BODY_PART_GROUPS[part];
+      if (groups) {
+        for (const g of groups) {
+          const item = char.Appearance.find(a => 
+            a?.Asset?.Group?.Name === g && 
+            (a?.Asset?.Description === searchName || a?.Asset?.Description === itemName ||
+             a?.Asset?.Description?.includes(searchName) || a?.Asset?.Description?.includes(itemName))
+          );
+          if (item) return item;
+        }
+      }
+    }
+    // 不限定部位 — 精确匹配
+    let target = char.Appearance.find(a => 
+      a?.Asset?.Group?.Name?.startsWith("Item") && 
+      a?.Asset?.Description === searchName
+    );
+    if (!target && searchName !== itemName) {
+      target = char.Appearance.find(a => 
+        a?.Asset?.Group?.Name?.startsWith("Item") && 
+        a?.Asset?.Description === itemName
+      );
+    }
+    // 包含匹配
+    if (!target) target = char.Appearance.find(a => 
+      a?.Asset?.Group?.Name?.startsWith("Item") && 
+      (a?.Asset?.Description?.includes(searchName) || a?.Asset?.Description?.includes(itemName))
+    );
+    return target;
+  }
 
   // 动态道具查找 — 从 BC Asset 数组里按中文名搜索
   // 优先束缚类 group，避免误配到 ItemHandheld
@@ -535,42 +602,72 @@
     return true;
   }
 
-  function executeItemAdd(memberNumber, itemName) {
+  function executeItemAdd(memberNumber, itemName, part) {
     try {
       const mapping = findItemAsset(itemName);
       if (!mapping) { console.log("[MisakaChat] 未知道具:", itemName); return false; }
       const char = ChatRoomCharacter.find(c => c.MemberNumber === memberNumber) || Player;
       if (!char) return false;
-      const asset = AssetGet(char.AssetFamily, mapping.group, mapping.asset);
-      if (!asset) { console.log(`[MisakaChat] Asset 不存在: ${mapping.group}/${mapping.asset}`); return false; }
       
-      // 如果该 group 已有道具，尝试同名 asset 的其他 group
-      const existing = char.Appearance.find(a => a.Asset?.Group?.Name === mapping.group);
-      if (existing) {
-        // 查找同名 asset 的其他空 group
-        const altGroups = [];
-        for (const a of Asset) {
-          if (a?.Group?.Name?.startsWith("Item") && a.Name === mapping.asset && a.Group.Name !== mapping.group) {
-            altGroups.push(a.Group.Name);
+      // 如果指定了部位，优先用该部位的 group
+      let targetGroup = mapping.group;
+      let targetAsset = AssetGet(char.AssetFamily, mapping.group, mapping.asset);
+      
+      if (part) {
+        const groups = BODY_PART_GROUPS[part];
+        if (groups) {
+          // 在指定部位找一个空的 group
+          for (const g of groups) {
+            // 检查这个 group 是否有同名 asset
+            const partAsset = AssetGet(char.AssetFamily, g, mapping.asset);
+            if (partAsset) {
+              const existing = char.Appearance.find(a => a?.Asset?.Group?.Name === g);
+              if (!existing) {
+                targetGroup = g;
+                targetAsset = partAsset;
+                break;
+              }
+            }
           }
-        }
-        for (const g of altGroups) {
-          const hasItem = char.Appearance.find(a => a.Asset?.Group?.Name === g);
-          if (!hasItem) {
-            const altAsset = AssetGet(char.AssetFamily, g, mapping.asset);
-            if (altAsset) {
-              directSetItem(char, g, altAsset);
-              ChatRoomCharacterUpdate(char);
-              console.log(`[MisakaChat] 已给 #${memberNumber} 添加 ${itemName} (group: ${g})`);
-              return true;
+          // 如果指定部位都有道具了，用第一个有该 asset 的 group 覆盖
+          if (targetGroup === mapping.group) {
+            for (const g of groups) {
+              const partAsset = AssetGet(char.AssetFamily, g, mapping.asset);
+              if (partAsset) {
+                targetGroup = g;
+                targetAsset = partAsset;
+                break;
+              }
             }
           }
         }
-        // 所有 group 都有道具了，覆盖原 group
+      } else {
+        // 没指定部位 — 如果该 group 已有道具，尝试其他 group
+        const existing = char.Appearance.find(a => a.Asset?.Group?.Name === mapping.group);
+        if (existing) {
+          const altGroups = [];
+          for (const a of Asset) {
+            if (a?.Group?.Name?.startsWith("Item") && a.Name === mapping.asset && a.Group.Name !== mapping.group) {
+              altGroups.push(a.Group.Name);
+            }
+          }
+          for (const g of altGroups) {
+            const hasItem = char.Appearance.find(a => a?.Asset?.Group?.Name === g);
+            if (!hasItem) {
+              const altAsset = AssetGet(char.AssetFamily, g, mapping.asset);
+              if (altAsset) {
+                targetGroup = g;
+                targetAsset = altAsset;
+                break;
+              }
+            }
+          }
+        }
       }
-      directSetItem(char, mapping.group, asset);
+      
+      directSetItem(char, targetGroup, targetAsset);
       ChatRoomCharacterUpdate(char);
-      console.log(`[MisakaChat] 已给 #${memberNumber} 添加 ${itemName} (group: ${mapping.group})`);
+      console.log(`[MisakaChat] 已给 #${memberNumber} 添加 ${itemName} (group: ${targetGroup}${part ? ", 部位:" + part : ""})`);
       return true;
     } catch(e) {
       console.error("[MisakaChat] 添加道具失败:", e.message);
@@ -578,32 +675,15 @@
     }
   }
 
-  function executeItemDel(memberNumber, itemName) {
+  function executeItemDel(memberNumber, itemName, part) {
     try {
       const char = ChatRoomCharacter.find(c => c.MemberNumber === memberNumber) || Player;
       if (!char) return false;
       
-      // 优先从玩家身上找匹配的道具（解决多层 group：ItemMouth/ItemMouth2/ItemMouth3, ItemTorso/ItemTorso2, ItemHead/ItemHood）
-      // 同义词转换
-      const searchName = SYNONYMS[itemName] || itemName;
-      // 1. 精确匹配 Description
-      let target = char.Appearance.find(a => 
-        a?.Asset?.Group?.Name?.startsWith("Item") && 
-        a?.Asset?.Description === searchName
-      );
-      // 1.5 也试试原名（以防同义词转换后反而不匹配）
-      if (!target && searchName !== itemName) {
-        target = char.Appearance.find(a => 
-          a?.Asset?.Group?.Name?.startsWith("Item") && 
-          a?.Asset?.Description === itemName
-        );
-      }
-      // 2. 包含匹配
-      if (!target) target = char.Appearance.find(a => 
-        a?.Asset?.Group?.Name?.startsWith("Item") && 
-        (a?.Asset?.Description?.includes(searchName) || a?.Asset?.Description?.includes(itemName))
-      );
-      // 3. fallback: findItemAsset mapping
+      // 使用 findItemByPart 支持部位限定
+      let target = findItemByPart(char, itemName, part);
+      
+      // fallback: findItemAsset mapping
       if (!target) {
         const mapping = findItemAsset(itemName);
         if (mapping) {
@@ -616,7 +696,7 @@
           }
         }
       }
-      if (!target) { console.log("[MisakaChat] 找不到道具:", itemName); return false; }
+      if (!target) { console.log("[MisakaChat] 找不到道具:", itemName, part ? "(部位:" + part + ")" : ""); return false; }
       if (target?.Property?.LockedBy) {
         console.log(`[MisakaChat] 道具被锁: ${target.Property.LockedBy}`);
         return false;
@@ -667,9 +747,9 @@
       } else if (cmd.type === "moveEdge") {
         moveOk = await executeMoveEdge(cmd.memberNumber, cmd.edge);
       } else if (cmd.type === "itemadd") {
-        itemOk = executeItemAdd(cmd.memberNumber, cmd.item);
+        itemOk = executeItemAdd(cmd.memberNumber, cmd.item, cmd.part);
       } else if (cmd.type === "itemdel") {
-        itemOk = executeItemDel(cmd.memberNumber, cmd.item);
+        itemOk = executeItemDel(cmd.memberNumber, cmd.item, cmd.part);
       } else if (cmd.type === "itemdelall") {
         itemOk = executeItemDelAll(cmd.memberNumber);
       } else if (cmd.type === "snapshotSave") {
