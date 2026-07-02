@@ -137,8 +137,8 @@
       temperature: CONFIG.temperature,
     });
 
-    // 优先用 GM_xmlhttpRequest（不受页面 CSP 限制），回退到 fetch
-    const useGM = typeof GM_xmlhttpRequest !== "undefined";
+    // 优先用 GM_xmlhttpRequest（油猴注入到 window），回退到 fetch
+    const useGM = typeof window.__GM_xmlhttpRequest !== "undefined";
 
     return new Promise((resolve) => {
       const doRequest = (url, model, isFallback) => {
@@ -150,7 +150,7 @@
         });
 
         if (useGM) {
-          GM_xmlhttpRequest({
+          window.__GM_xmlhttpRequest({
             method: "POST",
             url: url,
             headers: {

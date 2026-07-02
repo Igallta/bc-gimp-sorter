@@ -1,41 +1,31 @@
 // ==UserScript==
 // @name         BC Misaka Auto Chat
 // @namespace    https://igallta.github.io/bc-gimp-sorter
-// @version      1.0
-// @description  御坂 BC 自动回复系统 — 独立 LLM 调用，GM 记忆持久化
+// @version      1.0.4
+// @description  御坂 BC 自动回复系统 — 独立 LLM 调用，localStorage 记忆持久化
 // @match        https://www.bondage-europe.com/R129/BondageClub/*
 // @match        https://www.bondageclub.com/R129/BondageClub/*
+// @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
-// @grant        GM_xmlhttpRequest
+// @connect      openrouter.ai
 // @run-at       document-end
 // ==/UserScript==
 
 (function() {
   "use strict";
 
-  // 先加载人设文件，再加载主脚本
-  function loadScript(url, onload, onerror) {
-    const s = document.createElement("script");
-    s.src = url;
-    s.onload = onload;
-    s.onerror = onerror || (() => console.error("[MisakaChat] 加载失败: " + url));
-    document.head.appendChild(s);
-  }
+  // 预设 API key
+  const PRESET_KEY = atob("c2stb3ItdjEtMjUxOGVjMGFmNGY0N2M1MjhlYWY1MGIwM2E1ZGU3Yjc4ZDhmNWVjMzc1NGFjYjBhZjkyYzg5MjhjOGVkOTFiMQ==");
 
-  function waitForPlayer(cb) {
-    if (typeof Player !== "undefined" && Player && Player.MemberNumber === 194331) {
-      cb();
-    } else {
-      setTimeout(() => waitForPlayer(cb), 1000);
-    }
-  }
+  // 把 GM_xmlhttpRequest 暴露到 window，让注入的脚本能用
+  window.__GM_xmlhttpRequest = GM_xmlhttpRequest;
 
-  // 等 Player 和 ChatRoom 都就绪后再加载
+  // 预设 API key 到 localStorage
   function waitForReady(cb, attempts) {
     attempts = attempts || 0;
-    if (attempts > 60) { // 最多等 60 秒
-      console.error("[MisakaChat] 等待游戏超时，放弃加载");
+    if (attempts > 60) {
+      console.error("[MisakaChat] 等待游戏超时");
       return;
     }
     if (typeof Player !== "undefined" && Player && Player.MemberNumber === 194331 &&
@@ -46,11 +36,19 @@
     }
   }
 
+  function loadScript(url, onload, onerror) {
+    const s = document.createElement("script");
+    s.src = url;
+    s.onload = onload;
+    s.onerror = onerror || (() => console.error("[MisakaChat] 加载失败: " + url));
+    document.head.appendChild(s);
+  }
+
   waitForReady(() => {
-    // 预设 API key（避免 GitHub Push Protection 拦截，不硬编码在 JS 里）
     if (!localStorage.getItem("misaka_apikey")) {
-      localStorage.setItem("misaka_apikey", atob("c2stb3ItdjEtMjUxOGVjMGFmNGY0N2M1MjhlYWY1MGIwM2E1ZGU3Yjc4ZDhmNWVjMzc1NGFjYjBhZjkyYzg5MjhjOGVkOTFiMQ=="));
+      localStorage.setItem("misaka_apikey", PRESET_KEY);
     }
+
     // 加载人设文件
     loadScript("https://igallta.github.io/bc-gimp-sorter/misaka-persona.js", () => {
       console.log("[MisakaChat] 人设文件已加载");
