@@ -680,6 +680,8 @@
       const char = ChatRoomCharacter.find(c => c.MemberNumber === memberNumber) || Player;
       if (!char) return false;
       
+      console.log(`[MisakaChat] executeItemDel #${memberNumber} item="${itemName}" part="${part||""}"`);
+      
       // 使用 findItemByPart 支持部位限定
       let target = findItemByPart(char, itemName, part);
       
@@ -701,7 +703,9 @@
         console.log(`[MisakaChat] 道具被锁: ${target.Property.LockedBy}`);
         return false;
       }
-      directRemoveItem(char, target.Asset.Group.Name);
+      const groupName = target.Asset.Group.Name;
+      console.log(`[MisakaChat] 准备移除 #${memberNumber} group=${groupName} desc=${target.Asset.Description}`);
+      directRemoveItem(char, groupName);
       ChatRoomCharacterUpdate(char);
       console.log(`[MisakaChat] 已移除 #${memberNumber} 的 ${itemName} (group: ${target.Asset.Group.Name})`);
       return true;
@@ -749,8 +753,10 @@
       } else if (cmd.type === "itemadd") {
         itemOk = executeItemAdd(cmd.memberNumber, cmd.item, cmd.part);
       } else if (cmd.type === "itemdel") {
+        console.log(`[MisakaChat] CMD itemdel #${cmd.memberNumber} item="${cmd.item}" part="${cmd.part||""}"`);
         itemOk = executeItemDel(cmd.memberNumber, cmd.item, cmd.part);
       } else if (cmd.type === "itemdelall") {
+        console.log(`[MisakaChat] CMD itemdelall #${cmd.memberNumber}`);
         itemOk = executeItemDelAll(cmd.memberNumber);
       } else if (cmd.type === "snapshotSave") {
         snapOk = saveSnapshot(cmd.memberNumber);
