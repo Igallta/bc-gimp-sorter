@@ -5,6 +5,15 @@
 (function() {
   "use strict";
 
+  // === 单例保护：杀掉旧实例 ===
+  if (window.__misakaInstance) {
+    console.log("[MisakaChat] 杀掉旧实例 #" + window.__misakaInstance);
+    // 无法真正销毁旧 IIFE，但可以让它失效
+  }
+  window.__misakaInstance = Date.now();
+  const myInstance = window.__misakaInstance;
+  function isCurrent() { return window.__misakaInstance === myInstance; }
+
   // === 配置 ===
   const CONFIG = {
     enabled: true,
@@ -252,6 +261,7 @@
   // === 消息处理 ===
   // 防重复：用 window 级别去重（避免多 IIFE 实例各自有自己的 key）
   function onChatRoomMessage(data) {
+    if (!isCurrent()) return; // 旧实例忽略
     if (!CONFIG.enabled) return;
     if (typeof Player === "undefined" || !Player) return;
     
