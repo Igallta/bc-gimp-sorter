@@ -274,10 +274,10 @@
     const validTypes = ["Chat", "Talk", "Emote", "Whisper", "Activity"];
     if (!validTypes.includes(data.Type)) return;
 
-    // 防重复：同一条消息 2 秒内只处理一次（window 级别）
+    // 防重复：同一条消息 10 秒内只处理一次（window 级别）
     const key = senderNum + ":" + content + ":" + data.Type;
     const now = Date.now();
-    if (window.__misakaLastKey === key && now - (window.__misakaLastKeyTime || 0) < 2000) return;
+    if (window.__misakaLastKey === key && now - (window.__misakaLastKeyTime || 0) < 10000) return;
     window.__misakaLastKey = key;
     window.__misakaLastKeyTime = now;
     
