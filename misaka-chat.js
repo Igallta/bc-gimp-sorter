@@ -185,24 +185,36 @@
   }
 
   // === 操作指令解析 ===
+  // 支持3种MOVE格式：
+  //   [MOVE:166706:left]           — 往左移一步
+  //   [MOVE:166706:right]          — 往右移一步
+  //   [MOVE:166706:to:182401:left]  — 把166706移到182401左边（自动多步）
+  //   [MOVE:166706:to:182401:right] — 把166706移到182401右边（自动多步）
   function parseActionCommands(reply) {
     const commands = [];
-    const cleaned = String(reply || "").replace(/\[MOVE:(\d+):(left|right)\]/gi, (m, mn, dir) => {
-      commands.push({ type: "move", memberNumber: parseInt(mn), direction: dir.toLowerCase() });
-      return "";
-    }).replace(/\[ITEMADD:(\d+):([^\]]+)\]/gi, (m, mn, item) => {
-      commands.push({ type: "itemadd", memberNumber: parseInt(mn), item: item.trim() });
-      return "";
-    }).replace(/\[ITEMDEL:(\d+):([^\]]+)\]/gi, (m, mn, item) => {
-      commands.push({ type: "itemdel", memberNumber: parseInt(mn), item: item.trim() });
-      return "";
-    });
+    const cleaned = String(reply || "")
+      .replace(/\[MOVE:(\d+):to:(\d+):(left|right)\]/gi, (m, mn, target, side) => {
+        commands.push({ type: "moveTo", memberNumber: parseInt(mn), targetNumber: parseInt(target), side: side.toLowerCase() });
+        return "";
+      })
+      .replace(/\[MOVE:(\d+):(left|right)\]/gi, (m, mn, dir) => {
+        commands.push({ type: "move", memberNumber: parseInt(mn), direction: dir.toLowerCase() });
+        return "";
+      })
+      .replace(/\[ITEMADD:(\d+):([^\]]+)\]/gi, (m, mn, item) => {
+        commands.push({ type: "itemadd", memberNumber: parseInt(mn), item: item.trim() });
+        return "";
+      })
+      .replace(/\[ITEMDEL:(\d+):([^\]]+)\]/gi, (m, mn, item) => {
+        commands.push({ type: "itemdel", memberNumber: parseInt(mn), item: item.trim() });
+        return "";
+      });
     return { commands, cleaned: cleaned.trim() };
   }
 
   function executeMove(memberNumber, direction) {
     try {
-      if (Date.now() - state.lastMoveTime < CONFIG.moveCooldownMs) {
+      if (Date.now() - state.lastMoveTime < 500) {
         console.log("[MisakaChat] 移动冷却中");
         return false;
       }
@@ -215,6 +227,48 @@
       return true;
     } catch(e) {
       console.error("[MisakaChat] 移动失败:", e.message);
+      return false;
+    }
+  }
+
+  // 把 memberNumber 移到 targetNumber 的左边或右边（自动多步）
+  async function executeMoveTo(memberNumber, targetNumber, side) {
+    try {
+      const findIdx = (mn) => ChatRoomCharacter.findIndex(c => c.MemberNumber === mn);
+      let srcIdx = findIdx(memberNumber);
+      const targetIdx = findIdx(targetNumber);
+      if (srcIdx < 0 || targetIdx < 0) {
+        console.log(`[MisakaChat] moveTo 找不到玩家 src=${srcIdx} target=${targetIdx}`);
+        return false;
+      }
+      // 目标位置：left = target 的前一位，right = target 的后一位
+      let destIdx = side === "left" ? targetIdx : targetIdx + 1;
+      // 如果 src 已经在 dest 位置，不需要移动
+      // 注意：移走 src 后其他人的 index 会变化，需要逐步移并重新计算
+      let steps = 0;
+      const maxSteps = 20;  // 安全上限
+      while (steps < maxSteps) {
+        srcIdx = findIdx(memberNumber);
+        const tIdx = findIdx(targetNumber);
+        if (srcIdx < 0 || tIdx < 0) break;
+        const wantIdx = side === "left" ? tIdx - 1 : tIdx + 1;
+        if (srcIdx === wantIdx) break;  // 到位了
+        if (srcIdx < wantIdx) {
+          // 需要往右移
+          ServerSend("ChatRoomAdmin", { MemberNumber: memberNumber, Action: "MoveRight", Publish: false });
+        } else {
+          // 需要往左移
+          ServerSend("ChatRoomAdmin", { MemberNumber: memberNumber, Action: "MoveLeft", Publish: false });
+        }
+        steps++;
+        // 等待服务器同步
+        await new Promise(r => setTimeout(r, 100));
+      }
+      state.lastMoveTime = Date.now();
+      console.log(`[MisakaChat] moveTo #${memberNumber} to #${targetNumber} ${side}, ${steps}步`);
+      return steps > 0;
+    } catch(e) {
+      console.error("[MisakaChat] moveTo 失败:", e.message);
       return false;
     }
   }
@@ -266,11 +320,13 @@
     }
   }
 
-  function executeCommands(commands) {
+  async function executeCommands(commands) {
     let moveOk = true, itemOk = true;
     for (const cmd of commands) {
       if (cmd.type === "move") {
         moveOk = executeMove(cmd.memberNumber, cmd.direction);
+      } else if (cmd.type === "moveTo") {
+        moveOk = await executeMoveTo(cmd.memberNumber, cmd.targetNumber, cmd.side);
       } else if (cmd.type === "itemadd") {
         itemOk = executeItemAdd(cmd.memberNumber, cmd.item);
       } else if (cmd.type === "itemdel") {
@@ -541,8 +597,7 @@
 
       // 执行操作
       if (commands.length > 0) {
-        const result = executeCommands(commands);
-        // 如果有移动指令但失败，不发额外消息（LLM 自然语气已经包含了）
+        const result = await executeCommands(commands);
         console.log("[MisakaChat] 操作执行:", commands, result);
       }
 
