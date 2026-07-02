@@ -413,7 +413,16 @@
             resolve(null);
             return;
           }
-          matches.sort((a, b) => (b.seen || 0) - (a.seen || 0));
+          const score = (d) => {
+            const name = (d.name || "").toLowerCase();
+            const nick = (d.lastNick || "").toLowerCase();
+            const mn = d.memberNumber ? d.memberNumber.toString() : "";
+            if (mn === query) return 1000;
+            if (name === query || nick === query) return 900;
+            if (name.startsWith(query) || nick.startsWith(query) || mn.startsWith(query)) return 700;
+            return 100;
+          };
+          matches.sort((a, b) => (score(b) - score(a)) || ((b.seen || 0) - (a.seen || 0)));
           const top = matches.slice(0, 3).map(d => {
             const info = {
               name: d.name,
@@ -467,9 +476,59 @@
     ];
     for (const p of patterns) {
       const m = content.match(p);
-      if (m && m[1]) return m[1].trim();
+      if (m && m[1]) {
+        const normalized = normalizeQueryTarget(m[1]);
+        if (normalized) return normalized;
+      }
     }
     return null;
+  }
+
+  function normalizeQueryTarget(raw) {
+    if (!raw) return null;
+    let q = String(raw).trim();
+    q = q
+      .replace(/^(御坂|御搬|misaka)[,，、\s]*/i, "")
+      .replace(/^(刚刚|剛剛|刚才|剛才|刚刚的|剛剛的|刚才的|剛才的)\s*/i, "")
+      .replace(/^(这个|這個|该|該)\s*/i, "")
+      .replace(/^(玩家|角色|成员|成員|member|player)\s*/i, "")
+      .replace(/^(id|ID|#|编号|編號|成员编号|成員編號)\s*/i, "")
+      .replace(/[？?。.!！,，、：:；;]+$/g, "")
+      .trim();
+    q = q
+      .replace(/^(玩家|角色|成员|成員|member|player)\s*/i, "")
+      .replace(/^(id|ID|#|编号|編號|成员编号|成員編號)\s*/i, "")
+      .trim();
+    return q || null;
+  }
+
+  function queryCurrentRoom(nameOrId) {
+    if (typeof ChatRoomCharacter === "undefined" || !Array.isArray(ChatRoomCharacter)) return null;
+    const query = String(nameOrId || "").toLowerCase().trim();
+    if (!query) return null;
+    const matches = ChatRoomCharacter
+      .filter(c => {
+        const mn = c.MemberNumber ? c.MemberNumber.toString() : "";
+        const name = (c.Name || "").toLowerCase();
+        const nick = (c.Nickname || "").toLowerCase();
+        return mn === query || mn.includes(query) || name.includes(query) || nick.includes(query);
+      })
+      .slice(0, 3)
+      .map(c => {
+        const p = typeof MisakaPersona !== "undefined" ? MisakaPersona.extractProfile(c) : null;
+        return {
+          name: c.Name || "",
+          lastNick: c.Nickname || "",
+          memberNumber: c.MemberNumber,
+          owner: p && p.owner ? p.owner.replace(/^主人:\s*/, "") : "无",
+          lovers: p && p.lover ? p.lover.replace(/^恋人:\s*/, "") : "无",
+          itemCount: p ? p.itemCount : undefined,
+          lockCount: p ? p.lockCount : undefined,
+          description: p && p.description ? p.description.slice(0, 200) : "",
+          online: true
+        };
+      });
+    return matches.length > 0 ? matches : null;
   }
 
   async function handleReply(senderNum, senderName, content) {
@@ -558,20 +617,35 @@
           }
         } catch(e) {}
         
-        // 再查 BCE profiles（历史快照）
+        // 当前房间实时查询优先，再查 BCE profiles（历史快照）
+        const currentRoomResults = queryCurrentRoom(queryTarget);
         const results = await queryProfile(queryTarget);
-        if (results) {
+        if (currentRoomResults || results) {
           queryInfo = `\n\n【查询结果：${queryTarget}】\n`;
           if (roomlogResult) queryInfo += `${roomlogResult}\n`;
-          queryInfo += results.map(r => {
-            let line = `${r.lastNick || r.name} (#${r.memberNumber}) - 档案查看: ${r.seen}`;
-            if (r.owner) line += ` | 主人: ${r.owner}`;
-            if (r.lovers) line += ` | 恋人: ${r.lovers}`;
-            if (r.itemCount !== undefined) line += ` | ${r.itemCount}件束缚, ${r.lockCount}把锁`;
-            if (r.description) line += `\n描述: ${r.description}`;
-            return line;
-          }).join("\n");
-          queryInfo += "\n（以上是档案数据库中的记录，你可以基于此回答用户的问题）";
+          if (currentRoomResults) {
+            queryInfo += "当前房间实时匹配:\n";
+            queryInfo += currentRoomResults.map(r => {
+              let line = `${r.lastNick || r.name} (#${r.memberNumber}) - 当前在线`;
+              if (r.owner) line += ` | 主人: ${r.owner}`;
+              if (r.lovers) line += ` | 恋人: ${r.lovers}`;
+              if (r.itemCount !== undefined) line += ` | ${r.itemCount}件束缚, ${r.lockCount}把锁`;
+              if (r.description) line += `\n描述: ${r.description}`;
+              return line;
+            }).join("\n") + "\n";
+          }
+          if (results) {
+            queryInfo += "BCE 档案记录:\n";
+            queryInfo += results.map(r => {
+              let line = `${r.lastNick || r.name} (#${r.memberNumber}) - 档案查看: ${r.seen}`;
+              if (r.owner) line += ` | 主人: ${r.owner}`;
+              if (r.lovers) line += ` | 恋人: ${r.lovers}`;
+              if (r.itemCount !== undefined) line += ` | ${r.itemCount}件束缚, ${r.lockCount}把锁`;
+              if (r.description) line += `\n描述: ${r.description}`;
+              return line;
+            }).join("\n");
+          }
+          queryInfo += "\n（优先相信当前房间实时匹配；BCE 档案的时间是档案查看时间，不是实际在线时间）";
         } else if (roomlogResult) {
           queryInfo = `\n\n【查询结果：${queryTarget}】\n${roomlogResult}\n（未找到 BCE 档案记录）`;
         } else {
