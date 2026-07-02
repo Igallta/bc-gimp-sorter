@@ -396,7 +396,7 @@
         }
         const tx = db.transaction("profiles", "readonly");
         const store = tx.objectStore("profiles");
-        allReq = store.getAll();
+        const allReq = store.getAll();
         allReq.onsuccess = () => {
           const data = allReq.result || [];
           const query = nameOrId.toLowerCase().trim();
