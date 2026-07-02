@@ -827,14 +827,15 @@
     // 暴露给外部
     window.__misakaOnMessage = onChatRoomMessage;
 
-    // wrap window.ChatRoomMessage（只在新实例上 wrap，旧实例不会覆盖）
-    if (isCurrent() && !window.__misakaWrapped) {
-      const origChatRoomMessage = window.ChatRoomMessage;
+    // wrap window.ChatRoomMessage. Rebind on every injection because an old wrapper
+    // closes over the old instance and would otherwise ignore new messages.
+    if (isCurrent()) {
+      const origChatRoomMessage = window.__misakaOrigChatRoomMessage || window.ChatRoomMessage;
       window.__misakaOrigChatRoomMessage = origChatRoomMessage;
       window.__misakaWrapped = true;
       window.ChatRoomMessage = function(data) {
         try {
-          if (data && data.Content && window.__misakaOnMessage && isCurrent()) {
+          if (data && data.Content && window.__misakaOnMessage) {
             window.__misakaOnMessage(data);
           }
         } catch(e) {
@@ -842,7 +843,7 @@
         }
         return origChatRoomMessage.apply(this, arguments);
       };
-      console.log("[MisakaChat] ChatRoomMessage wrapper 已设置");
+      console.log("[MisakaChat] ChatRoomMessage wrapper 已设置/刷新");
     }
 
     // hook 聊天命令
