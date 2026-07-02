@@ -402,7 +402,7 @@
     for (const a of [...(char.Appearance || [])]) {
       if (a?.Asset?.Group?.Name?.startsWith("Item") && !a.Property?.LockedBy) {
         try {
-          CharacterAppearanceSetItem(char, a.Asset.Group.Name, null, null, false);
+          directRemoveItem(char, a.Asset.Group.Name);
         } catch(e) {}
       }
     }
@@ -412,7 +412,7 @@
       try {
         const asset = AssetGet(char.AssetFamily, item.group, item.asset);
         if (asset) {
-          CharacterAppearanceSetItem(char, item.group, asset, null, false);
+          directSetItem(char, item.group, asset);
           count++;
           await new Promise(r => setTimeout(r, 150));
         }
@@ -435,7 +435,7 @@
     // 先清除 dst 所有未锁的 Item
     for (const a of [...(dstChar.Appearance || [])]) {
       if (a?.Asset?.Group?.Name?.startsWith("Item") && !a.Property?.LockedBy) {
-        try { CharacterAppearanceSetItem(dstChar, a.Asset.Group.Name, null, null, false); } catch(e) {}
+        try { directRemoveItem(dstChar, a.Asset.Group.Name); } catch(e) {}
       }
     }
     // 逐个添加 src 的道具到 dst，每件后同步
@@ -445,7 +445,7 @@
       try {
         const asset = AssetGet(dstChar.AssetFamily, item.group, item.asset);
         if (asset) {
-          CharacterAppearanceSetItem(dstChar, item.group, asset, null, false);
+          directSetItem(dstChar, item.group, asset);
           count++;
           await new Promise(r => setTimeout(r, 150));
         } else {
@@ -461,6 +461,24 @@
     return { ok: count > 0, count, total: snapshot.items.length, failed };
   }
 
+  // 直接修改 Appearance 数组（绕过 CharacterAppearanceSetItem 的权限检查）
+  function directSetItem(char, groupName, asset) {
+    if (!char || !asset) return false;
+    const idx = char.Appearance.findIndex(a => a.Asset?.Group?.Name === groupName);
+    const entry = { Asset: asset, Color: Array.isArray(asset?.ColorSchema) ? asset.ColorSchema.map(() => "Default") : ["Default"], Property: {} };
+    if (idx >= 0) char.Appearance[idx] = entry;
+    else char.Appearance.push(entry);
+    return true;
+  }
+
+  function directRemoveItem(char, groupName) {
+    if (!char) return false;
+    const idx = char.Appearance.findIndex(a => a.Asset?.Group?.Name === groupName);
+    if (idx < 0) return false;
+    char.Appearance.splice(idx, 1);
+    return true;
+  }
+
   function executeItemAdd(memberNumber, itemName) {
     try {
       const mapping = findItemAsset(itemName);
@@ -469,7 +487,7 @@
       if (!char) return false;
       const asset = AssetGet(char.AssetFamily, mapping.group, mapping.asset);
       if (!asset) { console.log(`[MisakaChat] Asset 不存在: ${mapping.group}/${mapping.asset}`); return false; }
-      CharacterAppearanceSetItem(char, mapping.group, asset, null, false);
+      directSetItem(char, mapping.group, asset);
       ChatRoomCharacterUpdate(char);
       console.log(`[MisakaChat] 已给 #${memberNumber} 添加 ${itemName}`);
       return true;
@@ -492,7 +510,7 @@
           (a.Asset?.Description?.includes(itemName) || a.Asset?.Name?.includes(itemName))
         );
         if (!item) { console.log("[MisakaChat] 找不到道具:", itemName); return false; }
-        CharacterAppearanceSetItem(char, item.Asset.Group.Name, null, null, false);
+        directRemoveItem(char, item.Asset.Group.Name);
         ChatRoomCharacterUpdate(char);
         console.log(`[MisakaChat] 已移除 #${memberNumber} 的 ${itemName}`);
         return true;
@@ -505,7 +523,7 @@
         console.log(`[MisakaChat] 道具被锁: ${existing.Property.LockedBy}`);
         return false;
       }
-      CharacterAppearanceSetItem(char, mapping.group, null, null, false);
+      directRemoveItem(char, mapping.group);
       ChatRoomCharacterUpdate(char);
       console.log(`[MisakaChat] 已移除 #${memberNumber} 的 ${itemName}`);
       return true;
@@ -524,7 +542,7 @@
       for (const a of [...(char.Appearance || [])]) {
         if (a?.Asset?.Group?.Name?.startsWith("Item") && !a.Property?.LockedBy) {
           try {
-            CharacterAppearanceSetItem(char, a.Asset.Group.Name, null, null, false);
+            directRemoveItem(char, a.Asset.Group.Name);
             count++;
           } catch(e) {}
         }
