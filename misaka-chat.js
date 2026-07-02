@@ -315,18 +315,33 @@
     
     // 记录房间进出事件（系统消息）
     if (data.Type === "Action" || data.Type === "LocalMessage" || data.Type === "ServerMessage") {
-      if (/进来了|进入了|加入了/.test(content)) {
-        const match = content.match(/^(.+?)\s*进[来了入]|^(.+?)\s*加入了/);
-        const who = match ? (match[1] || match[2]).trim() : senderName;
+      // BC 进入消息：Content="ServerEnter"，Dictionary 里有角色名
+      if (data.Content === "ServerEnter" || /进来了|进入了|加入了/.test(content)) {
+        // 从 Dictionary 提取名字
+        let who = senderName;
+        if (data.Dictionary && Array.isArray(data.Dictionary)) {
+          const nameEntry = data.Dictionary.find(d => d.Tag === "SourceCharacter" || d.Tag === "TargetCharacter");
+          if (nameEntry && nameEntry.MemberNumber) {
+            // 查找角色
+            const c = ChatRoomCharacter.find(ch => ch.MemberNumber === nameEntry.MemberNumber);
+            if (c) who = c.Nickname || c.Name;
+          }
+        }
         state.roomJoinLog = state.roomJoinLog || [];
-        state.roomJoinLog.push({ name: who, time: Date.now(), action: "join" });
+        state.roomJoinLog.push({ name: who, memberNum: data.Sender, time: Date.now(), action: "join" });
         if (state.roomJoinLog.length > 50) state.roomJoinLog.shift();
       }
-      if (/掉了|掉线了|离开了|退出了/.test(content)) {
-        const match = content.match(/^(.+?)\s*(?:掉了|掉线了|离开了|退出了)/);
-        const who = match ? match[1].trim() : senderName;
+      if (/掉了|掉线了|离开了|退出了/.test(content) || data.Content === "ServerLeave" || data.Content === "ServerDisconnect") {
+        let who = senderName;
+        if (data.Dictionary && Array.isArray(data.Dictionary)) {
+          const nameEntry = data.Dictionary.find(d => d.Tag === "SourceCharacter" || d.Tag === "TargetCharacter");
+          if (nameEntry && nameEntry.MemberNumber) {
+            const c = ChatRoomCharacter.find(ch => ch.MemberNumber === nameEntry.MemberNumber);
+            if (c) who = c.Nickname || c.Name;
+          }
+        }
         state.roomJoinLog = state.roomJoinLog || [];
-        state.roomJoinLog.push({ name: who, time: Date.now(), action: "leave" });
+        state.roomJoinLog.push({ name: who, memberNum: data.Sender, time: Date.now(), action: "leave" });
         if (state.roomJoinLog.length > 50) state.roomJoinLog.shift();
       }
     }
