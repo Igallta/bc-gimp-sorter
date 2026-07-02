@@ -321,7 +321,10 @@
     if (state.busy) return;
     // window 级别 busy 锁
     if (window.__misakaGlobalBusy) return;
+    // 更硬的锁：正在回复中
+    if (window.__misakaReplyInProgress) return;
     window.__misakaGlobalBusy = true;
+    window.__misakaReplyInProgress = true;
 
     // 频率控制
     const nowTime = Date.now();
@@ -427,6 +430,7 @@
     } finally {
       state.busy = false;
       window.__misakaGlobalBusy = false;
+      window.__misakaReplyInProgress = false;
     }
   }
 

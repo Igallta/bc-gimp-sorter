@@ -68,7 +68,15 @@ ${profileText}${summaryText}
       if (char.Ownership.MemberNumber) ownerInfo += ` (#${char.Ownership.MemberNumber})`;
     }
     let loverInfo = "";
-    if (char.Lovership && char.Lovership.Name) {
+    if (Array.isArray(char.Lovership) && char.Lovership.length > 0) {
+      const lovers = char.Lovership.map(l => {
+        let s = l.Name;
+        if (l.MemberNumber) s += ` (#${l.MemberNumber})`;
+        if (l.Stage === 2) s += "(正式)";
+        return s;
+      }).join(", ");
+      loverInfo = `恋人: ${lovers}`;
+    } else if (char.Lovership && char.Lovership.Name) {
       loverInfo = `恋人: ${char.Lovership.Name}`;
       if (char.Lovership.MemberNumber) loverInfo += ` (#${char.Lovership.MemberNumber})`;
     }
