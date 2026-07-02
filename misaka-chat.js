@@ -343,6 +343,64 @@
     handleReply(senderNum, senderName, content);
   }
 
+  // 从 BCE profiles 数据库查询玩家档案
+  async function queryProfile(nameOrId) {
+    return new Promise((resolve) => {
+      const req = indexedDB.open("bce-past-profiles");
+      req.onsuccess = (e) => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains("profiles")) {
+          resolve(null);
+          return;
+        }
+        const tx = db.transaction("profiles", "readonly");
+        const store = tx.objectStore("profiles");
+        const allReq = store.getAll();
+        allReq.onsuccess = () => {
+          const data = allReq.result || [];
+          const query = nameOrId.toLowerCase().trim();
+          // 按名字、昵称或 ID 匹配
+          const matches = data.filter(d => {
+            const name = (d.name || "").toLowerCase();
+            const nick = (d.lastNick || "").toLowerCase();
+            const mn = d.memberNumber ? d.memberNumber.toString() : "";
+            return name.includes(query) || nick.includes(query) || mn.includes(query);
+          });
+          if (matches.length === 0) {
+            resolve(null);
+            return;
+          }
+          // 取最近查看的 5 条
+          matches.sort((a, b) => (b.seen || 0) - (a.seen || 0));
+          const top = matches.slice(0, 5).map(d => ({
+            name: d.name,
+            lastNick: d.lastNick || "",
+            memberNumber: d.memberNumber,
+            seen: d.seen ? new Date(d.seen).toLocaleString("zh-CN") : "未知"
+          }));
+          resolve(top);
+        };
+        allReq.onerror = () => resolve(null);
+      };
+      req.onerror = () => resolve(null);
+    });
+  }
+
+  // 检测是否是查询请求
+  function parseQueryRequest(content) {
+    // 匹配"查询XX"、"查XX"、"XX上次在线"、"XX上次发言"、"XX下线时间"等
+    const patterns = [
+      /(?:查询|查一下|查查|查)\s*[「「【]?(.+?)[」」】]?(?:上次|的).*(?:在线|下线|发言|出现|登录|来过)/i,
+      /(?:查询|查一下|查查|查)\s*[「「【]?(.+?)[」」】]?/i,
+      /[「「【]?(.+?)[」」】]?(?:上次|的).*(?:在线|下线|发言|出现|登录|来过)/i,
+    ];
+    for (const p of patterns) {
+      const m = content.match(p);
+      if (m && m[1]) return m[1].trim();
+    }
+    return null;
+  }
+
   async function handleReply(senderNum, senderName, content) {
     state.busy = true;
     window.__misakaGlobalBusy = true;
@@ -390,7 +448,8 @@
           .filter(c => c.MemberNumber !== Player.MemberNumber && c.MemberNumber !== senderNum)
           .map(c => {
             const p = MisakaPersona.extractProfile(c);
-            let line = `${p.name} (#${p.memberNumber})`;
+            const isDoll = (c.Nickname || c.Name || "").startsWith("GIMP ");
+            let line = `${isDoll ? "[娃娃]" : "[玩家]"} ${p.name} (#${p.memberNumber})`;
             if (p.owner) line += ` | ${p.owner}`;
             if (p.lover) line += ` | ${p.lover}`;
             if (p.lockCount || p.itemCount) line += ` | ${p.itemCount}件束缚, ${p.lockCount}把锁`;
@@ -411,7 +470,23 @@
           content: `${m.senderName}: ${m.content}`
         }));
 
-      const systemPrompt = getSystemPrompt() + profileInfo;
+      // 检测是否有查询请求
+      const queryTarget = parseQueryRequest(content);
+      let queryInfo = "";
+      if (queryTarget) {
+        const results = await queryProfile(queryTarget);
+        if (results) {
+          queryInfo = "\n\n【查询结果：" + queryTarget + "】\n";
+          queryInfo += results.map(r => 
+            `${r.lastNick || r.name} (#${r.memberNumber}) - 上次查看: ${r.seen}`
+          ).join("\n");
+          queryInfo += "\n（以上是 BCE 档案数据库中的记录，你可以基于此回答用户的问题）";
+        } else {
+          queryInfo = `\n\n【查询结果：${queryTarget}】\n未找到该玩家的档案记录。如实告诉用户查不到。`;
+        }
+      }
+
+      const systemPrompt = getSystemPrompt() + profileInfo + queryInfo;
       const reply = await callLLM(systemPrompt, contextMessages);
 
       if (!reply) return;
