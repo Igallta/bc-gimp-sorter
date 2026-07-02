@@ -52,7 +52,7 @@ window.MisakaPersona = {
 对方问技术问题 → 回复: "...不知道你在说什么"
 ${profileText}${summaryText}
 
-【当前房间】Gimp Dolls — 存放被束缚的娃娃（GIMP XXX）的房间。你的职责是把重连的娃娃搬回前排。`;
+【当前房间】Gimp Dolls — 存放被束缚的娃娃（GIMP XXX）的房间。你的职责是把重连的娃娃搬回前排。\nGIMP XXX 中的数字是娃娃编号，不是被绑次数或其他数据。`;
   },
 
   extractProfile(char) {
@@ -83,16 +83,21 @@ ${profileText}${summaryText}
     
     // 提取穿着信息
     let appearance = "";
+    let lockCount = 0;
+    let itemCount = 0;
     if (char.Appearance && Array.isArray(char.Appearance)) {
-      const items = char.Appearance
-        .filter(a => a.Asset && a.Asset.Name)
-        .map(a => {
-          let item = `${a.Asset.Group.Name}/${a.Asset.Name}`;
-          if (a.Property && a.Property.LockedBy) item += `(锁:${a.Property.LockedBy})`;
-          return item;
-        })
-        .join(", ");
-      appearance = items.slice(0, 800); // 截断防止太长
+      for (const a of char.Appearance) {
+        if (!a.Asset || !a.Asset.Name) continue;
+        const isItem = a.Asset.Group.Name.startsWith("Item");
+        if (isItem) itemCount++;
+        let item = `${a.Asset.Group.Name}/${a.Asset.Name}`;
+        if (a.Property && a.Property.LockedBy) {
+          item += `(锁:${a.Property.LockedBy})`;
+          lockCount++;
+        }
+        if (isItem) appearance += item + ", ";
+      }
+      appearance = appearance.slice(0, 800);
     }
     
     return {
@@ -103,7 +108,9 @@ ${profileText}${summaryText}
       description: desc.slice(0, 500),
       owner: ownerInfo || null,
       lover: loverInfo || null,
-      appearance: appearance || null
+      appearance: appearance || null,
+      lockCount,
+      itemCount
     };
   },
 

@@ -358,7 +358,9 @@
           if (myProfile.owner) profileInfo += ` | ${myProfile.owner}`;
           if (myProfile.lover) profileInfo += ` | ${myProfile.lover}`;
           if (myProfile.description) profileInfo += `\n描述: ${myProfile.description}`;
-          if (myProfile.appearance) profileInfo += `\n穿着: ${myProfile.appearance}`;
+          if (myProfile.appearance) profileInfo += `\n束缚物品: ${myProfile.appearance}`;
+          if (myProfile.lockCount) profileInfo += `\n锁数量: ${myProfile.lockCount}`;
+          if (myProfile.itemCount) profileInfo += `\n束缚件数: ${myProfile.itemCount}`;
         }
 
         // 发送者的详细资料
@@ -371,7 +373,9 @@
           if (profile.owner) profileInfo += ` | ${profile.owner}`;
           if (profile.lover) profileInfo += ` | ${profile.lover}`;
           if (profile.description) profileInfo += `\n描述: ${profile.description}`;
-          if (profile.appearance) profileInfo += `\n穿着: ${profile.appearance}`;
+          if (profile.appearance) profileInfo += `\n束缚物品: ${profile.appearance}`;
+          if (profile.lockCount) profileInfo += `\n锁数量: ${profile.lockCount}`;
+          if (profile.itemCount) profileInfo += `\n束缚件数: ${profile.itemCount}`;
         }
         
         // 房间里所有其他角色的完整资料（含描述）
@@ -382,6 +386,7 @@
             let line = `${p.name} (#${p.memberNumber})`;
             if (p.owner) line += ` | ${p.owner}`;
             if (p.lover) line += ` | ${p.lover}`;
+            if (p.lockCount || p.itemCount) line += ` | ${p.itemCount}件束缚, ${p.lockCount}把锁`;
             if (p.description) line += `\n描述: ${p.description.slice(0, 300)}`;
             return line;
           }).join("\n");
