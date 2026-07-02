@@ -393,6 +393,22 @@
       .replace(/[\s#＃,，、:：;；.!！?？「」【】（）()_\-]+/g, "");
   }
 
+  function scoreLookupCandidate(query, candidate) {
+    const q = String(query || "").toLowerCase().trim();
+    const qn = normalizeLookupText(q);
+    const c = String(candidate || "").toLowerCase().trim();
+    const cn = normalizeLookupText(c);
+    if (!q || !qn || !c || !cn) return 0;
+    if (c === q) return 900;
+    if (cn === qn) return 850;
+    if (c.startsWith(q)) return 700;
+    if (cn.startsWith(qn)) return 650;
+    // Only use fuzzy contains for meaningful query strings. Short fragments cause
+    // surprising cross-player hits in busy rooms.
+    if (qn.length >= 4 && (c.includes(q) || cn.includes(qn))) return 100;
+    return 0;
+  }
+
   // 从 BCE profiles 数据库查询玩家档案
   async function queryProfile(nameOrId) {
     return new Promise((resolve) => {
@@ -409,32 +425,24 @@
         allReq.onsuccess = () => {
           const data = allReq.result || [];
           const query = nameOrId.toLowerCase().trim();
-          const queryNorm = normalizeLookupText(query);
           const matches = data.filter(d => {
-            const name = (d.name || "").toLowerCase();
-            const nick = (d.lastNick || "").toLowerCase();
             const mn = d.memberNumber ? d.memberNumber.toString() : "";
-            return name.includes(query) || nick.includes(query) || mn.includes(query)
-              || normalizeLookupText(name).includes(queryNorm)
-              || normalizeLookupText(nick).includes(queryNorm)
-              || normalizeLookupText(mn).includes(queryNorm);
+            return scoreLookupCandidate(query, d.name) > 0
+              || scoreLookupCandidate(query, d.lastNick) > 0
+              || scoreLookupCandidate(query, mn) > 0;
           });
           if (matches.length === 0) {
             resolve(null);
             return;
           }
           const score = (d) => {
-            const name = (d.name || "").toLowerCase();
-            const nick = (d.lastNick || "").toLowerCase();
             const mn = d.memberNumber ? d.memberNumber.toString() : "";
-            const nameNorm = normalizeLookupText(name);
-            const nickNorm = normalizeLookupText(nick);
             if (mn === query) return 1000;
-            if (name === query || nick === query) return 900;
-            if (nameNorm === queryNorm || nickNorm === queryNorm) return 850;
-            if (name.startsWith(query) || nick.startsWith(query) || mn.startsWith(query)) return 700;
-            if (nameNorm.startsWith(queryNorm) || nickNorm.startsWith(queryNorm)) return 650;
-            return 100;
+            return Math.max(
+              scoreLookupCandidate(query, d.name),
+              scoreLookupCandidate(query, d.lastNick),
+              scoreLookupCandidate(query, mn)
+            );
           };
           matches.sort((a, b) => (score(b) - score(a)) || ((b.seen || 0) - (a.seen || 0)));
           const top = matches.slice(0, 3).map(d => {
@@ -520,30 +528,23 @@
   function queryCurrentRoom(nameOrId) {
     if (typeof ChatRoomCharacter === "undefined" || !Array.isArray(ChatRoomCharacter)) return null;
     const query = String(nameOrId || "").toLowerCase().trim();
-    const queryNorm = normalizeLookupText(query);
     if (!query) return null;
     const matches = ChatRoomCharacter
       .filter(c => {
         const mn = c.MemberNumber ? c.MemberNumber.toString() : "";
-        const name = (c.Name || "").toLowerCase();
-        const nick = (c.Nickname || "").toLowerCase();
-        return mn === query || mn.includes(query) || name.includes(query) || nick.includes(query)
-          || normalizeLookupText(name).includes(queryNorm)
-          || normalizeLookupText(nick).includes(queryNorm);
+        return scoreLookupCandidate(query, c.Name) > 0
+          || scoreLookupCandidate(query, c.Nickname) > 0
+          || scoreLookupCandidate(query, mn) > 0;
       })
       .sort((a, b) => {
         const score = (c) => {
           const mn = c.MemberNumber ? c.MemberNumber.toString() : "";
-          const name = (c.Name || "").toLowerCase();
-          const nick = (c.Nickname || "").toLowerCase();
-          const nameNorm = normalizeLookupText(name);
-          const nickNorm = normalizeLookupText(nick);
           if (mn === query) return 1000;
-          if (name === query || nick === query) return 900;
-          if (nameNorm === queryNorm || nickNorm === queryNorm) return 850;
-          if (name.startsWith(query) || nick.startsWith(query) || mn.startsWith(query)) return 700;
-          if (nameNorm.startsWith(queryNorm) || nickNorm.startsWith(queryNorm)) return 650;
-          return 100;
+          return Math.max(
+            scoreLookupCandidate(query, c.Name),
+            scoreLookupCandidate(query, c.Nickname),
+            scoreLookupCandidate(query, mn)
+          );
         };
         return score(b) - score(a);
       })
@@ -746,6 +747,15 @@
 
       // 发送到 BC
       if (typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom") {
+        const sentKey = finalReply;
+        const sentAt = Date.now();
+        if (window.__misakaLastSentReply === sentKey && sentAt - (window.__misakaLastSentReplyTime || 0) < 5000) {
+          console.warn("[MisakaChat] 跳过重复发送:", finalReply);
+          return;
+        }
+        window.__misakaLastSentReply = sentKey;
+        window.__misakaLastSentReplyTime = sentAt;
+
         console.log("[MisakaChat] 准备发送回复:", finalReply);
         
         // 检查是否有 | 分隔符（动作|说话）
@@ -767,14 +777,8 @@
           console.log("[MisakaChat] ChatRoomSendChat 已调用");
         }
         
-        // 记录自己的回复
-        state.recentMessages.push({
-          senderName: "御搬",
-          content: finalReply,
-          isSelf: true,
-          time: Date.now()
-        });
-        if (state.recentMessages.length > 30) state.recentMessages.shift();
+        // 自己的消息会由 ChatRoomMessage wrapper 回流记录，避免这里手动
+        // push 导致上下文里出现重复回复。
       }
 
       // 可能生成摘要
