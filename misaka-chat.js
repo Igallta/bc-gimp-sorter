@@ -371,8 +371,17 @@
     window.__misakaGlobalBusy = true;
     window.__misakaReplyInProgress = true;
 
-    // 触发回复
-    handleReply(senderNum, senderName, content);
+    // 触发回复（带硬超时保护）
+    const replyTimeout = setTimeout(() => {
+      console.error("[MisakaChat] 回复硬超时，释放锁");
+      state.busy = false;
+      window.__misakaGlobalBusy = false;
+      window.__misakaReplyInProgress = false;
+    }, 45000);
+    
+    handleReply(senderNum, senderName, content).finally(() => {
+      clearTimeout(replyTimeout);
+    });
   }
 
   // 从 BCE profiles 数据库查询玩家档案
