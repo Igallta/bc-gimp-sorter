@@ -376,7 +376,9 @@
           const p = MisakaPersona.extractProfile(c);
           let line = `${p.name} (#${p.memberNumber})`;
           if (p.owner) line += ` — ${p.owner}`;
+          else line += ` — 无主人`;
           if (p.lover) line += ` — ${p.lover}`;
+          else line += ` — 无恋人`;
           return line;
         }).join("\n");
         if (roomRoster) {
