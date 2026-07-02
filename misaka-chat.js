@@ -478,26 +478,18 @@
       });
     }
 
-    // 监听 ServerSocket 的 ChatRoomMessage 事件（比 hookFunction 更可靠）
+    // 监听 ServerSocket 的 ChatRoomMessage 事件
     if (typeof ServerSocket !== "undefined" && typeof ServerSocket.on === "function") {
       ServerSocket.on("ChatRoomMessage", onChatRoomMessage);
       console.log("[MisakaChat] 监听 ServerSocket ChatRoomMessage 事件");
     }
 
-    // 同时 hook window.ChatRoomMessage 函数作为双保险
-    // （ServerSocket.on 在某些 BC 版本可能不触发）
-    const origChatRoomMessage = window.ChatRoomMessage;
-    window.__misakaOnMessage = onChatRoomMessage;
-    window.ChatRoomMessage = function(data) {
-      try {
-        if (data && data.Content) {
-          onChatRoomMessage(data);
-        }
-      } catch(e) {
-        console.error("[MisakaChat] wrapper error:", e.message);
-      }
-      return origChatRoomMessage.apply(this, arguments);
-    };
+    // 暴露给外部 wrapper（只绑一次，旧实例不覆盖）
+    if (!window.__misakaOnMessageBound) {
+      window.__misakaOnMessage = onChatRoomMessage;
+      window.__misakaOnMessageBound = true;
+    }
+    // 不再 wrap window.ChatRoomMessage（多次 wrap 会导致重复调用）
 
     // hook 聊天命令
     mod.hookFunction("ChatRoomSendChat", 10, (args, next) => {
