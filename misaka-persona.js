@@ -205,10 +205,10 @@ ${rosterText}${profileText}${summaryText}
     const lines = [];
     // 先收集 mod 覆盖信息
     for (const c of chars) {
-      if (c.MemberNumber === selfMemberNumber) continue;
+      const isSelf = c.MemberNumber === selfMemberNumber;
       const name = c.Nickname || c.Name || "?";
       const isDoll = name.startsWith("GIMP ");
-      const tag = isDoll ? "[娃娃]" : "[玩家]";
+      const tag = isDoll ? "[娃娃]" : (isSelf ? "[自己]" : "[玩家]");
 
       // 发色
       const hairParts = this.getEffectiveHairParts(c);
