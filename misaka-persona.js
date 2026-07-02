@@ -63,7 +63,8 @@ window.MisakaPersona = {
 ${profileText}${summaryText}
 
 【当前房间】Gimp Dolls — 房间。
-GIMP XXX 中的数字是编号。`;
+房间里的 GIMP XXX 是被束缚的人偶，编号就是名字里的数字。
+你是房间管理员，清楚谁是娃娃谁是玩家。不要把普通玩家归类为娃娃。`;
   },
 
   extractProfile(char) {
