@@ -190,35 +190,47 @@
             }
           });
         } else {
-          // fetch 回退
-          fetch(url, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "Authorization": "Bearer " + apiKey,
-              "HTTP-Referer": "https://igallta.github.io/bc-gimp-sorter/",
-              "X-Title": "Misaka BC Chat"
-            },
-            body: reqBody,
-            signal: AbortSignal.timeout(CONFIG.apiKeyTimeout)
-          })
-          .then(r => r.json())
-          .then(data => {
-            if (data.choices && data.choices.length > 0) {
-              resolve(data.choices[0].message.content.trim());
-            } else if (!isFallback && CONFIG.fallbackModel && model !== CONFIG.fallbackModel) {
-              doRequest(url, CONFIG.fallbackModel, true);
-            } else {
-              resolve(null);
+          // XHR 回退（BC CSP 拦 fetch 但不拦 XHR）
+          const xhr = new XMLHttpRequest();
+          xhr.open("POST", url, true);
+          xhr.setRequestHeader("Content-Type", "application/json");
+          xhr.setRequestHeader("Authorization", "Bearer " + apiKey);
+          xhr.setRequestHeader("HTTP-Referer", "https://igallta.github.io/bc-gimp-sorter/");
+          xhr.setRequestHeader("X-Title", "Misaka BC Chat");
+          xhr.timeout = CONFIG.apiKeyTimeout;
+          xhr.onload = () => {
+            try {
+              const data = JSON.parse(xhr.responseText);
+              if (data.choices && data.choices.length > 0) {
+                resolve(data.choices[0].message.content.trim());
+              } else if (!isFallback && CONFIG.fallbackModel && model !== CONFIG.fallbackModel) {
+                doRequest(url, CONFIG.fallbackModel, true);
+              } else {
+                resolve(null);
+              }
+            } catch (e) {
+              if (!isFallback && CONFIG.fallbackModel && model !== CONFIG.fallbackModel) {
+                doRequest(url, CONFIG.fallbackModel, true);
+              } else {
+                resolve(null);
+              }
             }
-          })
-          .catch(() => {
+          };
+          xhr.onerror = () => {
             if (!isFallback && CONFIG.fallbackModel && model !== CONFIG.fallbackModel) {
               doRequest(url, CONFIG.fallbackModel, true);
             } else {
               resolve(null);
             }
-          });
+          };
+          xhr.ontimeout = () => {
+            if (!isFallback && CONFIG.fallbackModel && model !== CONFIG.fallbackModel) {
+              doRequest(url, CONFIG.fallbackModel, true);
+            } else {
+              resolve(null);
+            }
+          };
+          xhr.send(reqBody);
         }
       };
 
