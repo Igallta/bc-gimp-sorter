@@ -343,13 +343,24 @@
       // 等待最小延迟
       await new Promise(r => setTimeout(r, CONFIG.replyDelayMs));
 
-      // 读取发送者的 BC profile
+      // 读取发送者和房间信息
       let profileInfo = "";
       if (typeof MisakaPersona !== "undefined" && typeof ChatRoomCharacter !== "undefined") {
+        // 御坂自己的信息
+        const myChar = ChatRoomCharacter.find(c => c.MemberNumber === Player.MemberNumber);
+        const myProfile = MisakaPersona.extractProfile(myChar);
+        if (myProfile) {
+          profileInfo += `\n\n【你的资料】${myProfile.name} (#${myProfile.memberNumber})`;
+          if (myProfile.ds) profileInfo += ` | ${myProfile.ds}`;
+          if (myProfile.owner) profileInfo += ` | ${myProfile.owner}`;
+          if (myProfile.lover) profileInfo += ` | ${myProfile.lover}`;
+        }
+
+        // 发送者的详细资料
         const char = ChatRoomCharacter.find(c => c.MemberNumber === senderNum);
         const profile = MisakaPersona.extractProfile(char);
         if (profile) {
-          profileInfo = `\n\n【发送者资料】${profile.name} (#${profile.memberNumber})`;
+          profileInfo += `\n\n【发送者资料】${profile.name} (#${profile.memberNumber})`;
           if (profile.ds) profileInfo += ` | ${profile.ds}`;
           if (profile.languages) profileInfo += ` | ${profile.languages.join("/")}`;
           if (profile.owner) profileInfo += ` | ${profile.owner}`;
@@ -357,7 +368,7 @@
           if (profile.about) profileInfo += `\n简介: ${profile.about}`;
         }
         
-        // 同时提供房间里所有角色的简要信息（名字 + 主人 + 恋人）
+        // 房间里所有角色的简要信息
         const roomRoster = ChatRoomCharacter.map(c => {
           const p = MisakaPersona.extractProfile(c);
           let line = `${p.name} (#${p.memberNumber})`;
@@ -383,8 +394,10 @@
 
       if (!reply) return;
 
-      // 长度截断
-      const finalReply = reply.slice(0, 120);
+      // 后处理：去掉开头的名字前缀（御坂: / 御搬: / Misaka: 等）
+      let finalReply = reply.replace(/^(御[搬坂]|Misaka|misaka)\s*[:：]\s*/i, "");
+      // 去掉开头多余的空格
+      finalReply = finalReply.trim().slice(0, 120);
 
       // 发送到 BC
       if (typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom") {
