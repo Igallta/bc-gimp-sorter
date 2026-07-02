@@ -340,8 +340,10 @@
       // 发送到 BC
       if (typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom") {
         // BC R129 正确发送方式：设置输入框 + 调用 ChatRoomSendChat
+        console.log("[MisakaChat] 准备发送回复:", finalReply);
         ElementValue("InputChat", finalReply);
         ChatRoomSendChat();
+        console.log("[MisakaChat] ChatRoomSendChat 已调用");
         
         // 记录自己的回复
         state.recentMessages.push({
