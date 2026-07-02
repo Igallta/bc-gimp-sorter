@@ -18,8 +18,8 @@
   const CONFIG = {
     enabled: true,
     apiBase: "https://openrouter.ai/api/v1/chat/completions",
-    model: "deepseek/deepseek-v4-pro",
-    fallbackModel: "meta-llama/llama-3.3-70b-instruct",
+    model: "openai/gpt-4o-mini",
+    fallbackModel: "deepseek/deepseek-v4-pro",
     maxTokens: 100,
     temperature: 0.8,
     maxContext: 10,          // 上下文消息条数
@@ -415,6 +415,10 @@
 
       // 后处理：去掉开头的名字前缀（御坂: / 御搬: / Misaka: 等）
       let finalReply = reply.replace(/^(御[搬坂]|Misaka|misaka)\s*[:：]\s*/i, "");
+      // 去掉两侧引号
+      finalReply = finalReply.replace(/^["""''''']+|["""''''']+$/g, "");
+      // 再次去掉可能暴露的前缀（去掉引号后可能露出名字）
+      finalReply = finalReply.replace(/^(御[搬坂]|Misaka|misaka)\s*[:：]\s*/i, "");
       // 去掉开头多余的空格
       finalReply = finalReply.trim().slice(0, 120);
 
