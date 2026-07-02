@@ -121,7 +121,7 @@
   async function callLLM(systemPrompt, contextMessages) {
     const apiKey = localStorage.getItem(storageKey("apikey")) || "";
     if (!apiKey) {
-      console.warn("[MisakaChat] 未设置 API key，用 /misaka key <key> 设置");
+      console.warn("[MisakaChat] 未设置 API key");
       return null;
     }
 
@@ -130,62 +130,100 @@
       ...contextMessages,
     ];
 
-    try {
-      const response = await fetch(CONFIG.apiBase, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${apiKey}`,
-          "HTTP-Referer": "https://igallta.github.io/bc-gimp-sorter/",
-          "X-Title": "Misaka BC Chat"
-        },
-        body: JSON.stringify({
-          model: CONFIG.model,
+    const body = JSON.stringify({
+      model: CONFIG.model,
+      messages: messages,
+      max_tokens: CONFIG.maxTokens,
+      temperature: CONFIG.temperature,
+    });
+
+    // 优先用 GM_xmlhttpRequest（不受页面 CSP 限制），回退到 fetch
+    const useGM = typeof GM_xmlhttpRequest !== "undefined";
+
+    return new Promise((resolve) => {
+      const doRequest = (url, model, isFallback) => {
+        const reqBody = JSON.stringify({
+          model: model,
           messages: messages,
           max_tokens: CONFIG.maxTokens,
           temperature: CONFIG.temperature,
-        }),
-        signal: AbortSignal.timeout(CONFIG.apiKeyTimeout)
-      });
+        });
 
-      if (!response.ok) {
-        console.error(`[MisakaChat] API ${response.status}: ${response.statusText}`);
-        // 尝试 fallback 模型
-        if (CONFIG.fallbackModel && CONFIG.model !== CONFIG.fallbackModel) {
-          const fallbackResp = await fetch(CONFIG.apiBase, {
+        if (useGM) {
+          GM_xmlhttpRequest({
             method: "POST",
+            url: url,
             headers: {
               "Content-Type": "application/json",
-              "Authorization": `Bearer ${apiKey}`,
+              "Authorization": "Bearer " + apiKey,
               "HTTP-Referer": "https://igallta.github.io/bc-gimp-sorter/",
               "X-Title": "Misaka BC Chat"
             },
-            body: JSON.stringify({
-              model: CONFIG.fallbackModel,
-              messages: messages,
-              max_tokens: CONFIG.maxTokens,
-              temperature: CONFIG.temperature,
-            }),
-            signal: AbortSignal.timeout(CONFIG.apiKeyTimeout)
+            data: reqBody,
+            timeout: CONFIG.apiKeyTimeout,
+            onload: (resp) => {
+              try {
+                const data = JSON.parse(resp.responseText);
+                if (data.choices && data.choices.length > 0) {
+                  resolve(data.choices[0].message.content.trim());
+                } else if (!isFallback && CONFIG.fallbackModel && model !== CONFIG.fallbackModel) {
+                  doRequest(url, CONFIG.fallbackModel, true);
+                } else {
+                  resolve(null);
+                }
+              } catch (e) {
+                console.error("[MisakaChat] 解析响应失败:", e.message);
+                if (!isFallback && CONFIG.fallbackModel && model !== CONFIG.fallbackModel) {
+                  doRequest(url, CONFIG.fallbackModel, true);
+                } else {
+                  resolve(null);
+                }
+              }
+            },
+            onerror: () => resolve(null),
+            ontimeout: () => {
+              if (!isFallback && CONFIG.fallbackModel && model !== CONFIG.fallbackModel) {
+                doRequest(url, CONFIG.fallbackModel, true);
+              } else {
+                resolve(null);
+              }
+            }
           });
-          if (fallbackResp.ok) {
-            const data = await fallbackResp.json();
-            return data.choices[0].message.content.trim();
-          }
+        } else {
+          // fetch 回退
+          fetch(url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": "Bearer " + apiKey,
+              "HTTP-Referer": "https://igallta.github.io/bc-gimp-sorter/",
+              "X-Title": "Misaka BC Chat"
+            },
+            body: reqBody,
+            signal: AbortSignal.timeout(CONFIG.apiKeyTimeout)
+          })
+          .then(r => r.json())
+          .then(data => {
+            if (data.choices && data.choices.length > 0) {
+              resolve(data.choices[0].message.content.trim());
+            } else if (!isFallback && CONFIG.fallbackModel && model !== CONFIG.fallbackModel) {
+              doRequest(url, CONFIG.fallbackModel, true);
+            } else {
+              resolve(null);
+            }
+          })
+          .catch(() => {
+            if (!isFallback && CONFIG.fallbackModel && model !== CONFIG.fallbackModel) {
+              doRequest(url, CONFIG.fallbackModel, true);
+            } else {
+              resolve(null);
+            }
+          });
         }
-        return null;
-      }
+      };
 
-      const data = await response.json();
-      return data.choices[0].message.content.trim();
-    } catch (e) {
-      if (e.name === "TimeoutError") {
-        console.warn("[MisakaChat] API 超时");
-      } else {
-        console.error("[MisakaChat] API 调用失败:", e.message);
-      }
-      return null;
-    }
+      doRequest(CONFIG.apiBase, CONFIG.model, false);
+    });
   }
 
   // === 人设加载 ===
