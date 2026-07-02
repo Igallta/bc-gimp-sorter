@@ -393,6 +393,18 @@
       .replace(/[\s#＃,，、:：;；.!！?？「」【】（）()_\-]+/g, "");
   }
 
+  function lookupAliases(value) {
+    const raw = String(value || "").trim();
+    const n = normalizeLookupText(raw);
+    const aliases = new Set([raw.toLowerCase(), n]);
+    const add = (...items) => items.forEach(item => {
+      aliases.add(String(item || "").toLowerCase());
+      aliases.add(normalizeLookupText(item));
+    });
+    if (n === "伊水") add("yishui", "Eshway", "182401");
+    return [...aliases].filter(Boolean);
+  }
+
   function scoreLookupCandidate(query, candidate) {
     const q = String(query || "").toLowerCase().trim();
     const qn = normalizeLookupText(q);
@@ -407,6 +419,10 @@
     // surprising cross-player hits in busy rooms.
     if (qn.length >= 4 && (c.includes(q) || cn.includes(qn))) return 100;
     return 0;
+  }
+
+  function bestLookupScore(query, candidate) {
+    return Math.max(...lookupAliases(query).map(alias => scoreLookupCandidate(alias, candidate)));
   }
 
   // 从 BCE profiles 数据库查询玩家档案
@@ -427,9 +443,9 @@
           const query = nameOrId.toLowerCase().trim();
           const matches = data.filter(d => {
             const mn = d.memberNumber ? d.memberNumber.toString() : "";
-            return scoreLookupCandidate(query, d.name) > 0
-              || scoreLookupCandidate(query, d.lastNick) > 0
-              || scoreLookupCandidate(query, mn) > 0;
+            return bestLookupScore(query, d.name) > 0
+              || bestLookupScore(query, d.lastNick) > 0
+              || bestLookupScore(query, mn) > 0;
           });
           if (matches.length === 0) {
             resolve(null);
@@ -437,11 +453,11 @@
           }
           const score = (d) => {
             const mn = d.memberNumber ? d.memberNumber.toString() : "";
-            if (mn === query) return 1000;
+            if (lookupAliases(query).includes(normalizeLookupText(mn))) return 1000;
             return Math.max(
-              scoreLookupCandidate(query, d.name),
-              scoreLookupCandidate(query, d.lastNick),
-              scoreLookupCandidate(query, mn)
+              bestLookupScore(query, d.name),
+              bestLookupScore(query, d.lastNick),
+              bestLookupScore(query, mn)
             );
           };
           matches.sort((a, b) => (score(b) - score(a)) || ((b.seen || 0) - (a.seen || 0)));
@@ -553,18 +569,18 @@
     return ChatRoomCharacter
       .filter(c => {
         const mn = c.MemberNumber ? c.MemberNumber.toString() : "";
-        return scoreLookupCandidate(query, c.Name) > 0
-          || scoreLookupCandidate(query, c.Nickname) > 0
-          || scoreLookupCandidate(query, mn) > 0;
+        return bestLookupScore(query, c.Name) > 0
+          || bestLookupScore(query, c.Nickname) > 0
+          || bestLookupScore(query, mn) > 0;
       })
       .sort((a, b) => {
         const score = (c) => {
           const mn = c.MemberNumber ? c.MemberNumber.toString() : "";
-          if (mn === query) return 1000;
+          if (lookupAliases(query).includes(normalizeLookupText(mn))) return 1000;
           return Math.max(
-            scoreLookupCandidate(query, c.Name),
-            scoreLookupCandidate(query, c.Nickname),
-            scoreLookupCandidate(query, mn)
+            bestLookupScore(query, c.Name),
+            bestLookupScore(query, c.Nickname),
+            bestLookupScore(query, mn)
           );
         };
         return score(b) - score(a);
