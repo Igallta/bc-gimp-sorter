@@ -1314,7 +1314,18 @@
 
   async function executeCommands(commands) {
     let moveOk = true, itemOk = true, snapOk = true;
-    for (const cmd of commands) {
+    
+    // 去重：同一个人同一种道具同时有 ADD 和 DEL 时，只保留 ADD（ADD 的颜色会覆盖）
+    const addKeys = new Set(commands.filter(c => c.type === "itemadd").map(c => `${c.memberNumber}:${c.item}`));
+    const filtered = commands.filter(c => {
+      if (c.type === "itemdel" && addKeys.has(`${c.memberNumber}:${c.item}`)) {
+        console.log(`[MisakaChat] 跳过多余的 ITEMDEL: ${c.memberNumber}:${c.item}（已有 ITEMADD）`);
+        return false;
+      }
+      return true;
+    });
+    
+    for (const cmd of filtered) {
       if (cmd.type === "move") {
         moveOk = executeMove(cmd.memberNumber, cmd.direction);
       } else if (cmd.type === "moveTo") {
