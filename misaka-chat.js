@@ -936,7 +936,8 @@
     return true;
   }
 
-  // 中文 layer 名 → 英文 layer 名映射（常见 layer）
+  // 中文 layer 名 → 英文 layer 名映射
+  // 优先从 BC 翻译表动态查，找不到再用手动映射
   const LAYER_NAME_CN = {
     "内衬": "Lining", "床": "Bed", "毛毯": "Blanket", "内部": "Inner",
     "球": "Ball", "带子": "Strap", "锁": "Lock",
@@ -962,21 +963,32 @@
     return layers;
   }
 
-  // 根据中文/英文 layer 名找 color slot index
   function findLayerIndex(asset, layerName) {
     if (!layerName) return undefined;
     const layers = getItemColorLayers(asset);
-    // 先精确匹配英文名
+    if (layers.length === 0) return undefined;
+    // 1. 精确匹配英文名
     let found = layers.find(l => l.name === layerName);
     if (found) return found.index;
-    // 中文映射
+    // 2. 手动中文映射
     const enName = LAYER_NAME_CN[layerName];
     if (enName) {
       found = layers.find(l => l.name === enName);
       if (found) return found.index;
     }
-    // 模糊匹配（包含）
-    found = layers.find(l => l.name && (l.name.toLowerCase().includes(layerName.toLowerCase()) || layerName.toLowerCase().includes(l.name?.toLowerCase())));
+    // 3. BC 翻译表动态查
+    try {
+      const cn = TranslationCache["Assets/Female3DCG/Female3DCG_CN.txt"];
+      const cnIdx = cn.indexOf(layerName);
+      if (cnIdx > 0) {
+        const enFromCN = cn[cnIdx - 1]; // 前一个就是英文
+        found = layers.find(l => l.name === enFromCN);
+        if (found) return found.index;
+      }
+    } catch(e) {}
+    // 4. 模糊匹配（包含，不分大小写）
+    const lower = layerName.toLowerCase();
+    found = layers.find(l => l.name && (l.name.toLowerCase().includes(lower) || lower.includes(l.name.toLowerCase())));
     if (found) return found.index;
     return undefined;
   }
