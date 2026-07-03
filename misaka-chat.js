@@ -706,6 +706,19 @@
       if (!target.Property) target.Property = {};
       target.Property[propMap.key] = actualValue;
 
+      // 跳蛋/振动器：设强度时同步处理 Mode 和 Effect
+      if (propMap.key === "Intensity") {
+        if (actualValue >= 0) {
+          target.Property.Mode = "Constant";
+          if (!Array.isArray(target.Property.Effect)) target.Property.Effect = [];
+          if (!target.Property.Effect.includes("Egged")) target.Property.Effect.push("Egged");
+          if (!target.Property.Effect.includes("Vibrating")) target.Property.Effect.push("Vibrating");
+        } else {
+          target.Property.Mode = "Off";
+          target.Property.Effect = (target.Property.Effect || []).filter(e => e !== "Vibrating");
+        }
+      }
+
       ChatRoomCharacterUpdate(char);
       console.log(`[MisakaChat] 已设置 #${memberNumber} ${itemName} ${propMap.key}=${actualValue}`);
       return true;
