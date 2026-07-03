@@ -1909,12 +1909,15 @@ ${recentSemantic}`;
       window.__misakaLastSentReplyTime = sentAt;
 
       if (typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom") {
-        const parts = finalReply.split("|");
-        if (parts.length === 2 && parts[0].trim() && parts[1].trim()) {
-          ElementValue("InputChat", parts[0].trim());
+        // 用 | 分割动作和说话，过滤空段
+        const parts = finalReply.split("|").map(p => p.trim()).filter(Boolean);
+        const hasAction = parts[0]?.startsWith("*") && parts[0]?.endsWith("*");
+        if (hasAction && parts.length >= 2) {
+          // 第一段是动作，第二段是说话，分两条发
+          ElementValue("InputChat", parts[0]);
           ChatRoomSendChat();
           setTimeout(() => {
-            ElementValue("InputChat", parts[1].trim());
+            ElementValue("InputChat", parts.slice(1).join(" "));
             ChatRoomSendChat();
           }, 600);
         } else {
