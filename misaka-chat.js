@@ -766,7 +766,7 @@
       const typeIdx = findTypedIndex(item, valueName);
       if (typeIdx === null) return { ok: false, msg: `无法识别样式: ${valueName}（道具: ${item.Asset.Description}）` };
       item.Property.TypeRecord.typed = typeIdx;
-      CharacterRefresh(char, false, false);
+      ChatRoomCharacterUpdate(char);
       return { ok: true, msg: `已设置 ${item.Asset.Description} 样式=${typeIdx}` };
     }
 
@@ -777,14 +777,14 @@
       let typeIdx = parseInt(valueName);
       if (isNaN(typeIdx)) return { ok: false, msg: `modular 模块 ${trKey} 需要数字索引: ${valueName}` };
       item.Property.TypeRecord[trKey] = typeIdx;
-      CharacterRefresh(char, false, false);
+      ChatRoomCharacterUpdate(char);
       return { ok: true, msg: `已设置 ${item.Asset.Description} 模块 ${trKey}=${typeIdx}` };
     }
 
     // 非 Extended 道具 — 直接设 Property
     if (!item.Property) item.Property = {};
     item.Property[propName] = valueName;
-    CharacterRefresh(char, false, false);
+    ChatRoomCharacterUpdate(char);
     return { ok: true, msg: `已设置 ${item.Asset.Description} ${propName}=${valueName}` };
   }
 
@@ -809,7 +809,7 @@
     // 恢复锁字段
     Object.assign(item.Property, lockFields);
     
-    CharacterRefresh(char, false, false);
+    ChatRoomCharacterUpdate(char);
     return { ok: true, msg: `已设置 ${item.Asset.Description} ${opt.name}` };
   }
 
