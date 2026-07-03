@@ -369,6 +369,14 @@ ${recentSemantic}`;
     "哟，新面孔~",
     "嗯？新人来了~",
   ];
+  // GIMP 娃娃打招呼池（对被束缚的人偶，语气更玩味）
+  const GREET_GIMP = [
+    "又多了个娃娃~",
+    "*打量了一下新来的娃娃*",
+    "嗯，新娃娃到了。",
+    "*歪头看着新来的娃娃*",
+    "欢迎来到娃娃架~",
+  ];
   // idle 闲聊池（带上下文）
   const IDLE_LINES = [
     "房间里好安静啊...",
@@ -379,8 +387,7 @@ ${recentSemantic}`;
     "嗯...在等什么人吗？",
     "*小声哼着歌*",
     "*靠在墙边发呆*",
-    "好闲...有没有人来让我搬娃娃的？",
-    "*拨弄了一下手边的绳子*",
+    "好闲啊...来个人让我搬搬娃娃也好嘛~",
     "咲不在吗...算了。",
     "*打了个哈欠*",
     "今天娃娃们都挺乖的嘛。",
@@ -424,8 +431,6 @@ ${recentSemantic}`;
   function maybeGreetNewcomer(name) {
     if (!isCurrent() || !CONFIG.enabled || state.busy) return;
     if (!name) return;
-    // 不跟 GIMP 娃娃打招呼
-    if (name.startsWith("GIMP ")) return;
     // 不跟自己打招呼
     if (typeof Player !== "undefined" && name === (Player.Nickname || Player.Name)) return;
     const now = Date.now();
@@ -439,10 +444,11 @@ ${recentSemantic}`;
       if (typeof CurrentScreen === "undefined" || CurrentScreen !== "ChatRoom") return;
       // 100% 打招呼
       // if (Math.random() > 0.85) return;
-      // 判断是常客还是陌生人
+      // GIMP 娃娃用专用池
+      const isGimp = name.startsWith("GIMP ");
       const profiles = JSON.parse(localStorage.getItem('misaka_memory') || '{}');
-      const isRegular = profiles[name] || Object.values(profiles).some(p => p.name === name);
-      const pool = isRegular ? GREET_REGULAR : GREET_STRANGER;
+      const isRegular = !isGimp && (profiles[name] || Object.values(profiles).some(p => p.name === name));
+      const pool = isGimp ? GREET_GIMP : (isRegular ? GREET_REGULAR : GREET_STRANGER);
       let line = pool[Math.floor(Math.random() * pool.length)];
       // 常客池带名字替换
       if (isRegular) line = line.replace(/\{name\}/g, name);
