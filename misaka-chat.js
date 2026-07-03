@@ -515,6 +515,16 @@
         }
         return "";
       })
+      .replace(/\[ITEMCOLOR:(\d+):([^\]]+)\]/gi, (m, mn, rest) => {
+        // [ITEMCOLOR:编号:道具名::颜色] 或 [ITEMCOLOR:编号:道具名:部位:颜色]
+        const parts = rest.split(":").map(s => s.trim());
+        if (parts.length >= 3) {
+          commands.push({ type: "itemcolor", memberNumber: parseInt(mn), item: parts[0], part: parts[1], color: parts.slice(2).join(":") });
+        } else if (parts.length >= 2) {
+          commands.push({ type: "itemcolor", memberNumber: parseInt(mn), item: parts[0], part: "", color: parts[1] });
+        }
+        return "";
+      })
       .replace(/\[ITEMDEL:(\d+):all\]/gi, (m, mn) => {
         commands.push({ type: "itemdelall", memberNumber: parseInt(mn) });
         return "";
@@ -1126,6 +1136,31 @@
   }
 
   // 设置已有道具的属性（强度/绑法/开关等）
+  function executeItemColor(memberNumber, itemName, part, colorName) {
+    console.log(`[MisakaChat] 改颜色: #${memberNumber} ${itemName} part=${part} color=${colorName}`);
+    const char = (memberNumber === Player.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === memberNumber);
+    if (!char) { console.log("[MisakaChat] 找不到玩家 #" + memberNumber); return false; }
+    const asset = findItemAsset(itemName);
+    if (!asset) { console.log("[MisakaChat] 找不到道具: " + itemName); return false; }
+    const groupName = asset.Group?.Name;
+    const hex = colorNameToHex(colorName);
+    if (!hex) { console.log("[MisakaChat] 未知颜色: " + colorName); return false; }
+    if (part) {
+      const groupList = BODY_PART_GROUPS[part];
+      if (groupList && groupList.length > 0) {
+        let ok = false;
+        for (const g of groupList) {
+          if (directSetColor(char, g, hex)) ok = true;
+        }
+        if (ok) { ChatRoomCharacterUpdate(char); console.log("[MisakaChat] ✅ 颜色已改", part, colorName); }
+        return ok;
+      }
+    }
+    const ok = directSetColor(char, groupName, hex);
+    if (ok) { ChatRoomCharacterUpdate(char); console.log("[MisakaChat] ✅ 颜色已改", itemName, colorName); }
+    return ok;
+  }
+
   function executeItemSet(memberNumber, itemName, part, propName, valueName) {
     try {
       const char = (memberNumber === Player.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === memberNumber); if (!char) { console.log("[MisakaChat] 找不到玩家 #" + memberNumber); return false; }
@@ -1336,6 +1371,8 @@
         itemOk = executeItemAdd(cmd.memberNumber, cmd.item, cmd.part, cmd.color);
       } else if (cmd.type === "itemset") {
         itemOk = executeItemSet(cmd.memberNumber, cmd.item, cmd.part, cmd.property, cmd.value);
+      } else if (cmd.type === "itemcolor") {
+        itemOk = executeItemColor(cmd.memberNumber, cmd.item, cmd.part, cmd.color);
       } else if (cmd.type === "itemdel") {
         console.log(`[MisakaChat] CMD itemdel #${cmd.memberNumber} item="${cmd.item}" part="${cmd.part||""}"`);
         itemOk = executeItemDel(cmd.memberNumber, cmd.item, cmd.part);

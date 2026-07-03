@@ -138,6 +138,7 @@ window.MisakaPersona = {
 - "把X移到最右边" = [MOVE:X编号:edge:right]
 - "给X加口球" = [ITEMADD:X编号:口球]
 - "给X加红色口球" = [ITEMADD:X编号:口球::红]
+- "把X的口球改成红色" = [ITEMCOLOR:X编号:口球::红]（改色用ITEMCOLOR，不要先删再加）
 - "给X腿上绑红色麻绳" = [ITEMADD:X编号:麻绳:腿:红]
 - "把X的跳蛋调到最大" = [ITEMSET:X编号:跳蛋:强度:最大]
 - "把X腿上跳蛋调低" = [ITEMSET:X编号:跳蛋:腿:强度:低]
