@@ -15,7 +15,7 @@
     apiBase: "https://api.deepseek.com/chat/completions",
     model: "deepseek-v4-pro",
     fallbackModel: "deepseek-v4-flash",
-    maxTokens: 1000,
+    maxTokens: 1500,
     temperature: 0.8,
     maxContext: 50,
     cooldownMs: 3000,
@@ -698,6 +698,49 @@
     "随机": 5, "递增": 6, "挑逗": 7, "拒绝": 8, "边缘": 9
   };
 
+  // typed 道具常见中文样式名 → TypeRecord.typed 索引
+  // 按 道具名+样式名 查找
+  const TYPED_STYLE_CN = {
+    "麻绳": { "基础": 0, "悬吊": 1, "倒吊": 2, "普通": 0, "悬挂": 1 },
+    "尼龙绳": { "基础": 0, "普通": 0, "上半": 0, "下半": 1, "青蛙绑": 2, "展鹰": 2 },
+    "皮革脚铐": { "链条": 0, "普通": 0, "铐": 1, "环": 2, "锁": 3 },
+    "皮革豪华脚铐": { "链条": 0, "铐": 1, "环": 2, "桶": 3, "锁": 4 },
+    "皮革腿铐": { "链条": 0, "铐": 1, "环": 2, "锁": 3 },
+    "皮革手铐": { "铐": 0, "普通": 0, "环": 1, "锁": 2 },
+    "皮革豪华手铐": { "铐": 0, "环": 1, "桶": 2, "锁": 3 },
+    "口球": { "球": 0, "普通": 0, "带子": 1, "锁": 2 },
+    "马具口球": { "球": 0, "马具": 1, "锁": 2 },
+    "折叠屏风": { "关": 0, "关闭": 0, "合": 0, "开": 1, "展开": 1, "打开": 1 },
+    "乳胶束腰": { "基础": 0, "普通": 0, "吊带": 1, "锁": 2 },
+    "重金属脚铐": { "链条": 0, "铐": 1 },
+    "闪亮绑腿器": { "乳胶": 0, "皮带": 4, "金属": 8, "锁": 20 },
+    "闪亮单手套": { "束缚": 0, "普通": 0, "带子": 1, "硬": 2, "反": 3, "X交叉": 4, "锁": 17 },
+    "衬套连指手套": { "手套": 0, "普通": 0, "带子": 1, "扣": 2, "链": 3, "锁": 5 },
+    "未来贞操文胸": { "显示": 0, "锁": 1, "文字": 2, "网格": 3, "文胸": 5 },
+    "禁制贞操文胸": { "文胸": 0, "金属": 1, "细节": 2, "电击": 3, "灯": 4 },
+  };
+
+  // 在 setExtendedItemProperty 的 typed 分支里用中文映射
+  function findTypedIndex(item, valueName) {
+    const assetName = item?.Asset?.Description || "";
+    // 先查 TYPED_STYLE_CN
+    if (TYPED_STYLE_CN[assetName] && TYPED_STYLE_CN[assetName][valueName] !== undefined) {
+      return TYPED_STYLE_CN[assetName][valueName];
+    }
+    // 尝试数字
+    const num = parseInt(valueName);
+    if (!isNaN(num)) return num;
+    // 尝试英文选项名匹配（运行时查询）
+    try {
+      const cfg = item.Asset?.ExtendedItemConfig || AssetFindExtendedConfig(item.Asset);
+      if (cfg?.Options) {
+        const idx = cfg.Options.findIndex(o => o.Name === valueName || o.Name?.toLowerCase() === valueName.toLowerCase());
+        if (idx >= 0) return idx;
+      }
+    } catch(e) {}
+    return null;
+  }
+
   // 通用：设置 Extended 道具属性
   function setExtendedItemProperty(char, item, propName, valueName) {
     if (!item || !item.Asset) return { ok: false, msg: "道具不存在" };
@@ -720,16 +763,11 @@
     }
 
     if (archetype === "typed") {
-      // typed 道具：TypeRecord.typed = 索引
-      // 尝试把 valueName 解析为数字索引
-      let typeIdx = parseInt(valueName);
-      if (isNaN(typeIdx)) {
-        // 尝试按名称匹配（需要 Asset 配置，R129 可能不支持运行时查询）
-        return { ok: false, msg: `typed 道具需要数字索引，无法识别: ${valueName}` };
-      }
+      const typeIdx = findTypedIndex(item, valueName);
+      if (typeIdx === null) return { ok: false, msg: `无法识别样式: ${valueName}（道具: ${item.Asset.Description}）` };
       item.Property.TypeRecord.typed = typeIdx;
       CharacterRefresh(char, false, false);
-      return { ok: true, msg: `已设置 ${item.Asset.Description} 类型=${typeIdx}` };
+      return { ok: true, msg: `已设置 ${item.Asset.Description} 样式=${typeIdx}` };
     }
 
     if (archetype === "modular") {
