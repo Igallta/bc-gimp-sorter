@@ -698,44 +698,43 @@
     "随机": 5, "递增": 6, "挑逗": 7, "拒绝": 8, "边缘": 9
   };
 
-  // typed 道具常见中文样式名 → TypeRecord.typed 索引
-  // 按 道具名+样式名 查找
-  const TYPED_STYLE_CN = {
-    "麻绳": { "基础": 0, "悬吊": 1, "倒吊": 2, "普通": 0, "悬挂": 1 },
-    "尼龙绳": { "基础": 0, "普通": 0, "上半": 0, "下半": 1, "青蛙绑": 2, "展鹰": 2 },
-    "皮革脚铐": { "链条": 0, "普通": 0, "铐": 1, "环": 2, "锁": 3 },
-    "皮革豪华脚铐": { "链条": 0, "铐": 1, "环": 2, "桶": 3, "锁": 4 },
-    "皮革腿铐": { "链条": 0, "铐": 1, "环": 2, "锁": 3 },
-    "皮革手铐": { "铐": 0, "普通": 0, "环": 1, "锁": 2 },
-    "皮革豪华手铐": { "铐": 0, "环": 1, "桶": 2, "锁": 3 },
-    "口球": { "球": 0, "普通": 0, "带子": 1, "锁": 2 },
-    "马具口球": { "球": 0, "马具": 1, "锁": 2 },
-    "折叠屏风": { "关": 0, "关闭": 0, "合": 0, "开": 1, "展开": 1, "打开": 1 },
-    "乳胶束腰": { "基础": 0, "普通": 0, "吊带": 1, "锁": 2 },
-    "重金属脚铐": { "链条": 0, "铐": 1 },
-    "闪亮绑腿器": { "乳胶": 0, "皮带": 4, "金属": 8, "锁": 20 },
-    "闪亮单手套": { "束缚": 0, "普通": 0, "带子": 1, "硬": 2, "反": 3, "X交叉": 4, "锁": 17 },
-    "衬套连指手套": { "手套": 0, "普通": 0, "带子": 1, "扣": 2, "链": 3, "锁": 5 },
-    "未来贞操文胸": { "显示": 0, "锁": 1, "文字": 2, "网格": 3, "文胸": 5 },
-    "禁制贞操文胸": { "文胸": 0, "金属": 1, "细节": 2, "电击": 3, "灯": 4 },
+  // 中文绑法/样式名 → BC 英文选项名映射
+  // 用 TypedItemSetOptionByName 调用，走 BC 正规 API
+  const STYLE_NAME_CN = {
+    // 麻绳 ItemArms
+    "手腕绑": "WristTie", "基础": "WristTie", "普通": "WristTie",
+    "箱形绑": "BoxTie", "空手绑": "BoxTie",
+    "交叉箱形": "CrossedBoxtie", "交叉绑": "CrossedBoxtie",
+    "绳铐": "RopeCuffs", "手腕绳铐": "RopeCuffs",
+    "手腕肘绑": "WristElbowTie", "并肘绑": "WristElbowTie",
+    "简单猪绑": "SimpleHogtie", "猪绑": "SimpleHogtie", " Hogtie": "SimpleHogtie",
+    "紧箱形": "TightBoxtie", "紧绑": "TightBoxtie",
+    "手腕肘驾驭绑": "WristElbowHarnessTie", "驾驭绑": "WristElbowHarnessTie",
+    "跪姿猪绑": "KneelingHogtie",
+    "猪绑缚": "Hogtied", "后手缚": "Hogtied", "全猪绑": "Hogtied",
+    "四肢着地": "AllFours", "趴绑": "AllFours",
+    "床展鹰": "BedSpreadEagle", "展鹰": "BedSpreadEagle",
+    "悬吊跪姿猪绑": "SuspensionKneelingHogtie", "悬吊猪绑": "SuspensionHogtied",
+    "悬吊四肢着地": "SuspensionAllFours",
+    "倒吊猪绑": "InvertedSuspensionHogtied", "倒吊": "InvertedSuspensionHogtied",
+    "倒吊四肢着地": "InvertedSuspensionAllFours",
+    // 通用
+    "链条": "Chain", "铐": "Cuffs", "环": "Rings", "桶": "Buckets", "锁": "Lock",
   };
 
   // 在 setExtendedItemProperty 的 typed 分支里用中文映射
-  function findTypedIndex(item, valueName) {
-    const assetName = item?.Asset?.Description || "";
-    // 先查 TYPED_STYLE_CN
-    if (TYPED_STYLE_CN[assetName] && TYPED_STYLE_CN[assetName][valueName] !== undefined) {
-      return TYPED_STYLE_CN[assetName][valueName];
-    }
-    // 尝试数字
-    const num = parseInt(valueName);
-    if (!isNaN(num)) return num;
-    // 尝试英文选项名匹配（运行时查询）
+  // 返回 BC 选项名（英文），而非索引
+  function findTypedOptionName(item, valueName) {
+    // 先查中文映射表
+    if (STYLE_NAME_CN[valueName]) return STYLE_NAME_CN[valueName];
+    // 尝试直接作为英文选项名
+    // 运行时用 TypedItemDataLookup 验证
     try {
-      const cfg = item.Asset?.ExtendedItemConfig || AssetFindExtendedConfig(item.Asset);
-      if (cfg?.Options) {
-        const idx = cfg.Options.findIndex(o => o.Name === valueName || o.Name?.toLowerCase() === valueName.toLowerCase());
-        if (idx >= 0) return idx;
+      const key = item.Asset.Group.Name + item.Asset.Name;
+      const data = TypedItemDataLookup[key];
+      if (data?.options) {
+        const opt = data.options.find(o => o.Name === valueName || o.Name?.toLowerCase() === valueName.toLowerCase());
+        if (opt) return opt.Name;
       }
     } catch(e) {}
     return null;
@@ -763,11 +762,10 @@
     }
 
     if (archetype === "typed") {
-      const typeIdx = findTypedIndex(item, valueName);
-      if (typeIdx === null) return { ok: false, msg: `无法识别样式: ${valueName}（道具: ${item.Asset.Description}）` };
-      item.Property.TypeRecord.typed = typeIdx;
-      ChatRoomCharacterUpdate(char);
-      return { ok: true, msg: `已设置 ${item.Asset.Description} 样式=${typeIdx}` };
+      const optName = findTypedOptionName(item, valueName);
+      if (!optName) return { ok: false, msg: `无法识别样式: ${valueName}（道具: ${item.Asset.Description}）` };
+      TypedItemSetOptionByName(char, item, optName, false, null, true);
+      return { ok: true, msg: `已设置 ${item.Asset.Description} 样式=${optName}` };
     }
 
     if (archetype === "modular") {
@@ -789,26 +787,27 @@
   }
 
   function applyVibratorOption(char, item, opt) {
+    // 用 BC 正规 API：VibratorModeSetOptionByName
+    try {
+      if (typeof VibratorModeSetOptionByName === "function") {
+        VibratorModeSetOptionByName(char, item, opt.name, false, null, true);
+        return { ok: true, msg: `已设置 ${item.Asset.Description} ${opt.name}` };
+      }
+    } catch(e) { console.warn("[MisakaChat] VibratorModeSetOptionByName 失败:", e.message); }
+    
+    // fallback: 手动设置
     if (!item.Property) item.Property = {};
     if (!item.Property.TypeRecord) item.Property.TypeRecord = {};
-    
-    // 保留锁字段
     const lockFields = {};
     for (const k of ["LockedBy","LockMemberNumber","LockMemberName","Name","OverridePriority"]) {
       if (item.Property[k] !== undefined) lockFields[k] = item.Property[k];
     }
-    
     item.Property.Mode = opt.mode;
     item.Property.Intensity = opt.intensity;
     item.Property.Effect = [...opt.effect];
-    
-    // 找到 TypeRecord 里的 vibrating key
     const trKey = Object.keys(item.Property.TypeRecord)[0] || "vibrating";
     item.Property.TypeRecord[trKey] = opt.tr;
-    
-    // 恢复锁字段
     Object.assign(item.Property, lockFields);
-    
     ChatRoomCharacterUpdate(char);
     return { ok: true, msg: `已设置 ${item.Asset.Description} ${opt.name}` };
   }
