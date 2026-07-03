@@ -143,7 +143,7 @@ window.MisakaPersona = {
 - "把X的口球改成红色" = [ITEMCOLOR:X编号:口球::#B01818]（全部改色，不指定部件）
 - "把X的口球带子改成黑色" = [ITEMCOLOR:X编号:口球:部件名:#111111]（只改某个部件）
   - 部件名用中文或英文均可，系统会自动匹配。常见道具部件名：
-    宠物窝(PetBed): Lining(内衬)/Bed(床身)/Blanket(毛毯)
+    宠物窝(PetBed): Lining(毛毯内衬)/Bed(床)/Blanket(毛毯)
     口球(BallGag): Ball(球)/Strap(带子)
     皮革铐(LeatherCuffs): Cuffs(铐)/Rings(环)
     项圈(Collar): Base(底座)/Trim(装饰)

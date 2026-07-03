@@ -1013,7 +1013,7 @@ ${recentSemantic}`;
   // 中文 layer 名 → 英文 layer 名映射
   // 优先从 BC 翻译表动态查，找不到再用手动映射
   const LAYER_NAME_CN = {
-    "内衬": "Lining", "床": "Bed", "毛毯": "Blanket", "内部": "Inner",
+    "内衬": "Lining", "毛毯内衬": "Lining", "床": "Bed", "床身": "Bed", "毛毯": "Blanket", "内部": "Inner",
     "球": "Ball", "带子": "Strap", "锁": "Lock",
     "铐": "Cuffs", "环": "Rings",
     "主体": "Body", "底": "Base", "顶": "Top", "上": "Top", "下": "Bottom",
