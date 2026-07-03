@@ -162,7 +162,7 @@
   }
 
   // === Semantic Memory (Embedding-based) ===
-  // 调用 go-pool LiteLLM 的 embedding endpoint
+  // 调用 OpenAI embedding API (text-embedding-3-large)
   function getEmbeddingKey() {
     // 从 localStorage 读 OpenAI API key
     return localStorage.getItem("misaka_openai_key") || "";

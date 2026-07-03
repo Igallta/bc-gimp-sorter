@@ -10,7 +10,6 @@
 // @grant        GM_getValue
 // @connect      api.deepseek.com
 // @connect      api.openai.com
-// @connect      127.0.0.1
 // @run-at       document-end
 // ==/UserScript==
 
