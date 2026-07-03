@@ -1013,7 +1013,7 @@ ${recentSemantic}`;
   // 中文 layer 名 → 英文 layer 名映射
   // 优先从 BC 翻译表动态查，找不到再用手动映射
   const LAYER_NAME_CN = {
-    "内衬": "Lining", "毛毯内衬": "Lining", "床": "Bed", "床身": "Bed", "毛毯": "Blanket", "内部": "Inner",
+    "内衬": "Inner", "毛毯内衬": "Inner", "床": "Bed", "床身": "Bed", "毛毯": "Blanket", "内部": "Inner",
     "球": "Ball", "带子": "Strap", "锁": "Lock",
     "铐": "Cuffs", "环": "Rings",
     "主体": "Body", "底": "Base", "顶": "Top", "上": "Top", "下": "Bottom",
@@ -1024,15 +1024,23 @@ ${recentSemantic}`;
   // 找道具的可上色 layer 名列表
   function getItemColorLayers(asset) {
     if (!asset?.Layer) return [];
-    const count = asset.ColorableLayerCount || asset.DefaultColor?.length || 0;
     const layers = [];
-    let colorIdx = 0;
     for (const layer of asset.Layer) {
-      if (colorIdx >= count) break;
-      // 可上色的 layer 没有 SkippingColorize 标记
-      // BC 的规则：前 ColorableLayerCount 个 layer 是可上色的
-      layers.push({ name: layer.Name, index: colorIdx });
-      colorIdx++;
+      // 只有 AllowColorize=true 的 layer 才可上色
+      // 用 ColorIndex 属性获取真正的 color slot 索引
+      if (layer.AllowColorize === true && typeof layer.ColorIndex === "number") {
+        layers.push({ name: layer.Name, index: layer.ColorIndex });
+      }
+    }
+    // fallback: 如果没找到 AllowColorize 的 layer，用旧逻辑
+    if (layers.length === 0) {
+      const count = asset.ColorableLayerCount || asset.DefaultColor?.length || 0;
+      let colorIdx = 0;
+      for (const layer of asset.Layer) {
+        if (colorIdx >= count) break;
+        layers.push({ name: layer.Name, index: colorIdx });
+        colorIdx++;
+      }
     }
     return layers;
   }
