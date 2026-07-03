@@ -50,9 +50,16 @@
     lastMoveTime: 0,  // 移动操作冷却
     lastNonSelfMsgTime: 0,  // 上次非自己消息时间（idle 检测用）
     compactionPending: false,  // 正在生成 compaction 摘要
+    greetEnabled: true,  // 自动欢迎开关，玩家可以语音开关
   };
 
   // 从 localStorage 加载 compaction 摘要
+  // 从 localStorage 加载欢迎开关状态
+  try {
+    const savedGreet = localStorage.getItem("misaka_greet_enabled");
+    if (savedGreet !== null) state.greetEnabled = savedGreet === "true";
+  } catch(e) {}
+
   try {
     const savedCompaction = JSON.parse(localStorage.getItem("misaka_compaction") || "[]");
     if (Array.isArray(savedCompaction)) state.compactionSummaries = savedCompaction;
@@ -430,6 +437,7 @@ ${recentSemantic}`;
   // 有人进入时打招呼（延迟 2-5 秒，不抢话）
   function maybeGreetNewcomer(name) {
     if (!isCurrent() || !CONFIG.enabled || state.busy) return;
+    if (!state.greetEnabled) return;  // 自动欢迎已关闭
     if (!name) return;
     // 不跟自己打招呼
     if (typeof Player !== "undefined" && name === (Player.Nickname || Player.Name)) return;
@@ -1699,6 +1707,37 @@ ${recentSemantic}`;
     // 触发长期记忆提炼
     if (state.messageCount % CONFIG.memoryRefineInterval === 0) {
       maybeRefineMemory().catch(e => console.warn("[MisakaChat] refine error:", e.message));
+    }
+
+    // 欢迎开关检测（不占用回复名额，不需要 trigger）
+    const greetLower = readableContent.toLowerCase();
+    const greetOff = /(?:停止|关闭|不要|别|取消|关掉).{0,4}(自动)?欢迎|欢迎.{0,2}(关闭|停止|不要)|stop.*greet/i.test(greetLower);
+    const greetOn = /(?:开启|打开|恢复|继续|开始).{0,4}(自动)?欢迎|欢迎.{0,2}(开启|打开|开始)|start.*greet/i.test(greetLower);
+    if (greetOff && state.greetEnabled) {
+      state.greetEnabled = false;
+      try { localStorage.setItem("misaka_greet_enabled", "false"); } catch(e) {}
+      try {
+        setTimeout(() => {
+          if (typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom") {
+            ElementValue("InputChat", "好，不自动欢迎了~");
+            ChatRoomSendChat();
+          }
+        }, 1000);
+      } catch(e) {}
+      return;
+    }
+    if (greetOn && !state.greetEnabled) {
+      state.greetEnabled = true;
+      try { localStorage.setItem("misaka_greet_enabled", "true"); } catch(e) {}
+      try {
+        setTimeout(() => {
+          if (typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom") {
+            ElementValue("InputChat", "好，自动欢迎已开启~");
+            ChatRoomSendChat();
+          }
+        }, 1000);
+      } catch(e) {}
+      return;
     }
 
     // trigger 检测用原始 content 和可读 content 都匹配
