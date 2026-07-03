@@ -764,7 +764,7 @@
     if (archetype === "typed") {
       const optName = findTypedOptionName(item, valueName);
       if (!optName) return { ok: false, msg: `无法识别样式: ${valueName}（道具: ${item.Asset.Description}）` };
-      TypedItemSetOptionByName(char, item, optName, false, null, true);
+      TypedItemSetOptionByName(char, item, optName, true, null, true);
       return { ok: true, msg: `已设置 ${item.Asset.Description} 样式=${optName}` };
     }
 
@@ -790,7 +790,7 @@
     // 用 BC 正规 API：VibratorModeSetOptionByName
     try {
       if (typeof VibratorModeSetOptionByName === "function") {
-        VibratorModeSetOptionByName(char, item, opt.name, false, null, true);
+        VibratorModeSetOptionByName(char, item, opt.name, true, null, true);
         return { ok: true, msg: `已设置 ${item.Asset.Description} ${opt.name}` };
       }
     } catch(e) { console.warn("[MisakaChat] VibratorModeSetOptionByName 失败:", e.message); }
