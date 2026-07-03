@@ -1208,9 +1208,12 @@
     console.log(`[MisakaChat] 改颜色: #${memberNumber} ${itemName} part=${part} color=${colorName}`);
     const char = (memberNumber === Player.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === memberNumber);
     if (!char) { console.log("[MisakaChat] 找不到玩家 #" + memberNumber); return false; }
-    const asset = findItemAsset(itemName);
-    if (!asset) { console.log("[MisakaChat] 找不到道具: " + itemName); return false; }
-    const groupName = asset.Group?.Name;
+    const mapping = findItemAsset(itemName);
+    if (!mapping) { console.log("[MisakaChat] 找不到道具: " + itemName); return false; }
+    // findItemAsset 返回 { group, asset }，需要从 BC Asset 数组里找真正的 Asset 对象
+    const realAsset = Asset.find(a => a.Name === mapping.asset && a.Group?.Name === mapping.group);
+    if (!realAsset) { console.log("[MisakaChat] 找不到 Asset 对象: " + mapping.asset); return false; }
+    const groupName = mapping.group;
     const hex = colorNameToHex(colorName);
     if (!hex) { console.log("[MisakaChat] 未知颜色: " + colorName); return false; }
 
@@ -1231,9 +1234,9 @@
     // part 是道具部件名（layer name）
     let layerIndex = undefined;
     if (part && !BODY_PART_GROUPS[part]) {
-      layerIndex = findLayerIndex(asset, part);
+      layerIndex = findLayerIndex(realAsset, part);
       if (layerIndex === undefined) {
-        console.log(`[MisakaChat] 找不到部件 "${part}"，可上色部件: ${getItemColorLayers(asset).map(l => l.name).join("/")}`);
+        console.log(`[MisakaChat] 找不到部件 "${part}"，可上色部件: ${getItemColorLayers(realAsset).map(l => l.name).join("/")}`);
       }
     }
 
