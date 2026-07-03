@@ -9,6 +9,7 @@
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @connect      api.deepseek.com
+// @connect      api.openai.com
 // @connect      127.0.0.1
 // @run-at       document-end
 // ==/UserScript==
@@ -49,11 +50,10 @@
     // 强制更新 API key（覆盖旧的 OpenRouter key）
     localStorage.setItem("misaka_apikey", PRESET_KEY);
     
-    // 设置 go-pool key（用于 embedding 语义搜索）
-    // 手动设置：在 BC 控制台跑 localStorage.setItem("misaka_gopool_key", "你的go-pool-key")
-    // 或通过 /misaka setkey 命令
-    if (!localStorage.getItem("misaka_gopool_key")) {
-      console.log("[MisakaChat] 提示: 未设置 go-pool key，语义搜索将不可用。在控制台运行: localStorage.setItem('misaka_gopool_key', '你的key')");
+    // 设置 OpenAI key（用于 embedding 语义搜索）
+    // 手动设置：在 BC 控制台跑 localStorage.setItem("misaka_openai_key", "sk-proj-xxx")
+    if (!localStorage.getItem("misaka_openai_key")) {
+      console.log("[MisakaChat] 提示: 未设置 OpenAI key，语义搜索将不可用。在控制台运行: localStorage.setItem('misaka_openai_key', 'sk-proj-xxx')");
     }
 
     // 加载人设文件

@@ -30,7 +30,7 @@
     maxCompactionSummaries: 5,  // 保留最近 N 条 compaction 摘要
     idleTimeoutMs: 300000,  // 5 分钟无人说话触发 idle
     idleCheckMs: 60000,  // 每分钟检查一次 idle
-    embeddingBase: "http://127.0.0.1:4000/v1/embeddings",
+    embeddingBase: "https://api.openai.com/v1/embeddings",
     embeddingModel: "text-embedding-3-large",
     embeddingDim: 3072,
     maxMemoryEntries: 200,  // 最多存多少条带 embedding 的记忆
@@ -164,8 +164,8 @@
   // === Semantic Memory (Embedding-based) ===
   // 调用 go-pool LiteLLM 的 embedding endpoint
   function getEmbeddingKey() {
-    // 从 localStorage 读 go-pool master key（手动设置）
-    return localStorage.getItem("misaka_gopool_key") || "";
+    // 从 localStorage 读 OpenAI API key
+    return localStorage.getItem("misaka_openai_key") || "";
   }
 
   async function getEmbedding(text) {
