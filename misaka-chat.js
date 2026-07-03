@@ -15,7 +15,7 @@
     apiBase: "https://api.deepseek.com/chat/completions",
     model: "deepseek-v4-pro",
     fallbackModel: "deepseek-v4-flash",
-    maxTokens: 800,
+    maxTokens: 1000,
     temperature: 0.8,
     maxContext: 50,
     cooldownMs: 3000,
