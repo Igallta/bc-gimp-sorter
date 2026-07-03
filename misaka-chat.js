@@ -920,7 +920,11 @@
     if (!char || !colorOverride) return false;
     const idx = char.Appearance.findIndex(a => a.Asset?.Group?.Name === groupName);
     if (idx < 0) return false;
-    char.Appearance[idx].Color = [...colorOverride];
+    // 根据道具 ColorSchema 长度生成正确数量的颜色数组
+    const schema = char.Appearance[idx].Asset?.ColorSchema;
+    const expectedLen = Array.isArray(schema) ? schema.length : (char.Appearance[idx].Color?.length || 1);
+    const hex = Array.isArray(colorOverride) ? colorOverride[0] : colorOverride;
+    char.Appearance[idx].Color = Array(expectedLen).fill(hex);
     if (typeof CharacterRefresh === "function") CharacterRefresh(char);
     return true;
   }
@@ -1150,13 +1154,13 @@
       if (groupList && groupList.length > 0) {
         let ok = false;
         for (const g of groupList) {
-          if (directSetColor(char, g, hex)) ok = true;
+          if (directSetColor(char, g, [hex])) ok = true;
         }
         if (ok) { ChatRoomCharacterUpdate(char); console.log("[MisakaChat] ✅ 颜色已改", part, colorName); }
         return ok;
       }
     }
-    const ok = directSetColor(char, groupName, hex);
+    const ok = directSetColor(char, groupName, [hex]);
     if (ok) { ChatRoomCharacterUpdate(char); console.log("[MisakaChat] ✅ 颜色已改", itemName, colorName); }
     return ok;
   }
