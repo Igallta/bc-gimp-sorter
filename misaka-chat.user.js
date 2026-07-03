@@ -1,14 +1,15 @@
 // ==UserScript==
 // @name         BC Misaka Auto Chat
 // @namespace    https://igallta.github.io/bc-gimp-sorter
-// @version      2.0.1
-// @description  御坂 BC 自动回复系统 — 独立 LLM 调用，localStorage 记忆持久化
+// @version      2.1.0
+// @description  御坂 BC 自动回复系统 — LLM 驱动 + 语义记忆 + Context Compaction
 // @match        https://www.bondage-europe.com/R129/BondageClub/*
 // @match        https://www.bondageclub.com/R129/BondageClub/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @connect      api.deepseek.com
+// @connect      127.0.0.1
 // @run-at       document-end
 // ==/UserScript==
 
@@ -47,6 +48,13 @@
   waitForReady(() => {
     // 强制更新 API key（覆盖旧的 OpenRouter key）
     localStorage.setItem("misaka_apikey", PRESET_KEY);
+    
+    // 设置 go-pool key（用于 embedding 语义搜索）
+    // 手动设置：在 BC 控制台跑 localStorage.setItem("misaka_gopool_key", "你的go-pool-key")
+    // 或通过 /misaka setkey 命令
+    if (!localStorage.getItem("misaka_gopool_key")) {
+      console.log("[MisakaChat] 提示: 未设置 go-pool key，语义搜索将不可用。在控制台运行: localStorage.setItem('misaka_gopool_key', '你的key')");
+    }
 
     // 加载人设文件
     loadScript("https://igallta.github.io/bc-gimp-sorter/misaka-persona.js", () => {

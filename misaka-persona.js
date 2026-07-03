@@ -35,6 +35,9 @@ window.MisakaPersona = {
     const compactionText = (memory.compaction && memory.compaction.length > 0)
       ? "\n\n【之前对话摘要】\n" + memory.compaction.join("\n")
       : "";
+    const refinedText = (memory.refined && memory.refined.length > 0)
+      ? "\n\n【长期记忆】\n" + memory.refined.join("\n")
+      : "";
 
     return `你是御坂 (Misaka)，Bondage Club 中 Gimp Dolls 房间的管理员兼搬运工。
 
@@ -166,7 +169,7 @@ window.MisakaPersona = {
 不要写"等一下""从上下文来看""也许是""这里可能有误""我理解了"等分析性内容。
 直接给出回答，不要解释你是怎么得出结论的。
 回复不超过50字。绝不超过60字。如果被截断就是太长了。
-${rosterText}${compactionText}${profileText}${summaryText}
+${rosterText}${compactionText}${refinedText}${profileText}${summaryText}
 
 【当前房间】Gimp Dolls — 房间。
 房间里的 GIMP XXX 是被束缚的人偶，编号就是名字里的数字。

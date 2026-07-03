@@ -30,6 +30,13 @@
     maxCompactionSummaries: 5,  // 保留最近 N 条 compaction 摘要
     idleTimeoutMs: 300000,  // 5 分钟无人说话触发 idle
     idleCheckMs: 60000,  // 每分钟检查一次 idle
+    embeddingBase: "http://127.0.0.1:4000/v1/embeddings",
+    embeddingModel: "text-embedding-3-large",
+    embeddingDim: 3072,
+    maxMemoryEntries: 200,  // 最多存多少条带 embedding 的记忆
+    memoryRefineInterval: 200,  // 每 N 条消息提炼一次长期记忆
+    maxRefinedMemories: 10,  // 保留最近 N 条提炼记忆
+    topKMemories: 3,  // 查询时返回最相似的 K 条记忆
   };
 
   let state = {
@@ -51,6 +58,20 @@
     if (Array.isArray(savedCompaction)) state.compactionSummaries = savedCompaction;
     else state.compactionSummaries = [];
   } catch(e) { state.compactionSummaries = []; }
+
+  // 从 localStorage 加载语义记忆条目
+  try {
+    const savedEntries = JSON.parse(localStorage.getItem("misaka_semantic_mem") || "[]");
+    if (Array.isArray(savedEntries)) state.semanticMemories = savedEntries;
+    else state.semanticMemories = [];
+  } catch(e) { state.semanticMemories = []; }
+
+  // 从 localStorage 加载提炼记忆
+  try {
+    const savedRefined = JSON.parse(localStorage.getItem("misaka_refined_mem") || "[]");
+    if (Array.isArray(savedRefined)) state.refinedMemories = savedRefined;
+    else state.refinedMemories = [];
+  } catch(e) { state.refinedMemories = []; }
 
   try {
     const savedLog = JSON.parse(localStorage.getItem("misaka_joinlog") || "[]");
@@ -137,6 +158,127 @@
       console.warn("[MisakaChat] Context compaction 失败:", e.message);
     } finally {
       state.compactionPending = false;
+    }
+  }
+
+  // === Semantic Memory (Embedding-based) ===
+  // 调用 go-pool LiteLLM 的 embedding endpoint
+  function getEmbeddingKey() {
+    // 从 localStorage 读 go-pool master key（手动设置）
+    return localStorage.getItem("misaka_gopool_key") || "";
+  }
+
+  async function getEmbedding(text) {
+    const key = getEmbeddingKey();
+    if (!key) return null;
+    try {
+      const resp = await new Promise((resolve, reject) => {
+        // 用 GM_xmlhttpRequest 绕过 BC CSP（@connect 127.0.0.1）
+        const gmXhr = window.__GM_xmlhttpRequest;
+        if (!gmXhr) { reject(new Error("GM_xmlhttpRequest 不可用")); return; }
+        gmXhr({
+          method: "POST",
+          url: CONFIG.embeddingBase,
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + key,
+          },
+          data: JSON.stringify({ model: CONFIG.embeddingModel, input: text.slice(0, 2000) }),
+          timeout: 10000,
+          onload: (r) => {
+            if (r.status === 200) {
+              try { resolve(JSON.parse(r.responseText)); }
+              catch(e) { reject(new Error("embedding parse error")); }
+            } else { reject(new Error("embedding HTTP " + r.status)); }
+          },
+          onerror: () => reject(new Error("embedding network error")),
+          ontimeout: () => reject(new Error("embedding timeout")),
+        });
+      });
+      if (resp && resp.data && resp.data[0] && resp.data[0].embedding) {
+        return resp.data[0].embedding;
+      }
+      return null;
+    } catch(e) {
+      console.warn("[MisakaChat] embedding 失败:", e.message);
+      return null;
+    }
+  }
+
+  function cosineSim(a, b) {
+    if (!a || !b || a.length !== b.length) return 0;
+    let dot = 0, na = 0, nb = 0;
+    for (let i = 0; i < a.length; i++) {
+      dot += a[i] * b[i];
+      na += a[i] * a[i];
+      nb += b[i] * b[i];
+    }
+    const denom = Math.sqrt(na) * Math.sqrt(nb);
+    return denom > 0 ? dot / denom : 0;
+  }
+
+  // 存一条语义记忆（带 embedding）
+  async function storeSemanticMemory(text, meta = {}) {
+    if (!text || text.length < 5) return;
+    if (state.semanticMemories.length >= CONFIG.maxMemoryEntries) {
+      // 丢掉最老的 10 条
+      state.semanticMemories.splice(0, 10);
+    }
+    const emb = await getEmbedding(text);
+    if (!emb) return;  // embedding 失败就不存
+    state.semanticMemories.push({
+      text: text.slice(0, 500),
+      embedding: emb,
+      time: Date.now(),
+      ...meta,
+    });
+    try { localStorage.setItem("misaka_semantic_mem", JSON.stringify(state.semanticMemories)); } catch(e) {
+      // localStorage 满了（embedding 很大），减半存储
+      state.semanticMemories = state.semanticMemories.slice(-Math.floor(CONFIG.maxMemoryEntries / 2));
+      try { localStorage.setItem("misaka_semantic_mem", JSON.stringify(state.semanticMemories)); } catch(e2) {}
+    }
+  }
+
+  // 语义搜索：用 query embedding 找最相似的 K 条记忆
+  async function searchMemories(query, topK = CONFIG.topKMemories) {
+    if (!query || state.semanticMemories.length === 0) return [];
+    const qEmb = await getEmbedding(query);
+    if (!qEmb) return [];
+    const scored = state.semanticMemories.map(m => ({
+      text: m.text,
+      time: m.time,
+      score: cosineSim(qEmb, m.embedding),
+      ...m,
+    }));
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, topK).filter(s => s.score > 0.3);  // 相似度阈值
+  }
+
+  // === Long-term Memory Refinement ===
+  // 每 memoryRefineInterval 条消息，用 LLM 从 profiles + compaction + semanticMemories 提炼一份长期记忆摘要
+  async function maybeRefineMemory() {
+    if (state.messageCount % CONFIG.memoryRefineInterval !== 0) return;
+    if (state.messageCount === 0) return;
+    try {
+      const mem = loadMemory();
+      const profiles = Object.entries(mem.profiles || {}).map(([mn, info]) =>
+        `#${mn} ${info.name}: ${info.notes || ""} (${info.chatCount || 0}次互动)`).join("\n");
+      const compactions = (state.compactionSummaries || []).join("\n");
+      const recentSemantic = (state.semanticMemories || []).slice(-20).map(m => m.text).join("\n");
+      
+      const prompt = `根据以下 BC 聊天记录片段，提炼出御坂应该长期记住的重要信息（人际关系、偏好、重要事件、约束关系），不超过100字，用中文：\n\n人物档案:\n${profiles}\n\n对话摘要:\n${compactions}\n\n记忆片段:\n${recentSemantic}`;
+      const refined = await callLLM("你是记忆提炼助手。从聊天记录中提炼重要长期信息。", [{role:"user", content: prompt}]);
+      if (refined) {
+        const time = new Date().toLocaleDateString("zh-CN", {month:"2-digit",day:"2-digit"});
+        state.refinedMemories.push(`[${time}] ${refined.slice(0, 100)}`);
+        if (state.refinedMemories.length > CONFIG.maxRefinedMemories) {
+          state.refinedMemories.shift();
+        }
+        try { localStorage.setItem("misaka_refined_mem", JSON.stringify(state.refinedMemories)); } catch(e) {}
+        console.log("[MisakaChat] 长期记忆提炼完成:", refined.slice(0, 50));
+      }
+    } catch(e) {
+      console.warn("[MisakaChat] 记忆提炼失败:", e.message);
     }
   }
 
@@ -309,6 +451,10 @@
     // Context compaction 摘要
     if (state.compactionSummaries && state.compactionSummaries.length > 0) {
       mem.compaction = state.compactionSummaries.slice(-CONFIG.maxCompactionSummaries);
+    }
+    // 长期提炼记忆
+    if (state.refinedMemories && state.refinedMemories.length > 0) {
+      mem.refined = state.refinedMemories.slice(-CONFIG.maxRefinedMemories);
     }
 
     return MisakaPersona.build(mem);
@@ -1233,6 +1379,10 @@
     if (state.messageCount % CONFIG.compactionInterval === 0 && !state.compactionPending) {
       maybeCompactContext().catch(e => console.warn("[MisakaChat] compaction error:", e.message));
     }
+    // 触发长期记忆提炼
+    if (state.messageCount % CONFIG.memoryRefineInterval === 0) {
+      maybeRefineMemory().catch(e => console.warn("[MisakaChat] refine error:", e.message));
+    }
 
     const triggers = ["misaka","御搬","御坂","misaki的","搬运工"];
     const lower = content.toLowerCase();
@@ -1447,6 +1597,12 @@
       }
 
       if (!finalReply) return;
+
+      // 存语义记忆（有意义的对话才存）
+      if (finalReply.length > 3 && !isGimpDoll) {
+        const memText = `${senderName}: ${content} → 御坂: ${finalReply}`;
+        storeSemanticMemory(memText, { sender: senderName, memberNum: senderNum }).catch(() => {});
+      }
 
       // 发送去重
       const sentKey = finalReply;
