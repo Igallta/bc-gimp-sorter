@@ -173,27 +173,20 @@
     if (!key) return null;
     try {
       const resp = await new Promise((resolve, reject) => {
-        // 用 GM_xmlhttpRequest 绕过 BC CSP（@connect 127.0.0.1）
-        const gmXhr = window.__GM_xmlhttpRequest;
-        if (!gmXhr) { reject(new Error("GM_xmlhttpRequest 不可用")); return; }
-        gmXhr({
-          method: "POST",
-          url: CONFIG.embeddingBase,
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": "Bearer " + key,
-          },
-          data: JSON.stringify({ model: CONFIG.embeddingModel, input: text.slice(0, 2000) }),
-          timeout: 10000,
-          onload: (r) => {
-            if (r.status === 200) {
-              try { resolve(JSON.parse(r.responseText)); }
-              catch(e) { reject(new Error("embedding parse error")); }
-            } else { reject(new Error("embedding HTTP " + r.status)); }
-          },
-          onerror: () => reject(new Error("embedding network error")),
-          ontimeout: () => reject(new Error("embedding timeout")),
-        });
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", CONFIG.embeddingBase, true);
+        xhr.setRequestHeader("Content-Type", "application/json");
+        xhr.setRequestHeader("Authorization", "Bearer " + key);
+        xhr.timeout = 10000;
+        xhr.ontimeout = () => reject(new Error("embedding timeout"));
+        xhr.onerror = () => reject(new Error("embedding network error"));
+        xhr.onload = () => {
+          if (xhr.status === 200) {
+            try { resolve(JSON.parse(xhr.responseText)); }
+            catch(e) { reject(new Error("embedding parse error")); }
+          } else { reject(new Error("embedding HTTP " + xhr.status)); }
+        };
+        xhr.send(JSON.stringify({ model: CONFIG.embeddingModel, input: text.slice(0, 2000) }));
       });
       if (resp && resp.data && resp.data[0] && resp.data[0].embedding) {
         return resp.data[0].embedding;
@@ -1237,9 +1230,9 @@
           console.log("[MisakaChat] 未知颜色:", color);
         }
       }
-      // 如果该 group 已有道具且只改颜色，用 directSetColor
+      // 如果该 group 已有道具且只改颜色，用 directSetColor（保留原有 Property）
       const existingItem = char.Appearance.find(a => a.Asset?.Group?.Name === targetGroup);
-      if (existingItem && colorOverride && !propertyOverride) {
+      if (existingItem && colorOverride) {
         directSetColor(char, targetGroup, colorOverride);
       } else {
         directSetItem(char, targetGroup, targetAsset, colorOverride);
