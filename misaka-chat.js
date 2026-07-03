@@ -1060,9 +1060,9 @@ ${recentSemantic}`;
         if (found) return found.index;
       }
     } catch(e) {}
-    // 4. 模糊匹配（包含，不分大小写）
+    // 4. 模糊匹配（只允许 layerName 包含 layer 英文名，且英文名长度≥2，防误匹配）
     const lower = layerName.toLowerCase();
-    found = layers.find(l => l.name && (l.name.toLowerCase().includes(lower) || lower.includes(l.name.toLowerCase())));
+    found = layers.find(l => l.name && l.name.length >= 2 && lower.includes(l.name.toLowerCase()));
     if (found) return found.index;
     return undefined;
   }
