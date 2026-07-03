@@ -15,7 +15,7 @@
     apiBase: "https://api.deepseek.com/chat/completions",
     model: "deepseek-v4-pro",
     fallbackModel: "deepseek-v4-flash",
-    maxTokens: 1500,
+    maxTokens: 4096,
     temperature: 0.8,
     maxContext: 50,
     cooldownMs: 3000,
@@ -364,6 +364,21 @@
     }, delay);
   }
 
+  // 从 DeepSeek 响应提取回复（处理 thinking 模式 content 为空）
+  function extractReply(msg) {
+    if (!msg) return null;
+    let content = (msg.content || "").trim();
+    if (content) return content;
+    let reasoning = (msg.reasoning_content || "").trim();
+    if (!reasoning) return null;
+    const lines = reasoning.split("\n").filter(l => l.trim());
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (line.length > 2 && line.length < 100) return line;
+    }
+    return reasoning.slice(-80) || null;
+  }
+
   // === API 调用 ===
   async function callLLM(systemPrompt, contextMessages) {
     const apiKey = localStorage.getItem(storageKey("apikey")) || "";
@@ -384,8 +399,7 @@
             onload: (resp) => {
               try {
                 const data = JSON.parse(resp.responseText);
-                if (data.choices?.length > 0) resolve(data.choices[0].message.content.trim());
-                else if (!isFallback) doRequest(url, CONFIG.fallbackModel, true);
+                if (data.choices?.length > 0) { const r = extractReply(data.choices[0].message); if (r) resolve(r); else if (!isFallback) doRequest(url, CONFIG.fallbackModel, true); else resolve(null); }
                 else resolve(null);
               } catch (e) {
                 if (!isFallback) doRequest(url, CONFIG.fallbackModel, true);
@@ -404,8 +418,7 @@
           xhr.onload = () => {
             try {
               const data = JSON.parse(xhr.responseText);
-              if (data.choices?.length > 0) resolve(data.choices[0].message.content.trim());
-              else if (!isFallback) doRequest(url, CONFIG.fallbackModel, true);
+              if (data.choices?.length > 0) { const r = extractReply(data.choices[0].message); if (r) resolve(r); else if (!isFallback) doRequest(url, CONFIG.fallbackModel, true); else resolve(null); }
               else resolve(null);
             } catch (e) {
               if (!isFallback) doRequest(url, CONFIG.fallbackModel, true);
