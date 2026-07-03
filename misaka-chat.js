@@ -360,13 +360,14 @@ ${recentSemantic}`;
     "哟，{name}。",
     "来了来了，{name}~",
   ];
-  // 陌生人打招呼池（礼貌但有距离）
+  // 陌生人打招呼池（友好但不带名字）
   const GREET_STRANGER = [
-    "欢迎。",
-    "你好。",
-    "*点头致意*",
-    "嗯，新面孔。",
-    "欢迎来到 Gimp Dolls。",
+    "欢迎~",
+    "你来了呀~",
+    "*抬头看了一眼*|来了啊~",
+    "欢迎来到 Gimp Dolls~",
+    "哟，新面孔~",
+    "嗯？新人来了~",
   ];
   // idle 闲聊池（带上下文）
   const IDLE_LINES = [
@@ -380,6 +381,12 @@ ${recentSemantic}`;
     "*靠在墙边发呆*",
     "好闲...有没有人来让我搬娃娃的？",
     "*拨弄了一下手边的绳子*",
+    "咲不在吗...算了。",
+    "*打了个哈欠*",
+    "今天娃娃们都挺乖的嘛。",
+    "*数了数房间里的娃娃*|嗯...还是这些。",
+    "有人来玩吗？好无聊~",
+    "*歪头看着门口*",
   ];
   let idleTimer = null;
 
@@ -430,8 +437,8 @@ ${recentSemantic}`;
     setTimeout(() => {
       if (!isCurrent() || !CONFIG.enabled || state.busy) return;
       if (typeof CurrentScreen === "undefined" || CurrentScreen !== "ChatRoom") return;
-      // 85% 概率打招呼（小房间每次进人打招呼是合理的）
-      if (Math.random() > 0.85) return;
+      // 100% 打招呼
+      // if (Math.random() > 0.85) return;
       // 判断是常客还是陌生人
       const profiles = JSON.parse(localStorage.getItem('misaka_memory') || '{}');
       const isRegular = profiles[name] || Object.values(profiles).some(p => p.name === name);
