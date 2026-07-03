@@ -1657,7 +1657,7 @@
       if (!finalReply) return;
 
       // 存语义记忆（有意义的对话才存）
-      if (finalReply.length > 3 && !isGimpDoll) {
+      if (finalReply.length > 3) {
         const memText = `${senderName}: ${content} → 御坂: ${finalReply}`;
         storeSemanticMemory(memText, { sender: senderName, memberNum: senderNum }).catch(() => {});
       }
