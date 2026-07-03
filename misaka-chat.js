@@ -26,7 +26,7 @@
     maxSummaries: 50,
     summaryInterval: 30,
     moveCooldownMs: 5000,  // 移动操作冷却
-    compactionInterval: 20,  // 每 N 条消息生成一次 context compaction
+    compactionInterval: 50,  // 每 N 条消息生成一次 context compaction
     maxCompactionSummaries: 5,  // 保留最近 N 条 compaction 摘要
     idleTimeoutMs: 300000,  // 5 分钟无人说话触发 idle
     idleCheckMs: 60000,  // 每分钟检查一次 idle
