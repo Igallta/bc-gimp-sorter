@@ -20,7 +20,7 @@
     maxContext: 50,
     cooldownMs: 3000,
     perUserCooldownMs: 5000,
-    apiKeyTimeout: 15000,
+    apiKeyTimeout: 45000,
     replyDelayMs: 800,
     maxProfileEntries: 20,
     maxSummaries: 50,
