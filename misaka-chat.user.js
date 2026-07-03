@@ -19,11 +19,12 @@
 
   // 预设 API key — DeepSeek 官网
   const PRESET_KEY = atob("c2stOWI3MjAyYmMwNTI0NGMxMDkwN2Q5NzdkMjI5YWEzNGQ=");
+  // 预设 OpenAI key — embedding 用 (text-embedding-3-large)
+  const PRESET_OPENAI_KEY = atob("c2stcHJvai1obzRuck1FY2NBakZUdVAwWnoxbHZ3ZDA3R3hYUmZTZTctcHhIcnZtTFgxR0FJYkkxbDh5b2EydDhidFVJM1c1WEppZXNKVTlMQVQzQmxia0ZKYk9OTFhKMzZJRnBQWFhZSHhkSGZ4T1lrdlJBMFFfcGVrVG5EVW4xcHA3VVZ5LVpjOXVtUHNNbmZjZ1VsQVhMaEJoUXRRbzdvb0E=");
 
   // 把 GM_xmlhttpRequest 暴露到 window，让注入的脚本能用
   window.__GM_xmlhttpRequest = GM_xmlhttpRequest;
 
-  // 预设 API key 到 localStorage
   function waitForReady(cb, attempts) {
     attempts = attempts || 0;
     if (attempts > 60) {
@@ -47,14 +48,10 @@
   }
 
   waitForReady(() => {
-    // 强制更新 API key（覆盖旧的 OpenRouter key）
+    // 强制更新 API key
     localStorage.setItem("misaka_apikey", PRESET_KEY);
-    
-    // 设置 OpenAI key（用于 embedding 语义搜索）
-    // 手动设置：在 BC 控制台跑 localStorage.setItem("misaka_openai_key", "sk-proj-xxx")
-    if (!localStorage.getItem("misaka_openai_key")) {
-      console.log("[MisakaChat] 提示: 未设置 OpenAI key，语义搜索将不可用。在控制台运行: localStorage.setItem('misaka_openai_key', 'sk-proj-xxx')");
-    }
+    // 强制更新 OpenAI key（embedding 用）
+    localStorage.setItem("misaka_openai_key", PRESET_OPENAI_KEY);
 
     // 加载人设文件
     loadScript("https://igallta.github.io/bc-gimp-sorter/misaka-persona.js", () => {
