@@ -217,13 +217,20 @@
         commands.push({ type: "move", memberNumber: parseInt(mn), direction: dir.toLowerCase() });
         return "";
       })
-      .replace(/\[ITEMADD:(\d+):([^\]:]+):([^\]]+)\]/gi, (m, mn, item, part) => {
-        // [ITEMADD:编号:道具名:部位] — 指定部位添加
-        commands.push({ type: "itemadd", memberNumber: parseInt(mn), item: item.trim(), part: part.trim() });
+      .replace(/\[ITEMADD:(\d+):([^\]]+)\]/gi, (m, mn, rest) => {
+        // [ITEMADD:编号:道具名] 或 [ITEMADD:编号:道具名:部位] 或 [ITEMADD:编号:道具名:部位:颜色]
+        const parts = rest.split(":").map(s => s.trim());
+        commands.push({ type: "itemadd", memberNumber: parseInt(mn), item: parts[0], part: parts[1] || "", color: parts[2] || "" });
         return "";
       })
-      .replace(/\[ITEMADD:(\d+):([^\]]+)\]/gi, (m, mn, item) => {
-        commands.push({ type: "itemadd", memberNumber: parseInt(mn), item: item.trim() });
+      .replace(/\[ITEMSET:(\d+):([^\]]+)\]/gi, (m, mn, rest) => {
+        // [ITEMSET:编号:道具名:属性:值] 或 [ITEMSET:编号:道具名:部位:属性:值]
+        const parts = rest.split(":").map(s => s.trim());
+        if (parts.length >= 4 && BODY_PART_GROUPS[parts[1]]) {
+          commands.push({ type: "itemset", memberNumber: parseInt(mn), item: parts[0], part: parts[1], property: parts[2], value: parts.slice(3).join(":") });
+        } else if (parts.length >= 3) {
+          commands.push({ type: "itemset", memberNumber: parseInt(mn), item: parts[0], part: "", property: parts[1], value: parts.slice(2).join(":") });
+        }
         return "";
       })
       .replace(/\[ITEMDEL:(\d+):all\]/gi, (m, mn) => {
@@ -242,6 +249,10 @@
       // 处理被截断的指令 — [ITEMDEL:123 后面没有 ]
       .replace(/\[ITEMADD:(\d+)$/gi, (m, mn) => {
         console.log("[MisakaChat] 检测到截断的 ITEMADD 指令: " + m);
+        return "";
+      })
+      .replace(/\[ITEMSET:(\d+)$/gi, (m, mn) => {
+        console.log("[MisakaChat] 检测到截断的 ITEMSET 指令: " + m);
         return "";
       })
       .replace(/\[ITEMDEL:(\d+)$/gi, (m, mn) => {
@@ -501,7 +512,18 @@
     if (!char) return null;
     const items = (char.Appearance || [])
       .filter(a => a?.Asset?.Group?.Name?.startsWith("Item"))
-      .map(a => ({ group: a.Asset.Group.Name, asset: a.Asset.Name, desc: a.Asset.Description || a.Asset.Name }));
+      .map(a => {
+        const prop = a.Property ? JSON.parse(JSON.stringify(a.Property)) : {};
+        delete prop.LockedBy;
+        delete prop.LockMemberNumber;
+        return {
+          group: a.Asset.Group.Name,
+          asset: a.Asset.Name,
+          desc: a.Asset.Description || a.Asset.Name,
+          color: Array.isArray(a.Color) ? [...a.Color] : (a.Color || ["Default"]),
+          property: prop
+        };
+      });
     const snapshot = { memberNumber, name: char.Nickname || char.Name, items, time: Date.now() };
     try {
       localStorage.setItem("misaka_snapshot_" + memberNumber, JSON.stringify(snapshot));
@@ -535,7 +557,7 @@
       try {
         const asset = AssetGet(char.AssetFamily, item.group, item.asset);
         if (asset) {
-          directSetItem(char, item.group, asset);
+          directSetItem(char, item.group, asset, item.color, item.property);
           count++;
           await new Promise(r => setTimeout(r, 150));
         }
@@ -568,7 +590,7 @@
       try {
         const asset = AssetGet(dstChar.AssetFamily, item.group, item.asset);
         if (asset) {
-          directSetItem(dstChar, item.group, asset);
+          directSetItem(dstChar, item.group, asset, item.color, item.property);
           count++;
           await new Promise(r => setTimeout(r, 150));
         } else {
@@ -585,10 +607,15 @@
   }
 
   // 直接修改 Appearance 数组（绕过 CharacterAppearanceSetItem 的权限检查）
-  function directSetItem(char, groupName, asset) {
+  function directSetItem(char, groupName, asset, colorOverride, propertyOverride) {
     if (!char || !asset) return false;
     const idx = char.Appearance.findIndex(a => a.Asset?.Group?.Name === groupName);
-    const entry = { Asset: asset, Color: Array.isArray(asset?.ColorSchema) ? asset.ColorSchema.map(() => "Default") : ["Default"], Property: {} };
+    const defaultColor = Array.isArray(asset?.ColorSchema) ? asset.ColorSchema.map(() => "Default") : ["Default"];
+    const entry = {
+      Asset: asset,
+      Color: colorOverride ? [...colorOverride] : defaultColor,
+      Property: propertyOverride ? { ...propertyOverride } : {}
+    };
     if (idx >= 0) char.Appearance[idx] = entry;
     else char.Appearance.push(entry);
     return true;
@@ -602,7 +629,93 @@
     return true;
   }
 
-  function executeItemAdd(memberNumber, itemName, part) {
+  // 颜色名 → hex 映射
+  const COLOR_NAME_TO_HEX = {
+    "红色": "#FF0000", "红": "#FF0000",
+    "蓝色": "#0000FF", "蓝": "#0000FF",
+    "绿色": "#00FF00", "绿": "#00FF00",
+    "黄色": "#FFFF00", "黄": "#FFFF00",
+    "紫色": "#8000FF", "紫": "#8000FF",
+    "粉色": "#FFC0CB", "粉": "#FFC0CB", "粉红": "#FFC0CB",
+    "橙色": "#FFA500", "橙": "#FFA500", "橙红": "#FF4500",
+    "青色": "#00FFFF", "青": "#00FFFF",
+    "品红": "#FF00FF",
+    "黑色": "#000000", "黑": "#000000",
+    "白色": "#FFFFFF", "白": "#FFFFFF",
+    "灰色": "#808080", "灰": "#808080",
+    "浅灰": "#C0C0C0", "深灰": "#404040",
+    "棕色": "#8B4513", "棕": "#8B4513",
+    "金色": "#FFD700", "金": "#FFD700",
+    "银色": "#C0C0C0", "银": "#C0C0C0",
+    "米色": "#F5F5DC",
+    "淡金": "#F0E68C",
+    "深蓝灰": "#2F4F4F",
+    "灰蓝": "#778899",
+  };
+
+  function colorNameToHex(name) {
+    if (!name) return null;
+    const n = name.trim();
+    if (/^#[0-9A-Fa-f]{6}$/.test(n)) return n.toUpperCase();
+    return COLOR_NAME_TO_HEX[n] || null;
+  }
+
+  // 道具属性映射 — 中文属性名 → BC 内部字段名
+  const PROPERTY_MAP = {
+    "强度": { key: "Intensity", values: { "关": -1, "低": 0, "中": 1, "高": 2, "最大": 2, "关闭": -1, "弱": 0, "强": 2 } },
+    "震动": { key: "Intensity", values: { "关": -1, "低": 0, "中": 1, "高": 2, "最大": 2, "关闭": -1, "弱": 0, "强": 2 } },
+    "开关": { key: "SetState", values: { "开": true, "关": false, "开启": true, "关闭": false } },
+    "绑法": { key: "Type", values: null },
+    "模式": { key: "Mode", values: null },
+  };
+
+  // 设置已有道具的属性（强度/绑法/开关等）
+  function executeItemSet(memberNumber, itemName, part, propName, valueName) {
+    try {
+      const char = ChatRoomCharacter.find(c => c.MemberNumber === memberNumber) || Player;
+      if (!char) return false;
+
+      let target = findItemByPart(char, itemName, part);
+      if (!target) {
+        const mapping = findItemAsset(itemName);
+        if (mapping) {
+          target = char.Appearance.find(a => a?.Asset?.Group?.Name === mapping.group);
+          if (!target) {
+            target = char.Appearance.find(a => a?.Asset?.Group?.Name?.startsWith("Item") && a?.Asset?.Name === mapping.asset);
+          }
+        }
+      }
+      if (!target) { console.log("[MisakaChat] ITEMSET 找不到道具:", itemName); return false; }
+      if (target?.Property?.LockedBy) { console.log("[MisakaChat] 道具被锁:", target.Property.LockedBy); return false; }
+
+      const propMap = PROPERTY_MAP[propName];
+      if (!propMap) { console.log("[MisakaChat] 未知属性:", propName); return false; }
+
+      let actualValue;
+      if (propMap.values) {
+        actualValue = propMap.values[valueName];
+        if (actualValue === undefined) {
+          const num = parseInt(valueName);
+          if (!isNaN(num)) actualValue = num;
+          else { console.log("[MisakaChat] 未知属性值:", valueName, "可用:", Object.keys(propMap.values).join("/")); return false; }
+        }
+      } else {
+        actualValue = valueName;
+      }
+
+      if (!target.Property) target.Property = {};
+      target.Property[propMap.key] = actualValue;
+
+      ChatRoomCharacterUpdate(char);
+      console.log(`[MisakaChat] 已设置 #${memberNumber} ${itemName} ${propMap.key}=${actualValue}`);
+      return true;
+    } catch(e) {
+      console.error("[MisakaChat] 设置道具属性失败:", e.message);
+      return false;
+    }
+  }
+
+  function executeItemAdd(memberNumber, itemName, part, color) {
     try {
       const mapping = findItemAsset(itemName);
       if (!mapping) { console.log("[MisakaChat] 未知道具:", itemName); return false; }
@@ -665,9 +778,20 @@
         }
       }
       
-      directSetItem(char, targetGroup, targetAsset);
+      // 颜色覆盖
+      let colorOverride = null;
+      if (color) {
+        const hex = colorNameToHex(color);
+        if (hex) {
+          const colorSchema = targetAsset?.ColorSchema;
+          colorOverride = Array.isArray(colorSchema) ? colorSchema.map(() => hex) : [hex];
+        } else {
+          console.log("[MisakaChat] 未知颜色:", color);
+        }
+      }
+      directSetItem(char, targetGroup, targetAsset, colorOverride);
       ChatRoomCharacterUpdate(char);
-      console.log(`[MisakaChat] 已给 #${memberNumber} 添加 ${itemName} (group: ${targetGroup}${part ? ", 部位:" + part : ""})`);
+      console.log(`[MisakaChat] 已给 #${memberNumber} 添加 ${itemName} (group: ${targetGroup}${part ? ", 部位:" + part : ""}${color ? ", 颜色:" + color : ""})`);
       return true;
     } catch(e) {
       console.error("[MisakaChat] 添加道具失败:", e.message);
@@ -751,7 +875,9 @@
       } else if (cmd.type === "moveEdge") {
         moveOk = await executeMoveEdge(cmd.memberNumber, cmd.edge);
       } else if (cmd.type === "itemadd") {
-        itemOk = executeItemAdd(cmd.memberNumber, cmd.item, cmd.part);
+        itemOk = executeItemAdd(cmd.memberNumber, cmd.item, cmd.part, cmd.color);
+      } else if (cmd.type === "itemset") {
+        itemOk = executeItemSet(cmd.memberNumber, cmd.item, cmd.part, cmd.property, cmd.value);
       } else if (cmd.type === "itemdel") {
         console.log(`[MisakaChat] CMD itemdel #${cmd.memberNumber} item="${cmd.item}" part="${cmd.part||""}"`);
         itemOk = executeItemDel(cmd.memberNumber, cmd.item, cmd.part);
