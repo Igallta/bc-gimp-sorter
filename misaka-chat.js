@@ -662,8 +662,8 @@
 
   // 道具属性映射 — 中文属性名 → BC 内部字段名
   const PROPERTY_MAP = {
-    "强度": { key: "Intensity", values: { "关": -1, "低": 0, "中": 1, "高": 2, "最大": 2, "关闭": -1, "弱": 0, "强": 2 } },
-    "震动": { key: "Intensity", values: { "关": -1, "低": 0, "中": 1, "高": 2, "最大": 2, "关闭": -1, "弱": 0, "强": 2 } },
+    "强度": { key: "Intensity", values: { "关": -1, "低": 0, "中": 1, "高": 2, "最大": 3, "关闭": -1, "弱": 0, "强": 2 } },
+    "震动": { key: "Intensity", values: { "关": -1, "低": 0, "中": 1, "高": 2, "最大": 3, "关闭": -1, "弱": 0, "强": 2 } },
     "开关": { key: "SetState", values: { "开": true, "关": false, "开启": true, "关闭": false } },
     "绑法": { key: "Type", values: null },
     "模式": { key: "Mode", values: null },
@@ -706,16 +706,23 @@
       if (!target.Property) target.Property = {};
       target.Property[propMap.key] = actualValue;
 
-      // 跳蛋/振动器：设强度时同步处理 Mode 和 Effect
+      // 跳蛋/振动器：设强度时同步处理 Mode/Effect/TypeRecord
       if (propMap.key === "Intensity") {
-        if (actualValue >= 0) {
-          target.Property.Mode = "Constant";
-          if (!Array.isArray(target.Property.Effect)) target.Property.Effect = [];
-          if (!target.Property.Effect.includes("Egged")) target.Property.Effect.push("Egged");
-          if (!target.Property.Effect.includes("Vibrating")) target.Property.Effect.push("Vibrating");
-        } else {
-          target.Property.Mode = "Off";
-          target.Property.Effect = (target.Property.Effect || []).filter(e => e !== "Vibrating");
+        const INTENSITY_MAP = {
+          [-1]: { mode: "Off", effect: ["Egged"], tr: 0 },
+          [0]:  { mode: "Low", effect: ["Egged", "Vibrating"], tr: 1 },
+          [1]:  { mode: "Medium", effect: ["Egged", "Vibrating"], tr: 2 },
+          [2]:  { mode: "High", effect: ["Egged", "Vibrating"], tr: 3 },
+          [3]:  { mode: "Maximum", effect: ["Egged", "Vibrating"], tr: 4 }
+        };
+        const preset = INTENSITY_MAP[actualValue];
+        if (preset) {
+          target.Property.Mode = preset.mode;
+          target.Property.Effect = [...preset.effect];
+          if (!target.Property.TypeRecord) target.Property.TypeRecord = {};
+          // 找到 vibrating 或第一个 key
+          const trKey = Object.keys(target.Property.TypeRecord)[0] || "vibrating";
+          target.Property.TypeRecord[trKey] = preset.tr;
         }
       }
 
