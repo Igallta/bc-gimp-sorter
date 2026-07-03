@@ -13,9 +13,9 @@
   const CONFIG = {
     enabled: true,
     apiBase: "https://api.deepseek.com/chat/completions",
-    model: "deepseek-v4-flash",
-    fallbackModel: "deepseek-v4-pro",
-    maxTokens: 2048,
+    model: "deepseek-v4-pro",
+    fallbackModel: "deepseek-v4-flash",
+    maxTokens: 8192,
     temperature: 0.8,
     maxContext: 50,
     cooldownMs: 3000,
@@ -907,6 +907,18 @@
     };
     if (idx >= 0) char.Appearance[idx] = entry;
     else char.Appearance.push(entry);
+    // 必须调 CharacterRefresh 重建渲染层，否则 BC 验证循环会重置
+    if (typeof CharacterRefresh === "function") CharacterRefresh(char);
+    return true;
+  }
+
+  // 只修改已有道具的颜色（不替换整个 entry）
+  function directSetColor(char, groupName, colorOverride) {
+    if (!char || !colorOverride) return false;
+    const idx = char.Appearance.findIndex(a => a.Asset?.Group?.Name === groupName);
+    if (idx < 0) return false;
+    char.Appearance[idx].Color = [...colorOverride];
+    if (typeof CharacterRefresh === "function") CharacterRefresh(char);
     return true;
   }
 
@@ -915,6 +927,7 @@
     const idx = char.Appearance.findIndex(a => a.Asset?.Group?.Name === groupName);
     if (idx < 0) return false;
     char.Appearance.splice(idx, 1);
+    if (typeof CharacterRefresh === "function") CharacterRefresh(char);
     return true;
   }
 
@@ -1224,7 +1237,13 @@
           console.log("[MisakaChat] 未知颜色:", color);
         }
       }
-      directSetItem(char, targetGroup, targetAsset, colorOverride);
+      // 如果该 group 已有道具且只改颜色，用 directSetColor
+      const existingItem = char.Appearance.find(a => a.Asset?.Group?.Name === targetGroup);
+      if (existingItem && colorOverride && !propertyOverride) {
+        directSetColor(char, targetGroup, colorOverride);
+      } else {
+        directSetItem(char, targetGroup, targetAsset, colorOverride);
+      }
       ChatRoomCharacterUpdate(char);
       console.log(`[MisakaChat] 已给 #${memberNumber} 添加 ${itemName} (group: ${targetGroup}${part ? ", 部位:" + part : ""}${color ? ", 颜色:" + color : ""})`);
       return true;
