@@ -143,8 +143,12 @@
       const segment = state.recentMessages.slice(-CONFIG.compactionInterval);
       if (segment.length < 5) { state.compactionPending = false; return; }
       
-      const summaryPrompt = `用一句话概括以下 BC 聊天片段的要点（谁说了什么、发生了什么事、提到什么操作），不超过80字，用中文：\n${segment.map(m => `${m.senderName}: ${m.content}`).join("\n")}`;
-      const summary = await callLLM("你是聊天摘要助手。用一句话概括对话内容。", [{role:"user", content: summaryPrompt}]);
+      const summaryPrompt = `用一句话概括以下 BC 聊天片段的要点（谁说了什么、发生了什么事、提到什么操作），不超过80字，用中文。
+重要限制：用户让御坂改色/换色/调颜色，只能总结为"请求改色"，绝对不要总结成"用户喜欢某颜色"。只有用户明确说"我喜欢/我偏好/我最喜欢"时，才能写成偏好。
+
+聊天片段：
+${segment.map(m => `${m.senderName}: ${m.content}`).join("\n")}`;
+      const summary = await callLLM("你是聊天摘要助手。只总结明确事实，禁止把操作请求推断成偏好。", [{role:"user", content: summaryPrompt}]);
       if (summary) {
         const time = new Date().toLocaleTimeString("zh-CN", {hour:"2-digit",minute:"2-digit"});
         state.compactionSummaries.push(`[${time}] ${summary.slice(0, 80)}`);
@@ -252,6 +256,49 @@
     if (!/(喜欢|偏好|最喜欢|讨厌)/.test(text)) return "";
     if (!/(记得|还记得|上次|以前|之前|什么颜色|哪种颜色|颜色)/.test(text)) return "";
     return `\n\n【本次是偏好记忆查询】\n只有在上下文/记忆中明确出现用户本人说过"我喜欢/我最喜欢/我偏好/我讨厌"时，才能回答偏好。\n用户曾要求你改色、换色、操作某种颜色，不等于用户喜欢这种颜色。\n如果没有明确偏好证据，必须回答"我没记过"或"不确定"，不要猜。`;
+  }
+
+  function isColorPreferenceQuery(content) {
+    const text = String(content || "");
+    if (!/(我|咲|自己).{0,8}(喜欢|偏好|最喜欢)/.test(text)) return false;
+    return /(什么颜色|哪种颜色|颜色是什么|喜欢什么|偏好什么|记得.*颜色|以前.*颜色|之前.*颜色)/.test(text);
+  }
+
+  function extractExplicitColorPreference(text, speakerName) {
+    const raw = String(text || "");
+    const beforeReply = raw.split(/→|=>/)[0];
+    const speakerPrefix = speakerName ? `${speakerName}:` : "";
+    let content = beforeReply;
+    if (speakerPrefix && content.includes(speakerPrefix)) {
+      content = content.slice(content.lastIndexOf(speakerPrefix) + speakerPrefix.length);
+    }
+    if (/(什么|哪种|哪个|吗|么|？|\?)/.test(content)) return "";
+    if (/(改|换|调|弄|染|变成|设置|窝|窝窝|口球|项圈|道具|衣服|内衬|毛毯|带子)/.test(content)) return "";
+    const match = content.match(/(?:我|咲)(?:真的|其实|比较|最)?\s*(?:最喜欢|喜欢|偏好|更喜欢)\s*(?:的颜色)?(?:是|为|:|：)?\s*(#[0-9a-fA-F]{6}|[一-龥A-Za-z0-9#]{1,12}色)/);
+    if (!match) return "";
+    const color = match[1].trim();
+    if (/(什么|哪|这个|那个|这种|那种)/.test(color)) return "";
+    return color;
+  }
+
+  function findExplicitColorPreference(senderNum, senderName) {
+    const candidates = [];
+    const recent = (state.recentMessages || []).filter(m =>
+      !m.isSelf && (m.senderMemberNumber === senderNum || m.senderName === senderName)
+    );
+    for (const m of recent) candidates.push(m.content);
+    for (const m of (state.semanticMemories || [])) {
+      if (m.memberNum === senderNum || m.sender === senderName) candidates.push(m.text);
+    }
+    const mem = loadMemory();
+    const profile = mem.profiles && mem.profiles[String(senderNum)];
+    if (profile?.notes) candidates.push(`${senderName}: ${profile.notes}`);
+
+    for (let i = candidates.length - 1; i >= 0; i--) {
+      const color = extractExplicitColorPreference(candidates[i], senderName);
+      if (color) return color;
+    }
+    return "";
   }
 
   // === Long-term Memory Refinement ===
@@ -1809,8 +1856,15 @@ ${recentSemantic}`;
         }
       }
 
-      const fullPrompt = systemPrompt + bceInfo + preferenceMemoryGuard(content);
-      const reply = await callLLM(fullPrompt, contextMessages);
+      let reply = "";
+      const colorPreferenceQuery = isColorPreferenceQuery(content);
+      if (colorPreferenceQuery) {
+        const color = findExplicitColorPreference(senderNum, senderName);
+        reply = color ? `${color}吧，我记得你明确说过。` : "我没记过，别让我猜。";
+      } else {
+        const fullPrompt = systemPrompt + bceInfo + preferenceMemoryGuard(content);
+        reply = await callLLM(fullPrompt, contextMessages);
+      }
       if (!reply) return;
 
       // 解析操作指令
@@ -1839,7 +1893,7 @@ ${recentSemantic}`;
       if (!finalReply) return;
 
       // 存语义记忆（有意义的对话才存）
-      if (finalReply.length > 3) {
+      if (finalReply.length > 3 && !colorPreferenceQuery) {
         const memText = `${senderName}: ${content} → 御坂: ${finalReply}`;
         storeSemanticMemory(memText, { sender: senderName, memberNum: senderNum }).catch(() => {});
       }
