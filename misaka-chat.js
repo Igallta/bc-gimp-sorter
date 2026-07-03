@@ -247,6 +247,13 @@
     return scored.slice(0, topK).filter(s => s.score > 0.3);  // 相似度阈值
   }
 
+  function preferenceMemoryGuard(content) {
+    const text = String(content || "");
+    if (!/(喜欢|偏好|最喜欢|讨厌)/.test(text)) return "";
+    if (!/(记得|还记得|上次|以前|之前|什么颜色|哪种颜色|颜色)/.test(text)) return "";
+    return `\n\n【本次是偏好记忆查询】\n只有在上下文/记忆中明确出现用户本人说过"我喜欢/我最喜欢/我偏好/我讨厌"时，才能回答偏好。\n用户曾要求你改色、换色、操作某种颜色，不等于用户喜欢这种颜色。\n如果没有明确偏好证据，必须回答"我没记过"或"不确定"，不要猜。`;
+  }
+
   // === Long-term Memory Refinement ===
   // 每 memoryRefineInterval 条消息，用 LLM 从 profiles + compaction + semanticMemories 提炼一份长期记忆摘要
   async function maybeRefineMemory() {
@@ -259,8 +266,21 @@
       const compactions = (state.compactionSummaries || []).join("\n");
       const recentSemantic = (state.semanticMemories || []).slice(-20).map(m => m.text).join("\n");
       
-      const prompt = `根据以下 BC 聊天记录片段，提炼出御坂应该长期记住的重要信息（人际关系、偏好、重要事件、约束关系），不超过100字，用中文：\n\n人物档案:\n${profiles}\n\n对话摘要:\n${compactions}\n\n记忆片段:\n${recentSemantic}`;
-      const refined = await callLLM("你是记忆提炼助手。从聊天记录中提炼重要长期信息。", [{role:"user", content: prompt}]);
+      const prompt = `根据以下 BC 聊天记录片段，提炼出御坂应该长期记住的重要信息（人际关系、明确偏好、重要事件、约束关系），不超过100字，用中文。
+重要限制：
+- 不要把"让御坂改成某种颜色/操作某个颜色"当成用户偏好。
+- 只有用户明确说"我喜欢/我最喜欢/我偏好/我讨厌"时，才能提炼为偏好。
+- 不确定是不是偏好就不要写偏好。
+
+人物档案:
+${profiles}
+
+对话摘要:
+${compactions}
+
+记忆片段:
+${recentSemantic}`;
+      const refined = await callLLM("你是记忆提炼助手。只提炼有明确证据的长期信息，禁止把操作请求推断成偏好。", [{role:"user", content: prompt}]);
       if (refined) {
         const time = new Date().toLocaleDateString("zh-CN", {month:"2-digit",day:"2-digit"});
         state.refinedMemories.push(`[${time}] ${refined.slice(0, 100)}`);
@@ -1210,15 +1230,15 @@
   function executeItemColor(memberNumber, itemName, part, colorName) {
     console.log(`[MisakaChat] 改颜色: #${memberNumber} ${itemName} part=${part} color=${colorName}`);
     const char = (memberNumber === Player.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === memberNumber);
-    if (!char) { console.log("[MisakaChat] 找不到玩家 #" + memberNumber); return false; }
+    if (!char) { console.log("[MisakaChat] 找不到玩家 #" + memberNumber); return { ok: false, reason: "missing-character" }; }
     const mapping = findItemAsset(itemName);
-    if (!mapping) { console.log("[MisakaChat] 找不到道具: " + itemName); return false; }
+    if (!mapping) { console.log("[MisakaChat] 找不到道具: " + itemName); return { ok: false, reason: "unknown-item" }; }
     // findItemAsset 返回 { group, asset }，需要从 BC Asset 数组里找真正的 Asset 对象
     const realAsset = Asset.find(a => a.Name === mapping.asset && a.Group?.Name === mapping.group);
-    if (!realAsset) { console.log("[MisakaChat] 找不到 Asset 对象: " + mapping.asset); return false; }
+    if (!realAsset) { console.log("[MisakaChat] 找不到 Asset 对象: " + mapping.asset); return { ok: false, reason: "missing-asset" }; }
     const groupName = mapping.group;
     const hex = colorNameToHex(colorName);
-    if (!hex) { console.log("[MisakaChat] 未知颜色: " + colorName); return false; }
+    if (!hex) { console.log("[MisakaChat] 未知颜色: " + colorName); return { ok: false, reason: "unknown-color" }; }
 
     // part 可能是身体部位（如"腿"）或道具部件名（如"毛毯"）
     // 先检查是不是身体部位
@@ -1230,8 +1250,14 @@
           if (directSetColor(char, g, [hex])) ok = true;
         }
         if (ok) { ChatRoomCharacterUpdate(char); console.log("[MisakaChat] ✅ 颜色已改", part, colorName); }
-        return ok;
+        return ok ? { ok: true } : { ok: false, reason: "missing-part-item", memberNumber, item: itemName };
       }
+    }
+
+    const existingItem = char.Appearance.find(a => a.Asset?.Group?.Name === groupName);
+    if (!existingItem) {
+      console.log(`[MisakaChat] #${memberNumber} 身上没有 ${itemName}，不硬加`);
+      return { ok: false, reason: "missing-item", memberNumber, item: itemName };
     }
 
     // part 是道具部件名（layer name）
@@ -1245,7 +1271,7 @@
 
     const ok = directSetColor(char, groupName, [hex], layerIndex);
     if (ok) { ChatRoomCharacterUpdate(char); console.log("[MisakaChat] ✅ 颜色已改", itemName, part || "全部", colorName); }
-    return ok;
+    return ok ? { ok: true } : { ok: false, reason: "set-color-failed", memberNumber, item: itemName };
   }
 
   function executeItemSet(memberNumber, itemName, part, propName, valueName) {
@@ -1436,45 +1462,65 @@
 
   async function executeCommands(commands) {
     let moveOk = true, itemOk = true, snapOk = true;
-    
-    // 去重：同一个人同一种道具同时有 ADD 和 DEL 时，只保留 ADD（ADD 的颜色会覆盖）
-    const addKeys = new Set(commands.filter(c => c.type === "itemadd").map(c => `${c.memberNumber}:${c.item}`));
-    const filtered = commands.filter(c => {
-      if (c.type === "itemdel" && addKeys.has(`${c.memberNumber}:${c.item}`)) {
-        console.log(`[MisakaChat] 跳过多余的 ITEMDEL: ${c.memberNumber}:${c.item}（已有 ITEMADD）`);
-        return false;
+    const failures = [];
+
+    const itemKey = (c) => (c && (c.type === "itemadd" || c.type === "itemdel"))
+      ? `${c.memberNumber}:${c.item}:${c.part || ""}`
+      : "";
+    const replaceKeys = new Set();
+    for (const c of commands) {
+      if (c.type !== "itemadd") continue;
+      const key = itemKey(c);
+      if (commands.some(other => other.type === "itemdel" && itemKey(other) === key)) replaceKeys.add(key);
+    }
+    const filtered = [...commands].sort((a, b) => {
+      const ka = itemKey(a), kb = itemKey(b);
+      if (ka && ka === kb && replaceKeys.has(ka)) {
+        if (a.type === "itemdel" && b.type === "itemadd") return -1;
+        if (a.type === "itemadd" && b.type === "itemdel") return 1;
       }
-      return true;
+      return 0;
     });
+
+    const record = (cmd, result) => {
+      const ok = (result && typeof result === "object" && "ok" in result) ? !!result.ok : !!result;
+      if (!ok) failures.push({ cmd, reason: result?.reason || "failed" });
+      return ok;
+    };
     
     for (const cmd of filtered) {
       if (cmd.type === "move") {
-        moveOk = executeMove(cmd.memberNumber, cmd.direction);
+        moveOk = record(cmd, executeMove(cmd.memberNumber, cmd.direction)) && moveOk;
       } else if (cmd.type === "moveTo") {
-        moveOk = await executeMoveTo(cmd.memberNumber, cmd.targetNumber, cmd.side);
+        moveOk = record(cmd, await executeMoveTo(cmd.memberNumber, cmd.targetNumber, cmd.side)) && moveOk;
       } else if (cmd.type === "moveEdge") {
-        moveOk = await executeMoveEdge(cmd.memberNumber, cmd.edge);
+        moveOk = record(cmd, await executeMoveEdge(cmd.memberNumber, cmd.edge)) && moveOk;
       } else if (cmd.type === "itemadd") {
-        itemOk = executeItemAdd(cmd.memberNumber, cmd.item, cmd.part, cmd.color);
+        itemOk = record(cmd, executeItemAdd(cmd.memberNumber, cmd.item, cmd.part, cmd.color)) && itemOk;
       } else if (cmd.type === "itemset") {
-        itemOk = executeItemSet(cmd.memberNumber, cmd.item, cmd.part, cmd.property, cmd.value);
+        itemOk = record(cmd, executeItemSet(cmd.memberNumber, cmd.item, cmd.part, cmd.property, cmd.value)) && itemOk;
       } else if (cmd.type === "itemcolor") {
-        itemOk = executeItemColor(cmd.memberNumber, cmd.item, cmd.part, cmd.color);
+        itemOk = record(cmd, executeItemColor(cmd.memberNumber, cmd.item, cmd.part, cmd.color)) && itemOk;
       } else if (cmd.type === "itemdel") {
         console.log(`[MisakaChat] CMD itemdel #${cmd.memberNumber} item="${cmd.item}" part="${cmd.part||""}"`);
-        itemOk = executeItemDel(cmd.memberNumber, cmd.item, cmd.part);
+        itemOk = record(cmd, executeItemDel(cmd.memberNumber, cmd.item, cmd.part)) && itemOk;
       } else if (cmd.type === "itemdelall") {
         console.log(`[MisakaChat] CMD itemdelall #${cmd.memberNumber}`);
-        itemOk = executeItemDelAll(cmd.memberNumber);
+        itemOk = record(cmd, executeItemDelAll(cmd.memberNumber)) && itemOk;
       } else if (cmd.type === "snapshotSave") {
-        snapOk = saveSnapshot(cmd.memberNumber);
+        snapOk = record(cmd, saveSnapshot(cmd.memberNumber)) && snapOk;
       } else if (cmd.type === "snapshotRestore") {
-        snapOk = await executeRestoreSnapshot(cmd.memberNumber);
+        snapOk = record(cmd, await executeRestoreSnapshot(cmd.memberNumber)) && snapOk;
       } else if (cmd.type === "copyBonds") {
-        snapOk = await executeCopyBonds(cmd.srcNumber, cmd.dstNumber);
+        snapOk = record(cmd, await executeCopyBonds(cmd.srcNumber, cmd.dstNumber)) && snapOk;
       }
     }
-    return { moveOk, itemOk, snapOk };
+    return { moveOk, itemOk, snapOk, failures };
+  }
+
+  function displayNameByMemberNumber(memberNumber) {
+    const char = (memberNumber === Player?.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === memberNumber);
+    return (char?.Nickname || char?.Name || ("#" + memberNumber));
   }
 
   // === 消息处理 ===
@@ -1763,7 +1809,7 @@
         }
       }
 
-      const fullPrompt = systemPrompt + bceInfo;
+      const fullPrompt = systemPrompt + bceInfo + preferenceMemoryGuard(content);
       const reply = await callLLM(fullPrompt, contextMessages);
       if (!reply) return;
 
@@ -1772,9 +1818,17 @@
       let finalReply = sanitizeReply(cleaned);
 
       // 执行操作
+      let commandResult = null;
       if (commands.length > 0) {
-        const result = await executeCommands(commands);
-        console.log("[MisakaChat] 操作执行:", commands, result);
+        commandResult = await executeCommands(commands);
+        console.log("[MisakaChat] 操作执行:", commands, commandResult);
+        const missing = (commandResult.failures || []).find(f =>
+          f.reason === "missing-item" || f.reason === "missing-part-item"
+        );
+        if (missing?.cmd) {
+          const who = displayNameByMemberNumber(missing.cmd.memberNumber);
+          finalReply = `${who}身上没有${missing.cmd.item}，没法改。`;
+        }
       }
 
       // 如果只有指令没有文字回复，用默认回复
