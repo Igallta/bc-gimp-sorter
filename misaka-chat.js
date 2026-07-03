@@ -1029,9 +1029,10 @@
   function colorNameToHex(name) {
     if (!name) return null;
     const n = name.trim();
-    if (/^#[0-9A-Fa-f]{6}$/.test(n)) return n.toUpperCase();
+    const hexMatch = n.match(/#[0-9A-Fa-f]{6}/);
+    if (hexMatch) return hexMatch[0].toUpperCase();
     // "默认"/"Default" → 返回特殊标记，由 directSetColor 处理
-    if (n === "默认" || n === "Default" || n === "原色") return "Default";
+    if (/默认|Default|原色|恢复默认|复原/.test(n)) return "Default";
     return COLOR_NAME_TO_HEX[n] || null;
   }
 

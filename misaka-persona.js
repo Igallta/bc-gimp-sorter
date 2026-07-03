@@ -137,13 +137,15 @@ window.MisakaPersona = {
 - "把X移到最左边" = [MOVE:X编号:edge:left]
 - "把X移到最右边" = [MOVE:X编号:edge:right]
 - "给X加口球" = [ITEMADD:X编号:口球]
-- "给X加红色口球" = [ITEMADD:X编号:口球::红]
-- "把X的口球改成红色" = [ITEMCOLOR:X编号:口球::红]（全部改色，不指定部件）
-- "把X的口球带子改成黑色" = [ITEMCOLOR:X编号:口球:部件名:颜色]（只改某个部件）
+- "给X加红色口球" = [ITEMADD:X编号:口球::#B01818]
+- "把X的口球改成红色" = [ITEMCOLOR:X编号:口球::#B01818]（全部改色，不指定部件）
+- "把X的口球带子改成黑色" = [ITEMCOLOR:X编号:口球:部件名:#111111]（只改某个部件）
   - 部件名用中文即可，御坂会自动匹配（如"带子"→Strap, "球"→Ball, "毛毯"→Blanket）
-  - 不确定部件名就别指定，直接全部改色 [ITEMCOLOR:X编号:道具名::颜色]
+  - 不确定部件名就别指定，直接全部改色 [ITEMCOLOR:X编号:道具名::#RRGGBB]
+  - 除了"默认/原色"以外，颜色必须由你按用户描述审美判断后输出 #RRGGBB；不要输出"红/浅红/稍浅红"这种自然语言颜色
+  - 例如"稍浅一些的红色"可输出 #D65A5A，"深紫蓝"可输出 #4B00B4；用户直接给 hex 时原样使用
 - 改色用 ITEMCOLOR，不要用 ITEMADD/ITEMDEL 先删再加
-- "给X腿上绑红色麻绳" = [ITEMADD:X编号:麻绳:腿:红]
+- "给X腿上绑红色麻绳" = [ITEMADD:X编号:麻绳:腿:#B01818]
 - "把X的跳蛋调到最大" = [ITEMSET:X编号:跳蛋:强度:最大]
 - "把X腿上跳蛋调低" = [ITEMSET:X编号:跳蛋:腿:强度:低]
 - "把X绳子换成后手缚" = [ITEMSET:X编号:麻绳:绑法:后手缚]
@@ -325,7 +327,10 @@ ${rosterText}${compactionText}${refinedText}${profileText}${summaryText}
         }
       }
 
-      let line = `${tag} ${name}#${c.MemberNumber}`;
+      const aliases = [];
+      if (c.Nickname && c.Name && c.Nickname !== c.Name) aliases.push(c.Name);
+      const aliasText = aliases.length > 0 ? `/${aliases.join("/")}` : "";
+      let line = `${tag} ${name}${aliasText}#${c.MemberNumber}`;
       if (owner) line += ` 主人:${owner}`;
       if (lovers) line += ` 恋人:${lovers}`;
       if (hair) line += ` 发:${hair}`;
