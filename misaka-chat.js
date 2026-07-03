@@ -701,25 +701,43 @@
   // 中文绑法/样式名 → BC 英文选项名映射
   // 用 TypedItemSetOptionByName 调用，走 BC 正规 API
   const STYLE_NAME_CN = {
-    // 麻绳 ItemArms
-    "手腕绑": "WristTie", "基础": "WristTie", "普通": "WristTie",
-    "箱形绑": "BoxTie", "空手绑": "BoxTie",
-    "交叉箱形": "CrossedBoxtie", "交叉绑": "CrossedBoxtie",
+    // 麻绳/尼龙绳 ItemArms — BC 中文圈常用绑法名
+    "手腕绑": "WristTie", "基础": "WristTie", "普通": "WristTie", "手腕": "WristTie",
+    "后手缚": "BoxTie", "箱形绑": "BoxTie", "空手绑": "BoxTie", "龟甲缚": "BoxTie",
+    "交叉后手缚": "CrossedBoxtie", "交叉箱形": "CrossedBoxtie", "交叉绑": "CrossedBoxtie",
     "绳铐": "RopeCuffs", "手腕绳铐": "RopeCuffs",
-    "手腕肘绑": "WristElbowTie", "并肘绑": "WristElbowTie",
-    "简单猪绑": "SimpleHogtie", "猪绑": "SimpleHogtie", " Hogtie": "SimpleHogtie",
-    "紧箱形": "TightBoxtie", "紧绑": "TightBoxtie",
-    "手腕肘驾驭绑": "WristElbowHarnessTie", "驾驭绑": "WristElbowHarnessTie",
-    "跪姿猪绑": "KneelingHogtie",
-    "猪绑缚": "Hogtied", "后手缚": "Hogtied", "全猪绑": "Hogtied",
+    "并肘绑": "WristElbowTie", "手腕肘绑": "WristElbowTie", "手肘绑": "WristElbowTie",
+    "简单驷马缚": "SimpleHogtie", "简单猪绑": "SimpleHogtie", "猪绑": "SimpleHogtie",
+    "紧后手缚": "TightBoxtie", "紧箱形": "TightBoxtie", "紧绑": "TightBoxtie",
+    "驾驭绑": "WristElbowHarnessTie", "手腕肘驾驭绑": "WristElbowHarnessTie",
+    "跪姿驷马缚": "KneelingHogtie", "跪姿猪绑": "KneelingHogtie",
+    "驷马缚": "Hogtied", "猪绑缚": "Hogtied", "全猪绑": "Hogtied", "驷马": "Hogtied",
     "四肢着地": "AllFours", "趴绑": "AllFours",
-    "床展鹰": "BedSpreadEagle", "展鹰": "BedSpreadEagle",
-    "悬吊跪姿猪绑": "SuspensionKneelingHogtie", "悬吊猪绑": "SuspensionHogtied",
+    "床展鹰": "BedSpreadEagle", "展鹰": "BedSpreadEagle", "大字绑": "BedSpreadEagle",
+    "悬吊跪姿驷马": "SuspensionKneelingHogtie", "悬吊跪姿猪绑": "SuspensionKneelingHogtie",
+    "悬吊驷马缚": "SuspensionHogtied", "悬吊猪绑": "SuspensionHogtied", "悬吊驷马": "SuspensionHogtied",
     "悬吊四肢着地": "SuspensionAllFours",
-    "倒吊猪绑": "InvertedSuspensionHogtied", "倒吊": "InvertedSuspensionHogtied",
+    "倒吊驷马缚": "InvertedSuspensionHogtied", "倒吊猪绑": "InvertedSuspensionHogtied", "倒吊": "InvertedSuspensionHogtied",
     "倒吊四肢着地": "InvertedSuspensionAllFours",
-    // 通用
+    // 通用铐类
     "链条": "Chain", "铐": "Cuffs", "环": "Rings", "桶": "Buckets", "锁": "Lock",
+    "无": "None", "关闭": "None", "闭合": "Closed", "链接": "Chained",
+    // 口塞类
+    "普通": "Normal", "紧": "Tight", "亮": "Shiny",
+    "小": "Small", "交叉": "Crossed", "全": "Full", "双层": "Double", "覆盖": "Cover",
+    "打开": "Open", "塞入": "Plug", "空": "Empty",
+    // 绳类 ItemLegs
+    "膝盖": "Knees", "大腿": "Thighs", "青蛙绑": "Frogtie", "交叉腿": "Crossed",
+    // 绳类 ItemFeet
+    "脚踝": "Ankles", "膝盖脚踝": "AnklesKnees",
+    // 道具设备
+    "关": "Opaque", "开": "Shadow", // 折叠屏风
+    //贞操带
+    "后开": "OpenBack", "后闭": "ClosedBack",
+    // 束腰
+    "吊带": "Garter", "无吊带": "Garterless",
+    // 乳胶衣/紧身衣
+    "乳胶衣": "Latex", "透视": "UnZip",
   };
 
   // 在 setExtendedItemProperty 的 typed 分支里用中文映射
