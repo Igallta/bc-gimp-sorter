@@ -925,12 +925,12 @@
     const item = char.Appearance[idx];
     const expectedLen = item.Color?.length || item.Asset?.ColorableLayerCount || 1;
     const hex = Array.isArray(colorOverride) ? colorOverride[0] : colorOverride;
+    const useDefault = (hex === "Default");
+    const fillValue = useDefault ? "Default" : hex;
     if (layerIndex !== undefined && layerIndex >= 0 && layerIndex < expectedLen) {
-      // 只改指定 slot
-      item.Color[layerIndex] = hex;
+      item.Color[layerIndex] = fillValue;
     } else {
-      // 全部 slot 改成同一颜色
-      item.Color = Array(expectedLen).fill(hex);
+      item.Color = Array(expectedLen).fill(fillValue);
     }
     if (typeof CharacterRefresh === "function") CharacterRefresh(char);
     return true;
@@ -1030,6 +1030,8 @@
     if (!name) return null;
     const n = name.trim();
     if (/^#[0-9A-Fa-f]{6}$/.test(n)) return n.toUpperCase();
+    // "默认"/"Default" → 返回特殊标记，由 directSetColor 处理
+    if (n === "默认" || n === "Default" || n === "原色") return "Default";
     return COLOR_NAME_TO_HEX[n] || null;
   }
 
