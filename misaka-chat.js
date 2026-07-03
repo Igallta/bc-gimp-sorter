@@ -660,14 +660,120 @@
     return COLOR_NAME_TO_HEX[n] || null;
   }
 
-  // 道具属性映射 — 中文属性名 → BC 内部字段名
+  // 道具属性映射 — 中文属性名 → 处理方式
+  // vibrating archetype 用 VIB_INTENSITY_CN 映射
+  // typed archetype 用数字索引
+  // modular archetype 用模块 key + 数字索引
   const PROPERTY_MAP = {
-    "强度": { key: "Intensity", values: { "关": -1, "低": 0, "中": 1, "高": 2, "最大": 3, "关闭": -1, "弱": 0, "强": 2 } },
-    "震动": { key: "Intensity", values: { "关": -1, "低": 0, "中": 1, "高": 2, "最大": 3, "关闭": -1, "弱": 0, "强": 2 } },
-    "开关": { key: "SetState", values: { "开": true, "关": false, "开启": true, "关闭": false } },
-    "绑法": { key: "Type", values: null },
-    "模式": { key: "Mode", values: null },
+    "强度": { type: "vibrator" },
+    "震动": { type: "vibrator" },
+    "模式": { type: "vibrator" },
+    "开关": { type: "direct", key: "SetState", values: { "开": true, "关": false, "开启": true, "关闭": false } },
+    "绑法": { type: "typed" },
+    "类型": { type: "typed" },
+    "样式": { type: "typed" },
+    "透明度": { type: "direct", key: "Opacity", values: null },
   };
+
+  // 通用：通过 archetype 正规设置道具属性
+  // 会同步 TypeRecord + Property，避免 BC 验证循环重置
+
+  // 振动器标准选项（TypeRecord.vibrating 索引 → 选项名）
+  const VIBRATOR_OPTIONS = [
+    { name: "Off",     mode: "Off",     intensity: -1, effect: ["Egged"],               tr: 0 },
+    { name: "Low",     mode: "Low",     intensity: 0,  effect: ["Egged","Vibrating"],   tr: 1 },
+    { name: "Medium",  mode: "Medium",  intensity: 1,  effect: ["Egged","Vibrating"],   tr: 2 },
+    { name: "High",    mode: "High",    intensity: 2,  effect: ["Egged","Vibrating"],   tr: 3 },
+    { name: "Maximum", mode: "Maximum", intensity: 3,  effect: ["Egged","Vibrating"],   tr: 4 },
+    { name: "Random",  mode: "Random",  intensity: 0,  effect: ["Egged"],               tr: 5 },
+    { name: "Escalate",mode: "Escalate",intensity: 0,  effect: ["Egged","Vibrating"],   tr: 6 },
+    { name: "Tease",   mode: "Tease",   intensity: 0,  effect: ["Egged"],               tr: 7 },
+    { name: "Deny",    mode: "Deny",    intensity: 0,  effect: ["Egged","Edged"],       tr: 8 },
+    { name: "Edge",    mode: "Edge",    intensity: 0,  effect: ["Egged","Vibrating","Edged"], tr: 9 },
+  ];
+
+  // 中文振动器档位 → VIBRATOR_OPTIONS 索引
+  const VIB_INTENSITY_CN = {
+    "关": 0, "关闭": 0, "低": 1, "弱": 1, "中": 2, "高": 3, "强": 3, "最大": 4, "极限": 4,
+    "随机": 5, "递增": 6, "挑逗": 7, "拒绝": 8, "边缘": 9
+  };
+
+  // 通用：设置 Extended 道具属性
+  function setExtendedItemProperty(char, item, propName, valueName) {
+    if (!item || !item.Asset) return { ok: false, msg: "道具不存在" };
+    if (item.Property?.LockedBy) return { ok: false, msg: "道具被锁" };
+
+    const archetype = item.Asset.Archetype;
+    if (!item.Property) item.Property = {};
+    if (!item.Property.TypeRecord) item.Property.TypeRecord = {};
+
+    if (archetype === "vibrating") {
+      // 振动器：propName 应该是 "强度" 或 "震动" 或 "模式"
+      const idx = VIB_INTENSITY_CN[valueName];
+      if (idx === undefined) {
+        // 尝试直接按选项名匹配
+        const opt = VIBRATOR_OPTIONS.find(o => o.name.toLowerCase() === valueName.toLowerCase());
+        if (!opt) return { ok: false, msg: `未知振动档位: ${valueName}` };
+        return applyVibratorOption(char, item, opt);
+      }
+      return applyVibratorOption(char, item, VIBRATOR_OPTIONS[idx]);
+    }
+
+    if (archetype === "typed") {
+      // typed 道具：TypeRecord.typed = 索引
+      // 尝试把 valueName 解析为数字索引
+      let typeIdx = parseInt(valueName);
+      if (isNaN(typeIdx)) {
+        // 尝试按名称匹配（需要 Asset 配置，R129 可能不支持运行时查询）
+        return { ok: false, msg: `typed 道具需要数字索引，无法识别: ${valueName}` };
+      }
+      item.Property.TypeRecord.typed = typeIdx;
+      CharacterRefresh(char, false, false);
+      return { ok: true, msg: `已设置 ${item.Asset.Description} 类型=${typeIdx}` };
+    }
+
+    if (archetype === "modular") {
+      // modular 道具：TypeRecord 有多个 key
+      // propName 格式：模块key（如 g/h/c/b/e），valueName：索引
+      const trKey = propName;
+      let typeIdx = parseInt(valueName);
+      if (isNaN(typeIdx)) return { ok: false, msg: `modular 模块 ${trKey} 需要数字索引: ${valueName}` };
+      item.Property.TypeRecord[trKey] = typeIdx;
+      CharacterRefresh(char, false, false);
+      return { ok: true, msg: `已设置 ${item.Asset.Description} 模块 ${trKey}=${typeIdx}` };
+    }
+
+    // 非 Extended 道具 — 直接设 Property
+    if (!item.Property) item.Property = {};
+    item.Property[propName] = valueName;
+    CharacterRefresh(char, false, false);
+    return { ok: true, msg: `已设置 ${item.Asset.Description} ${propName}=${valueName}` };
+  }
+
+  function applyVibratorOption(char, item, opt) {
+    if (!item.Property) item.Property = {};
+    if (!item.Property.TypeRecord) item.Property.TypeRecord = {};
+    
+    // 保留锁字段
+    const lockFields = {};
+    for (const k of ["LockedBy","LockMemberNumber","LockMemberName","Name","OverridePriority"]) {
+      if (item.Property[k] !== undefined) lockFields[k] = item.Property[k];
+    }
+    
+    item.Property.Mode = opt.mode;
+    item.Property.Intensity = opt.intensity;
+    item.Property.Effect = [...opt.effect];
+    
+    // 找到 TypeRecord 里的 vibrating key
+    const trKey = Object.keys(item.Property.TypeRecord)[0] || "vibrating";
+    item.Property.TypeRecord[trKey] = opt.tr;
+    
+    // 恢复锁字段
+    Object.assign(item.Property, lockFields);
+    
+    CharacterRefresh(char, false, false);
+    return { ok: true, msg: `已设置 ${item.Asset.Description} ${opt.name}` };
+  }
 
   // 设置已有道具的属性（强度/绑法/开关等）
   function executeItemSet(memberNumber, itemName, part, propName, valueName) {
@@ -686,49 +792,14 @@
         }
       }
       if (!target) { console.log("[MisakaChat] ITEMSET 找不到道具:", itemName); return false; }
-      if (target?.Property?.LockedBy) { console.log("[MisakaChat] 道具被锁:", target.Property.LockedBy); return false; }
 
-      const propMap = PROPERTY_MAP[propName];
-      if (!propMap) { console.log("[MisakaChat] 未知属性:", propName); return false; }
-
-      let actualValue;
-      if (propMap.values) {
-        actualValue = propMap.values[valueName];
-        if (actualValue === undefined) {
-          const num = parseInt(valueName);
-          if (!isNaN(num)) actualValue = num;
-          else { console.log("[MisakaChat] 未知属性值:", valueName, "可用:", Object.keys(propMap.values).join("/")); return false; }
-        }
+      const result = setExtendedItemProperty(char, target, propName, valueName);
+      if (result.ok) {
+        console.log(`[MisakaChat] ITEMSET 成功: #${memberNumber} ${result.msg}`);
       } else {
-        actualValue = valueName;
+        console.log(`[MisakaChat] ITEMSET 失败: #${memberNumber} ${result.msg}`);
       }
-
-      if (!target.Property) target.Property = {};
-      target.Property[propMap.key] = actualValue;
-
-      // 跳蛋/振动器：设强度时同步处理 Mode/Effect/TypeRecord
-      if (propMap.key === "Intensity") {
-        const INTENSITY_MAP = {
-          [-1]: { mode: "Off", effect: ["Egged"], tr: 0 },
-          [0]:  { mode: "Low", effect: ["Egged", "Vibrating"], tr: 1 },
-          [1]:  { mode: "Medium", effect: ["Egged", "Vibrating"], tr: 2 },
-          [2]:  { mode: "High", effect: ["Egged", "Vibrating"], tr: 3 },
-          [3]:  { mode: "Maximum", effect: ["Egged", "Vibrating"], tr: 4 }
-        };
-        const preset = INTENSITY_MAP[actualValue];
-        if (preset) {
-          target.Property.Mode = preset.mode;
-          target.Property.Effect = [...preset.effect];
-          if (!target.Property.TypeRecord) target.Property.TypeRecord = {};
-          // 找到 vibrating 或第一个 key
-          const trKey = Object.keys(target.Property.TypeRecord)[0] || "vibrating";
-          target.Property.TypeRecord[trKey] = preset.tr;
-        }
-      }
-
-      ChatRoomCharacterUpdate(char);
-      console.log(`[MisakaChat] 已设置 #${memberNumber} ${itemName} ${propMap.key}=${actualValue}`);
-      return true;
+      return result.ok;
     } catch(e) {
       console.error("[MisakaChat] 设置道具属性失败:", e.message);
       return false;
