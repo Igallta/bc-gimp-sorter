@@ -26,6 +26,10 @@
     maxSummaries: 50,
     summaryInterval: 30,
     moveCooldownMs: 5000,  // 移动操作冷却
+    compactionInterval: 20,  // 每 N 条消息生成一次 context compaction
+    maxCompactionSummaries: 5,  // 保留最近 N 条 compaction 摘要
+    idleTimeoutMs: 300000,  // 5 分钟无人说话触发 idle
+    idleCheckMs: 60000,  // 每分钟检查一次 idle
   };
 
   let state = {
@@ -37,7 +41,16 @@
     busy: false,
     roomJoinLog: [],
     lastMoveTime: 0,  // 移动操作冷却
+    lastNonSelfMsgTime: 0,  // 上次非自己消息时间（idle 检测用）
+    compactionPending: false,  // 正在生成 compaction 摘要
   };
+
+  // 从 localStorage 加载 compaction 摘要
+  try {
+    const savedCompaction = JSON.parse(localStorage.getItem("misaka_compaction") || "[]");
+    if (Array.isArray(savedCompaction)) state.compactionSummaries = savedCompaction;
+    else state.compactionSummaries = [];
+  } catch(e) { state.compactionSummaries = []; }
 
   try {
     const savedLog = JSON.parse(localStorage.getItem("misaka_joinlog") || "[]");
@@ -95,6 +108,118 @@
       mem.summaries = [old, ...mem.summaries.slice(2)];
     }
     saveMemory(mem);
+  }
+
+  // === Context Compaction ===
+  // 每 compactionInterval 条消息，用 LLM 生成一段摘要，塞入 system prompt
+  // 这样即使 recentMessages 超过 50 条被截断，御坂仍然记得之前发生了什么
+  async function maybeCompactContext() {
+    if (state.messageCount % CONFIG.compactionInterval !== 0 || state.compactionPending) return;
+    if (state.messageCount === 0) return;
+    state.compactionPending = true;
+    try {
+      // 取上一段 compactionInterval 条消息
+      const segment = state.recentMessages.slice(-CONFIG.compactionInterval);
+      if (segment.length < 5) { state.compactionPending = false; return; }
+      
+      const summaryPrompt = `用一句话概括以下 BC 聊天片段的要点（谁说了什么、发生了什么事、提到什么操作），不超过80字，用中文：\n${segment.map(m => `${m.senderName}: ${m.content}`).join("\n")}`;
+      const summary = await callLLM("你是聊天摘要助手。用一句话概括对话内容。", [{role:"user", content: summaryPrompt}]);
+      if (summary) {
+        const time = new Date().toLocaleTimeString("zh-CN", {hour:"2-digit",minute:"2-digit"});
+        state.compactionSummaries.push(`[${time}] ${summary.slice(0, 80)}`);
+        if (state.compactionSummaries.length > CONFIG.maxCompactionSummaries) {
+          state.compactionSummaries.shift();
+        }
+        try { localStorage.setItem("misaka_compaction", JSON.stringify(state.compactionSummaries)); } catch(e) {}
+        console.log("[MisakaChat] Context compaction 完成:", summary.slice(0, 50));
+      }
+    } catch(e) {
+      console.warn("[MisakaChat] Context compaction 失败:", e.message);
+    } finally {
+      state.compactionPending = false;
+    }
+  }
+
+  // === Idle / Heartbeat ===
+  // 5 分钟无人说话时随机说一句闲聊
+  // 有人进入时打招呼
+  const IDLE_LINES = [
+    "房间里好安静啊...",
+    "..没有人想聊聊天吗？",
+    "*整理了一下袖口*",
+    "安静下来了呢。",
+    "*百无聊赖地翻看记录本*",
+    "嗯...在等什么人吗？",
+    "*小声哼着歌*",
+  ];
+  const GREET_LINES = [
+    "欢迎回来~",
+    "你来了。",
+    "*点头致意*",
+    "嗯，来了啊。",
+    "*抬头看了一眼*",
+    "你来了呀~",
+    "欢迎~",
+  ];
+  let idleTimer = null;
+
+  function startIdleTimer() {
+    if (idleTimer) clearInterval(idleTimer);
+    idleTimer = setInterval(() => {
+      if (!isCurrent() || !CONFIG.enabled || state.busy) return;
+      if (typeof CurrentScreen === "undefined" || CurrentScreen !== "ChatRoom") return;
+      const now = Date.now();
+      if (state.lastNonSelfMsgTime && now - state.lastNonSelfMsgTime > CONFIG.idleTimeoutMs) {
+        // 触发 idle 闲聊
+        const line = IDLE_LINES[Math.floor(Math.random() * IDLE_LINES.length)];
+        state.lastNonSelfMsgTime = now;  // 重置防再次触发
+        // idle 也要设 busy 防冲突
+        if (window.__misakaReplyInProgress || window.__misakaGlobalBusy) return;
+        window.__misakaGlobalBusy = true;
+        window.__misakaReplyInProgress = true;
+        try {
+          if (typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom") {
+            ElementValue("InputChat", line);
+            ChatRoomSendChat();
+            state.recentMessages.push({ senderName: "御搬", content: line, isSelf: true, time: now });
+            if (state.recentMessages.length > 50) state.recentMessages.shift();
+          }
+        } catch(e) { console.warn("[MisakaChat] idle 发送失败:", e.message); }
+        finally {
+          window.__misakaGlobalBusy = false;
+          window.__misakaReplyInProgress = false;
+        }
+      }
+    }, CONFIG.idleCheckMs);
+  }
+
+  // 有人进入时打招呼（延迟 2-5 秒，不抢话）
+  function maybeGreetNewcomer(name) {
+    if (!isCurrent() || !CONFIG.enabled || state.busy) return;
+    if (!name) return;
+    // 不跟 GIMP 娃娃打招呼
+    if (name.startsWith("GIMP ")) return;
+    // 不跟自己打招呼
+    if (typeof Player !== "undefined" && name === (Player.Nickname || Player.Name)) return;
+    const now = Date.now();
+    // 30 秒内不给同一个人重复打招呼
+    if (now - (state._lastGreetTime || 0) < 30000) return;
+    state._lastGreetTime = now;
+    
+    const delay = 2000 + Math.random() * 3000;
+    setTimeout(() => {
+      if (!isCurrent() || !CONFIG.enabled || state.busy) return;
+      if (typeof CurrentScreen === "undefined" || CurrentScreen !== "ChatRoom") return;
+      // 50% 概率打招呼（不是每次都打招呼，太烦）
+      if (Math.random() > 0.5) return;
+      const line = GREET_LINES[Math.floor(Math.random() * GREET_LINES.length)];
+      try {
+        ElementValue("InputChat", line);
+        ChatRoomSendChat();
+        state.recentMessages.push({ senderName: "御搬", content: line, isSelf: true, time: Date.now() });
+        if (state.recentMessages.length > 50) state.recentMessages.shift();
+      } catch(e) { console.warn("[MisakaChat] greeting 发送失败:", e.message); }
+    }, delay);
   }
 
   // === API 调用 ===
@@ -180,6 +305,11 @@
       joinInfo += "\n最近: " + recent.map(e => `${e.name}${e.action === "join" ? "进入" : "离开"}`).join(" → ");
     }
     mem.joinInfo = joinInfo || "暂无记录";
+
+    // Context compaction 摘要
+    if (state.compactionSummaries && state.compactionSummaries.length > 0) {
+      mem.compaction = state.compactionSummaries.slice(-CONFIG.maxCompactionSummaries);
+    }
 
     return MisakaPersona.build(mem);
   }
@@ -1059,6 +1189,10 @@
       state.roomJoinLog.push({ name: who, memberNum: data.Sender, time: Date.now(), action: data.Content === "ServerEnter" ? "join" : "leave" });
       if (state.roomJoinLog.length > 50) state.roomJoinLog.shift();
       try { localStorage.setItem("misaka_joinlog", JSON.stringify(state.roomJoinLog)); } catch(e) {}
+      // 有人进入时打招呼
+      if (data.Content === "ServerEnter" && who) {
+        maybeGreetNewcomer(who);
+      }
     }
 
     const validTypes = ["Chat","Talk","Emote","Whisper","Activity"];
@@ -1090,9 +1224,15 @@
     if (!isGimpDoll) {
       state.recentMessages.push({ senderName: senderName, content, senderMemberNumber: senderNum, isSelf: false, time: now });
       if (state.recentMessages.length > 30) state.recentMessages.shift();
+      state.lastNonSelfMsgTime = now;  // 更新 idle 计时
     }
 
     state.messageCount++;
+    
+    // 触发 context compaction（不阻塞回复）
+    if (state.messageCount % CONFIG.compactionInterval === 0 && !state.compactionPending) {
+      maybeCompactContext().catch(e => console.warn("[MisakaChat] compaction error:", e.message));
+    }
 
     const triggers = ["misaka","御搬","御坂","misaki的","搬运工"];
     const lower = content.toLowerCase();
@@ -1419,6 +1559,7 @@
 
     console.log("[MisakaChat] ✅ 已初始化 v2.0.0");
     sendLocal("御坂自动回复 v2.0 已加载");
+    startIdleTimer();
   }
 
   // === Debug 接口 ===
