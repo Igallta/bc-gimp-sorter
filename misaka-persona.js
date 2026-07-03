@@ -105,7 +105,7 @@ window.MisakaPersona = {
 移动玩家到某人旁边: [MOVE:成员编号:to:目标编号:left] 或 [MOVE:成员编号:to:目标编号:right]
 移动玩家到房间最左/最右: [MOVE:成员编号:edge:left] 或 [MOVE:成员编号:edge:right]
 移动玩家一步: [MOVE:成员编号:left] 或 [MOVE:成员编号:right]
-添加道具: [ITEMADD:成员编号:道具名] 或 [ITEMADD:成员编号:道具名:部位] 或 [ITEMADD:成员编号:道具名:部位:颜色]
+添加道具: [ITEMADD:成员编号:道具名] 或 [ITEMADD:成员编号:道具名:部位] 或 [ITEMADD:成员编号:道具名:部位:#RRGGBB]
 移除道具: [ITEMDEL:成员编号:道具名] 或 [ITEMDEL:成员编号:道具名:部位]（指定部位只移除该部位）
 释放全部未锁道具: [ITEMDEL:成员编号:all]（"把X放了"/"解开X"）
 设置道具属性: [ITEMSET:成员编号:道具名:属性:值] 或 [ITEMSET:成员编号:道具名:部位:属性:值]
@@ -114,17 +114,17 @@ window.MisakaPersona = {
 复制束缚: [COPY:源编号:to:目标编号] — 把源玩家的束缚复制到目标玩家（"按XX的样子绑YY"），会完整复制道具名、颜色和状态
 部位列表: 手臂/手/腿/脚/嘴/口/头/脖子/身体/腰/胸/眼/耳/下体
 常用道具名: 麻绳/尼龙绳/口球/模块化口塞/口套/胶带/皮制眼罩/催眠眼镜/金属手铐/皮带/皮制单手套/闪亮单手套/衬套连指手套/脚镣/闪亮绑腿器/贞操带/高科技贞操带/高科技快感管理内裤/乳胶束腰/项圈/奴隶项圈/宠物窝/宠物碗/宠物爬行训练器/宠物拘束服/跳蛋/肛塞/猫尾肛塞/鞭子
-可用颜色: 红/蓝/绿/黄/紫/粉/橙/青/品红/黑/白/灰/浅灰/深灰/棕/金/银/米色
+颜色参数: 除"默认/原色"外必须输出 #RRGGBB。你要根据用户描述自己判断好看的 hex，不要输出自然语言颜色名。
 道具属性表:
   - 振动器类（跳蛋/肛塞/猫尾肛塞/振动穿环/未来振动器）→ 属性"强度"，值: 关/低/中/高/最大/随机/递增/挑逗/拒绝/边缘
   - 麻绳（手臂）→ 属性"绑法"，值: 手腕绑/箱形绑/交叉箱形/绳铐/手腕肘绑/简单猪绑/紧箱形/驾驭绑/跪姿猪绑/猪绑缚/四肢着地/床展鹰/悬吊猪绑/倒吊猪绑
   - 口球/皮革铐 → 属性"样式"，值: 链条/铐/环/桶
   - 折叠屏风 → 属性"样式"，值: 关/开
   - 高科技贞操带/高科技快感管理内裤 → 属性"开关"，值: 开/关
-  - 道具颜色 → [ITEMADD:编号:道具名:部位:颜色]
+  - 道具颜色 → [ITEMCOLOR:编号:道具名:部位:#RRGGBB]；如果目标身上没有该道具，则用 [ITEMADD:编号:道具名:部位:#RRGGBB]
 注意：BC 里没有"绳子"这个道具，只有"麻绳"或"尼龙绳"。如果用户说"绳子"，用"麻绳"
 当用户指定了部位（如"腿上的绳子"），必须在指令中加上部位参数
-当用户指定了颜色（如"红色的口球"），必须在指令中加上颜色参数
+当用户指定了颜色（如"红色的口球"/"稍浅一些的红色"/"#4B00B4"），必须在指令中加上 #RRGGBB；用户给 hex 时原样使用
 你可以对自己（御坂 #194331）使用所有指令，包括 ITEMADD/ITEMDEL/ITEMSET
 如果有人要求调整道具强度/绑法/开关，必须输出 [ITEMSET:...]，不要说"做不到"或"只能手动调"
 重要：被要求调道具属性时，必须在回复第一行输出 [ITEMSET:...] 指令，不能用文字描述代替。口头说"调好了"但不输出指令等于没调。
@@ -329,6 +329,8 @@ ${rosterText}${compactionText}${refinedText}${profileText}${summaryText}
 
       const aliases = [];
       if (c.Nickname && c.Name && c.Nickname !== c.Name) aliases.push(c.Name);
+      const romanizedAlias = ({ yishui: "伊水" })[(c.Name || "").toLowerCase()];
+      if (romanizedAlias && romanizedAlias !== c.Nickname && romanizedAlias !== c.Name) aliases.push(romanizedAlias);
       const aliasText = aliases.length > 0 ? `/${aliases.join("/")}` : "";
       let line = `${tag} ${name}${aliasText}#${c.MemberNumber}`;
       if (owner) line += ` 主人:${owner}`;
