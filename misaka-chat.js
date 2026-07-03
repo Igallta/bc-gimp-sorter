@@ -1341,8 +1341,27 @@
       }
     }
 
-    const validTypes = ["Chat","Talk","Emote","Whisper","Activity"];
+    const validTypes = ["Chat","Talk","Emote","Whisper","Activity","Action"];
     if (!validTypes.includes(data.Type)) return;
+
+    // 把 BC 内部动作消息转成可读文字
+    let readableContent = content;
+    if (data.Type === "Activity" || data.Type === "Emote") {
+      // ChatOther-ItemNose-Pet → "摸了摸鼻子"
+      // ChatSelf-ItemMouth-MoanGag → "被口塞住发出呻吟"
+      readableContent = content
+        .replace(/^Chat(?:Other|Self)-Item([A-Za-z]+)-([A-Za-z]+)$/, (_, part, action) => {
+          const partMap = { Mouth:"嘴", Nose:"鼻子", Ears:"耳朵", Feet:"脚", Legs:"腿", Arms:"手臂", Hands:"手", Neck:"脖子", Torso:"身体", Breasts:"胸", Nipples:"乳头", Clit:"明蒂", Vulva:"下体", Penis:"阴茎", Butt:"屁股" };
+          const actionMap = { Pet:"摸了摸", Spank:"拍了拍", Slap:"打了一下", Tickle:"挠了挠", Rub:"揉了揉", Kiss:"亲了亲", Lick:"舔了舔", Bite:"咬了一口", Suck:"吸了吸", Pinch:"捏了捏", Grab:"抓住", SlapAss:"拍了屁股", MoanGag:"被口塞住呻吟", MoanGagGiggle:"被口塞住偷笑", Orgasm:"高潮了" };
+          const p = partMap[part] || part;
+          const a = actionMap[action] || action;
+          return `${a}${p}`;
+        })
+        .replace(/^Orgasm(\d+)?$/, (_, n) => n ? `高潮了(${n})` : "高潮了")
+        .replace(/^OrgasmFailSurrender(\d+)?$/, () => "高潮失败了")
+        .replace(/^ChatSelf-/, "自己")
+        .replace(/^ChatOther-/, "对别人");
+    }
 
     const key = senderNum + ":" + content + ":" + data.Type;
     const now = Date.now();
@@ -1351,7 +1370,7 @@
     window.__misakaLastKeyTime = now;
 
     if (senderNum === Player.MemberNumber) {
-      state.recentMessages.push({ senderName: "御搬", content, isSelf: true, time: now });
+      state.recentMessages.push({ senderName: "御搬", content: readableContent, isSelf: true, time: now });
       return;
     }
 
@@ -1362,13 +1381,13 @@
     // roomlog
     try {
       let log = JSON.parse(localStorage.getItem("misaka_roomlog") || "[]");
-      log.push({ name: senderName, memberNum: senderNum, content: content.slice(0, 200), type: data.Type, time: now });
+      log.push({ name: senderName, memberNum: senderNum, content: readableContent.slice(0, 200), type: data.Type, time: now });
       if (log.length > 500) log = log.slice(-500);
       localStorage.setItem("misaka_roomlog", JSON.stringify(log));
     } catch(e) {}
 
     if (!isGimpDoll) {
-      state.recentMessages.push({ senderName: senderName, content, senderMemberNumber: senderNum, isSelf: false, time: now });
+      state.recentMessages.push({ senderName: senderName, content: readableContent, senderMemberNumber: senderNum, isSelf: false, time: now });
       if (state.recentMessages.length > 30) state.recentMessages.shift();
       state.lastNonSelfMsgTime = now;  // 更新 idle 计时
     }
@@ -1384,9 +1403,11 @@
       maybeRefineMemory().catch(e => console.warn("[MisakaChat] refine error:", e.message));
     }
 
+    // trigger 检测用原始 content 和可读 content 都匹配
     const triggers = ["misaka","御搬","御坂","misaki的","搬运工"];
     const lower = content.toLowerCase();
-    const triggered = triggers.some(t => lower.includes(t.toLowerCase()));
+    const readableLower = readableContent.toLowerCase();
+    const triggered = triggers.some(t => lower.includes(t.toLowerCase()) || readableLower.includes(t.toLowerCase()));
     if (!triggered) return;
     if (state.busy || window.__misakaGlobalBusy || window.__misakaReplyInProgress) return;
 
@@ -1405,7 +1426,7 @@
       window.__misakaReplyInProgress = false;
     }, 45000);
 
-    handleReply(senderNum, senderName, content).finally(() => clearTimeout(replyTimeout));
+    handleReply(senderNum, senderName, readableContent).finally(() => clearTimeout(replyTimeout));
   }
 
   // === BCE 查询（仅在被明确要求查档时触发） ===
