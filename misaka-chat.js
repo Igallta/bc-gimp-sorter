@@ -916,17 +916,69 @@
   }
 
   // 只修改已有道具的颜色（不替换整个 entry）
-  function directSetColor(char, groupName, colorOverride) {
+  // colorOverride: hex 字符串或数组
+  // layerIndex: 可选，指定改哪个 color slot（0-based），不传=全部改
+  function directSetColor(char, groupName, colorOverride, layerIndex) {
     if (!char || !colorOverride) return false;
     const idx = char.Appearance.findIndex(a => a.Asset?.Group?.Name === groupName);
     if (idx < 0) return false;
-    // 根据道具 ColorSchema 长度生成正确数量的颜色数组
-    const schema = char.Appearance[idx].Asset?.ColorSchema;
-    const expectedLen = Array.isArray(schema) ? schema.length : (char.Appearance[idx].Color?.length || 1);
+    const item = char.Appearance[idx];
+    const expectedLen = item.Color?.length || item.Asset?.ColorableLayerCount || 1;
     const hex = Array.isArray(colorOverride) ? colorOverride[0] : colorOverride;
-    char.Appearance[idx].Color = Array(expectedLen).fill(hex);
+    if (layerIndex !== undefined && layerIndex >= 0 && layerIndex < expectedLen) {
+      // 只改指定 slot
+      item.Color[layerIndex] = hex;
+    } else {
+      // 全部 slot 改成同一颜色
+      item.Color = Array(expectedLen).fill(hex);
+    }
     if (typeof CharacterRefresh === "function") CharacterRefresh(char);
     return true;
+  }
+
+  // 中文 layer 名 → 英文 layer 名映射（常见 layer）
+  const LAYER_NAME_CN = {
+    "内衬": "Lining", "床": "Bed", "毛毯": "Blanket", "内部": "Inner",
+    "球": "Ball", "带子": "Strap", "锁": "Lock",
+    "铐": "Cuffs", "环": "Rings",
+    "主体": "Body", "底": "Base", "顶": "Top", "上": "Top", "下": "Bottom",
+    "装饰": "Trim", "细节": "Detail",
+    "左": "Left", "右": "Right",
+  };
+
+  // 找道具的可上色 layer 名列表
+  function getItemColorLayers(asset) {
+    if (!asset?.Layer) return [];
+    const count = asset.ColorableLayerCount || asset.DefaultColor?.length || 0;
+    const layers = [];
+    let colorIdx = 0;
+    for (const layer of asset.Layer) {
+      if (colorIdx >= count) break;
+      // 可上色的 layer 没有 SkippingColorize 标记
+      // BC 的规则：前 ColorableLayerCount 个 layer 是可上色的
+      layers.push({ name: layer.Name, index: colorIdx });
+      colorIdx++;
+    }
+    return layers;
+  }
+
+  // 根据中文/英文 layer 名找 color slot index
+  function findLayerIndex(asset, layerName) {
+    if (!layerName) return undefined;
+    const layers = getItemColorLayers(asset);
+    // 先精确匹配英文名
+    let found = layers.find(l => l.name === layerName);
+    if (found) return found.index;
+    // 中文映射
+    const enName = LAYER_NAME_CN[layerName];
+    if (enName) {
+      found = layers.find(l => l.name === enName);
+      if (found) return found.index;
+    }
+    // 模糊匹配（包含）
+    found = layers.find(l => l.name && (l.name.toLowerCase().includes(layerName.toLowerCase()) || layerName.toLowerCase().includes(l.name?.toLowerCase())));
+    if (found) return found.index;
+    return undefined;
   }
 
   function directRemoveItem(char, groupName) {
@@ -1149,7 +1201,10 @@
     const groupName = asset.Group?.Name;
     const hex = colorNameToHex(colorName);
     if (!hex) { console.log("[MisakaChat] 未知颜色: " + colorName); return false; }
-    if (part) {
+
+    // part 可能是身体部位（如"腿"）或道具部件名（如"毛毯"）
+    // 先检查是不是身体部位
+    if (part && BODY_PART_GROUPS[part]) {
       const groupList = BODY_PART_GROUPS[part];
       if (groupList && groupList.length > 0) {
         let ok = false;
@@ -1160,8 +1215,18 @@
         return ok;
       }
     }
-    const ok = directSetColor(char, groupName, [hex]);
-    if (ok) { ChatRoomCharacterUpdate(char); console.log("[MisakaChat] ✅ 颜色已改", itemName, colorName); }
+
+    // part 是道具部件名（layer name）
+    let layerIndex = undefined;
+    if (part && !BODY_PART_GROUPS[part]) {
+      layerIndex = findLayerIndex(asset, part);
+      if (layerIndex === undefined) {
+        console.log(`[MisakaChat] 找不到部件 "${part}"，可上色部件: ${getItemColorLayers(asset).map(l => l.name).join("/")}`);
+      }
+    }
+
+    const ok = directSetColor(char, groupName, [hex], layerIndex);
+    if (ok) { ChatRoomCharacterUpdate(char); console.log("[MisakaChat] ✅ 颜色已改", itemName, part || "全部", colorName); }
     return ok;
   }
 
