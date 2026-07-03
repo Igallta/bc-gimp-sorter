@@ -350,8 +350,25 @@ ${recentSemantic}`;
   }
 
   // === Idle / Heartbeat ===
-  // 5 分钟无人说话时随机说一句闲聊
-  // 有人进入时打招呼
+  // 常客打招呼池（更亲昵、带名字）
+  const GREET_REGULAR = [
+    "{name}，又来啦~",
+    "哦？{name}来了~",
+    "{name}，今天挺早的嘛。",
+    "欢迎回来，{name}~",
+    "*抬头看到{name}*|你来了呀~",
+    "哟，{name}。",
+    "来了来了，{name}~",
+  ];
+  // 陌生人打招呼池（礼貌但有距离）
+  const GREET_STRANGER = [
+    "欢迎。",
+    "你好。",
+    "*点头致意*",
+    "嗯，新面孔。",
+    "欢迎来到 Gimp Dolls。",
+  ];
+  // idle 闲聊池（带上下文）
   const IDLE_LINES = [
     "房间里好安静啊...",
     "..没有人想聊聊天吗？",
@@ -360,15 +377,9 @@ ${recentSemantic}`;
     "*百无聊赖地翻看记录本*",
     "嗯...在等什么人吗？",
     "*小声哼着歌*",
-  ];
-  const GREET_LINES = [
-    "欢迎回来~",
-    "你来了。",
-    "*点头致意*",
-    "嗯，来了啊。",
-    "*抬头看了一眼*",
-    "你来了呀~",
-    "欢迎~",
+    "*靠在墙边发呆*",
+    "好闲...有没有人来让我搬娃娃的？",
+    "*拨弄了一下手边的绳子*",
   ];
   let idleTimer = null;
 
@@ -419,9 +430,15 @@ ${recentSemantic}`;
     setTimeout(() => {
       if (!isCurrent() || !CONFIG.enabled || state.busy) return;
       if (typeof CurrentScreen === "undefined" || CurrentScreen !== "ChatRoom") return;
-      // 50% 概率打招呼（不是每次都打招呼，太烦）
-      if (Math.random() > 0.5) return;
-      const line = GREET_LINES[Math.floor(Math.random() * GREET_LINES.length)];
+      // 85% 概率打招呼（小房间每次进人打招呼是合理的）
+      if (Math.random() > 0.85) return;
+      // 判断是常客还是陌生人
+      const profiles = JSON.parse(localStorage.getItem('misaka_memory') || '{}');
+      const isRegular = profiles[name] || Object.values(profiles).some(p => p.name === name);
+      const pool = isRegular ? GREET_REGULAR : GREET_STRANGER;
+      let line = pool[Math.floor(Math.random() * pool.length)];
+      // 常客池带名字替换
+      if (isRegular) line = line.replace(/\{name\}/g, name);
       try {
         ElementValue("InputChat", line);
         ChatRoomSendChat();
