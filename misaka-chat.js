@@ -13,9 +13,9 @@
   const CONFIG = {
     enabled: true,
     apiBase: "https://api.deepseek.com/chat/completions",
-    model: "deepseek-v4-pro",
-    fallbackModel: "deepseek-v4-flash",
-    maxTokens: 4096,
+    model: "deepseek-v4-flash",
+    fallbackModel: "deepseek-v4-pro",
+    maxTokens: 2048,
     temperature: 0.8,
     maxContext: 50,
     cooldownMs: 3000,
