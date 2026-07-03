@@ -1135,7 +1135,7 @@
   // 设置已有道具的属性（强度/绑法/开关等）
   function executeItemSet(memberNumber, itemName, part, propName, valueName) {
     try {
-      const char = ChatRoomCharacter.find(c => c.MemberNumber === memberNumber) || Player;
+      const char = (memberNumber === Player.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === memberNumber); if (!char) { console.log("[MisakaChat] 找不到玩家 #" + memberNumber); return false; }
       if (!char) return false;
 
       let target = findItemByPart(char, itemName, part);
@@ -1167,7 +1167,7 @@
     try {
       const mapping = findItemAsset(itemName);
       if (!mapping) { console.log("[MisakaChat] 未知道具:", itemName); return false; }
-      const char = ChatRoomCharacter.find(c => c.MemberNumber === memberNumber) || Player;
+      const char = (memberNumber === Player.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === memberNumber); if (!char) { console.log("[MisakaChat] 找不到玩家 #" + memberNumber); return false; }
       if (!char) return false;
       
       // 如果指定了部位，优先用该部位的 group
@@ -1255,7 +1255,7 @@
 
   function executeItemDel(memberNumber, itemName, part) {
     try {
-      const char = ChatRoomCharacter.find(c => c.MemberNumber === memberNumber) || Player;
+      const char = (memberNumber === Player.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === memberNumber); if (!char) { console.log("[MisakaChat] 找不到玩家 #" + memberNumber); return false; }
       if (!char) return false;
       
       console.log(`[MisakaChat] executeItemDel #${memberNumber} item="${itemName}" part="${part||""}"`);
@@ -1296,7 +1296,7 @@
   // 释放全部未锁道具
   function executeItemDelAll(memberNumber) {
     try {
-      const char = ChatRoomCharacter.find(c => c.MemberNumber === memberNumber) || Player;
+      const char = (memberNumber === Player.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === memberNumber); if (!char) { console.log("[MisakaChat] 找不到玩家 #" + memberNumber); return false; }
       if (!char) return false;
       let count = 0;
       const toRemove = (char.Appearance || [])
@@ -1649,6 +1649,11 @@
         console.log("[MisakaChat] 操作执行:", commands, result);
       }
 
+      // 如果只有指令没有文字回复，用默认回复
+      if (!finalReply && commands.length > 0) {
+        const defaultReplies = ["好了~", "搞定了", "嗯，处理好了", "弄好了~", "已经调好了"];
+        finalReply = defaultReplies[Math.floor(Math.random() * defaultReplies.length)];
+      }
       if (!finalReply) return;
 
       // 存语义记忆（有意义的对话才存）
@@ -1680,6 +1685,8 @@
           ElementValue("InputChat", finalReply);
           ChatRoomSendChat();
         }
+        state.recentMessages.push({ senderName: "御搬", content: finalReply, isSelf: true, time: Date.now() });
+        if (state.recentMessages.length > 50) state.recentMessages.shift();
       }
 
       maybeGenerateSummary();
