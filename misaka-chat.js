@@ -258,23 +258,6 @@
     console.log(`[MisakaChat] re-embedding 完成，已写回 IDB`);
   }
 
-  // 等 IDB 加载完成后自动触发迁移
-  setTimeout(() => {
-    if (state.idbReady) {
-      rembedMemories();
-    } else {
-      // IDB 还没加载完，再等一下
-      const waitInterval = setInterval(() => {
-        if (state.idbReady) {
-          clearInterval(waitInterval);
-          rembedMemories();
-        }
-      }, 1000);
-      // 最多等 30 秒
-      setTimeout(() => clearInterval(waitInterval), 30000);
-    }
-  }, 5000);
-
   try {
     const savedLog = JSON.parse(localStorage.getItem("misaka_joinlog") || "[]");
     if (Array.isArray(savedLog) && savedLog.length > 0) state.roomJoinLog = savedLog;
