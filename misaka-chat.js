@@ -2126,6 +2126,23 @@ ${recent || "暂无"}
     const validTypes = ["Chat","Talk","Emote","Whisper","Activity","Action"];
     if (!validTypes.includes(data.Type)) return;
 
+    // === 垃圾消息过滤 ===
+    const NOISE_PATTERNS = [
+      /^TriggerShock[12]$/i,
+      /^Beep$/i,
+      /^OrgasmFailSurrender\d*$/i,
+      /^Orgasm\d*$/i,
+      /^ActionActivateSafewordRelease$/i,
+      /^ChatSelf-ItemMouth-MoanGag(Giggle)?$/i,
+    ];
+    function isNoise(type, rawContent, senderName) {
+      if (senderName && senderName.startsWith("GIMP ")) return true;
+      for (const pat of NOISE_PATTERNS) {
+        if (pat.test(rawContent)) return true;
+      }
+      return false;
+    }
+
     // 把 BC 内部动作消息转成可读文字
     let readableContent = content;
     if (data.Type === "Activity" || data.Type === "Emote") {
@@ -2158,21 +2175,23 @@ ${recent || "暂无"}
 
     const senderChar = ChatRoomCharacter.find(c => c.MemberNumber === senderNum);
     const senderName = (senderChar?.Nickname || senderChar?.Name) || ("#" + senderNum);
-    const isGimpDoll = senderName.startsWith("GIMP ");
+    // 判断是否为垃圾消息
+    const noise = isNoise(data.Type, content, senderName);
 
-    // roomlog
+    // roomlog（保留完整记录，标记 noise）
     try {
       let log = JSON.parse(localStorage.getItem("misaka_roomlog") || "[]");
-      log.push({ name: senderName, memberNum: senderNum, content: readableContent.slice(0, 200), type: data.Type, time: now });
+      log.push({ name: senderName, memberNum: senderNum, content: readableContent.slice(0, 200), type: data.Type, time: now, noise });
       if (log.length > 500) log = log.slice(-500);
       localStorage.setItem("misaka_roomlog", JSON.stringify(log));
     } catch(e) {}
 
-    if (!isGimpDoll) {
-      state.recentMessages.push({ senderName: senderName, content: readableContent, senderMemberNumber: senderNum, isSelf: false, time: now });
-      if (state.recentMessages.length > CONFIG.maxContext) state.recentMessages.shift();
-      state.lastNonSelfMsgTime = now;  // 更新 idle 计时
-    }
+    // 垃圾消息：不进上下文、不推动 messageCount
+    if (noise) return;
+
+    state.recentMessages.push({ senderName: senderName, content: readableContent, senderMemberNumber: senderNum, isSelf: false, time: now });
+    if (state.recentMessages.length > CONFIG.maxContext) state.recentMessages.shift();
+    state.lastNonSelfMsgTime = now;
 
     state.messageCount++;
     try { localStorage.setItem("misaka_msg_count", String(state.messageCount)); } catch(e) {}
