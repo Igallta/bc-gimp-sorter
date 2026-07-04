@@ -2447,6 +2447,10 @@ ${recent || "暂无"}
       IDB.clearAll();
       sendLocal("🧹 记忆已清空（含 IndexedDB 语义记忆）");
     }
+    else if (sub === "rembed") {
+      sendLocal("🔄 开始重新 embedding...");
+      rembedMemories().then(() => sendLocal("✅ Re-embedding 完成")).catch(e => sendLocal("❌ Re-embedding 失败: " + e.message));
+    }
     else if (sub === "memory") {
       const mem = loadMemory();
       const profiles = Object.entries(mem.profiles || {});
@@ -2456,7 +2460,7 @@ ${recent || "暂无"}
       localStorage.setItem(storageKey("persona_extra"), parts.slice(1).join(" "));
       sendLocal("📝 人设附加备注已更新");
     } else {
-      sendLocal("用法: /misaka on|off|key <key>|model <name>|status|forget|memory|persona <text>");
+      sendLocal("用法: /misaka on|off|key <key>|model <name>|status|forget|memory|persona <text>|rembed");
     }
     return true;
   }
