@@ -2390,16 +2390,17 @@ ${recent || "暂无"}
     const lines = cleaned.split(/\n+/).map(l => l.trim().replace(/^(御[搬坂]|Misaka|misaka)\s*[:：]\s*/i, "").trim()).filter(Boolean);
     cleaned = (lines[0] || cleaned).replace(/^(御[搬坂]|Misaka|misaka)\s*[:：]\s*/i, "");
 
-    // 去除粘连的动作+说话（LLM 没用 | 分隔的情况）
-    // 模式1：*动作*说话（动作在前）
-    // 模式2：说话 *动作* 说话（动作夹在中间）
-    // 模式3：说话*动作*（说话在前动作在后）
-    // 先处理动作在末尾的情况：说话*动作* → 说话|*动作*
-    cleaned = cleaned.replace(/([^*\s])\s*\*([^*]+)\*$/g, '$1|*$2*');
-    // 再处理动作在中间：说话 *动作* 说话 → 说话 |*动作*| 说话
-    cleaned = cleaned.replace(/([^*])\s*\*([^*]+)\*\s*(?!\|)([^*])/g, '$1|*$2*|$3');
-    // 动作在开头：*动作*说话 → *动作*|说话
-    cleaned = cleaned.replace(/^\*([^*]+)\*\s*(?!\|)([^*])/g, '*$1*|$2');
+    // === 动作/说话分隔修复 ===
+    // LLM 经常不遵从 | 格式规则，这里暴力修复
+    //
+    // 修复策略：
+    // 1. 动作在末尾：说话 *动作* → 说话|*动作*
+    cleaned = cleaned.replace(/([^*\s])\s*\*([^*]+)\*\s*$/g, '$1|*$2*');
+    // 2. 动作在开头：*动作*说话 → *动作*|说话（但动作后面已有 | 就跳过）
+    cleaned = cleaned.replace(/^\*([^*]+)\*\s*(?!\|)([^|])/g, '*$1*|$2');
+    // 3. 动作在中间：说话 *动作* 说话 → 说话|*动作*|说话
+    //    注意：这个必须最后跑，因为前面的可能已经处理了开头/末尾的情况
+    cleaned = cleaned.replace(/([^*])\s*\*([^*]+)\*\s*(?!\|)([^|])/g, '$1|*$2*|$3');
 
     const result = cleaned.trim().slice(0, 120);
     console.log("[MisakaChat] cleanReply result:", result);
