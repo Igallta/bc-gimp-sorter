@@ -32,7 +32,7 @@
     idleCheckMs: 60000,  // 每分钟检查一次 idle
     embeddingBase: "https://api.openai.com/v1/embeddings",
     embeddingModel: "text-embedding-3-large",
-    embeddingDim: 512,
+    embeddingDim: 3072,
     maxMemoryEntries: 2000, // IndexedDB 容量大，放宽到 2000 条
     memoryRefineInterval: 200,  // 每 N 条消息提炼一次长期记忆
     maxRefinedMemories: 10,  // 保留最近 N 条提炼记忆
@@ -208,6 +208,72 @@
     }
     state._idbMigrated = true;
   }, 2000);
+
+  // === Embedding 维度迁移：512 → 3072 ===
+  // 已有记忆的 embedding 是 512 维的，和新的 3072 维向量算 cosine 会维度不匹配
+  // 用每条的 text 重新调 embedding API，替换旧向量
+  async function rembedMemories() {
+    const allSemantic = state.semanticMemories || [];
+    const allRefined = state.refinedMemories || [];
+    const needSemantic = allSemantic.filter(m => m.embedding && m.embedding.length !== 3072);
+    const needRefined = allRefined.filter(m => m.embedding && m.embedding.length !== 3072);
+    const total = needSemantic.length + needRefined.length;
+    if (total === 0) {
+      console.log("[MisakaChat] embedding 维度无需迁移");
+      return;
+    }
+    console.log(`[MisakaChat] 开始重新 embedding ${total} 条记忆 (${needSemantic.length} 语义 + ${needRefined.length} 提炼)`);
+    let done = 0;
+    const BATCH = 5;
+    // 分批重算 semantic
+    for (let i = 0; i < needSemantic.length; i += BATCH) {
+      const batch = needSemantic.slice(i, i + BATCH);
+      await Promise.all(batch.map(async (m) => {
+        const newEmb = await getEmbedding(m.text);
+        if (newEmb && newEmb.length === 3072) {
+          m.embedding = newEmb;
+        }
+        done++;
+      }));
+      // 每批间隔 500ms 避免限速
+      await new Promise(r => setTimeout(r, 500));
+      console.log(`[MisakaChat] re-embedding 进度: ${done}/${total}`);
+    }
+    // 分批重算 refined
+    for (let i = 0; i < needRefined.length; i += BATCH) {
+      const batch = needRefined.slice(i, i + BATCH);
+      await Promise.all(batch.map(async (m) => {
+        const newEmb = await getEmbedding(m.text);
+        if (newEmb && newEmb.length === 3072) {
+          m.embedding = newEmb;
+        }
+        done++;
+      }));
+      await new Promise(r => setTimeout(r, 500));
+      console.log(`[MisakaChat] re-embedding 进度: ${done}/${total}`);
+    }
+    // 写回 IDB
+    IDB.putSemantic(allSemantic);
+    IDB.putRefined(allRefined);
+    console.log(`[MisakaChat] re-embedding 完成，已写回 IDB`);
+  }
+
+  // 等 IDB 加载完成后自动触发迁移
+  setTimeout(() => {
+    if (state.idbReady) {
+      rembedMemories();
+    } else {
+      // IDB 还没加载完，再等一下
+      const waitInterval = setInterval(() => {
+        if (state.idbReady) {
+          clearInterval(waitInterval);
+          rembedMemories();
+        }
+      }, 1000);
+      // 最多等 30 秒
+      setTimeout(() => clearInterval(waitInterval), 30000);
+    }
+  }, 5000);
 
   try {
     const savedLog = JSON.parse(localStorage.getItem("misaka_joinlog") || "[]");
