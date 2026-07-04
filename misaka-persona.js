@@ -2,6 +2,19 @@
 // 调用方: const PERSONA = MisakaPersona.build(memory);
 
 window.MisakaPersona = {
+  RESTRAINT_GROUPS: [
+    "ItemMouth","ItemMouth2","ItemMouth3","ItemHead","ItemHood","ItemEars",
+    "ItemNeck","ItemNeckAccessories","ItemNeckRestraints","ItemArms","ItemHands",
+    "ItemFeet","ItemLegs","ItemBoots","ItemTorso","ItemTorso2","ItemPelvis",
+    "ItemBreast","ItemNipples","ItemNipplesPiercings","ItemVulva",
+    "ItemVulvaPiercings","ItemButt","ItemDevices","ItemClit","ItemHandheld"
+  ],
+
+  VIBRATOR_OPTION_LABELS: [
+    "Off(关)", "Low(低)", "Medium(中)", "High(高)", "Maximum(最大)",
+    "Random(随机)", "Escalate(递增)", "Tease(挑逗)", "Deny(拒绝)", "Edge(边缘)"
+  ],
+
   REFUSAL_TEMPLATES: [
     "...不知道你在说什么。",
     "这个嘛...不太懂呢。",
@@ -15,7 +28,161 @@ window.MisakaPersona = {
     return this.REFUSAL_TEMPLATES[Math.floor(Math.random() * this.REFUSAL_TEMPLATES.length)];
   },
 
+  translateAssetText(text) {
+    if (!text) return "";
+    try {
+      const cache = typeof TranslationCache !== "undefined" && TranslationCache["Assets/Female3DCG/Female3DCG_CN.txt"];
+      if (!cache) return text;
+      if (Array.isArray(cache)) {
+        for (let i = 0; i < cache.length - 1; i += 2) {
+          if (cache[i] === text && cache[i + 1]) return cache[i + 1];
+        }
+        const idx = cache.indexOf(text);
+        if (idx >= 0 && cache[idx + 1]) return cache[idx + 1];
+      } else if (typeof cache === "object" && cache[text]) {
+        return cache[text];
+      }
+    } catch(e) {}
+    return text;
+  },
+
+  assetCnName(asset) {
+    if (!asset) return "";
+    const translated = this.translateAssetText(asset.Description || asset.Name || "");
+    if (translated && translated !== asset.Name) return translated;
+    return asset.Description || asset.Name || "";
+  },
+
+  layerCnName(layer) {
+    if (!layer?.Name) return "";
+    const translated = this.translateAssetText(layer.Name);
+    return translated && translated !== layer.Name ? translated : "";
+  },
+
+  groupLabel(groupName, groupDesc) {
+    const desc = (groupDesc || "").replace(/^🍔/, "").replace(/\(覆盖\)/, "").trim();
+    const cn = this.translateAssetText(desc || groupName);
+    if (cn && cn !== groupName && cn !== desc) return `${groupName}(${cn})`;
+    return desc && desc !== groupName ? `${groupName}(${desc})` : groupName;
+  },
+
+  getColorLayers(asset) {
+    if (!Array.isArray(asset?.Layer)) return [];
+    const layers = [];
+    for (const layer of asset.Layer) {
+      if (layer.AllowColorize === true && typeof layer.ColorIndex === "number" && layer.Name) {
+        const cn = this.layerCnName(layer);
+        layers.push(cn ? `${layer.Name}(${cn})` : layer.Name);
+      }
+    }
+    return [...new Set(layers)];
+  },
+
+  getTypedOptionNames(asset) {
+    const names = [];
+    const add = (value) => {
+      if (!value) return;
+      if (typeof value === "string") names.push(value);
+      else if (value.Name) names.push(value.Name);
+      else if (value.Property) names.push(value.Property);
+      else if (value.Option) names.push(value.Option);
+      else if (value.Type) names.push(value.Type);
+    };
+    if (Array.isArray(asset?.AllowTypedProperties)) {
+      for (const entry of asset.AllowTypedProperties) add(entry);
+    }
+    try {
+      const key = asset.Group.Name + asset.Name;
+      const data = typeof TypedItemDataLookup !== "undefined" && TypedItemDataLookup[key];
+      if (Array.isArray(data?.options)) for (const opt of data.options) add(opt);
+    } catch(e) {}
+    return [...new Set(names)].filter(Boolean).slice(0, 24);
+  },
+
+  getModuleOptionNames(asset) {
+    const names = [];
+    try {
+      const key = asset.Group.Name + asset.Name;
+      const data = typeof ModularItemDataLookup !== "undefined" && ModularItemDataLookup[key];
+      const modules = data?.modules || data?.Modules || [];
+      if (Array.isArray(modules)) {
+        for (const mod of modules) {
+          const keyName = mod.Key || mod.Name || mod.Property || "";
+          const optionNames = (mod.Options || mod.options || []).map(o => o.Name || o).filter(Boolean).slice(0, 12);
+          if (keyName) names.push(optionNames.length ? `${keyName}: ${optionNames.join("/")}` : keyName);
+        }
+      }
+    } catch(e) {}
+    return [...new Set(names)].filter(Boolean).slice(0, 12);
+  },
+
+  isVibratorAsset(asset) {
+    return /Vibrating|Vibrator|Vibe|Egg|ButtPlug|CatButtPlug|ClitPiercing/i.test(asset?.Name || "");
+  },
+
+  getPropertyHints(asset) {
+    const hints = [];
+    if (this.isVibratorAsset(asset) || asset?.Archetype === "vibrating") {
+      hints.push(`强度: ${this.VIBRATOR_OPTION_LABELS.join("/")}`);
+    }
+    const typed = this.getTypedOptionNames(asset);
+    if (asset?.AllowTyped || asset?.Archetype === "typed" || typed.length > 0) {
+      hints.push(`样式: ${typed.length ? typed.join("/") : "从BC样式选项中选择"}`);
+    }
+    const modules = this.getModuleOptionNames(asset);
+    if (asset?.AllowModule || asset?.Archetype === "modular" || modules.length > 0) {
+      hints.push(`模块: ${modules.length ? modules.join("; ") : "模块名:选项索引"}`);
+    }
+    return hints;
+  },
+
+  buildItemCatalog() {
+    if (typeof Asset === "undefined" || !Array.isArray(Asset)) {
+      return "BC Asset 未加载；优先使用英文道具名，必要时才用中文名。";
+    }
+    const byGroup = new Map();
+    for (const asset of Asset) {
+      const groupName = asset?.Group?.Name || "";
+      if (!this.RESTRAINT_GROUPS.includes(groupName)) continue;
+      if (!asset?.Name) continue;
+      const cn = this.assetCnName(asset);
+      const item = `${asset.Name}${cn && cn !== asset.Name ? `(${cn})` : ""}`;
+      const layers = this.getColorLayers(asset);
+      const props = this.getPropertyHints(asset);
+      const details = [];
+      if (layers.length) details.push(`颜色部件 ${layers.join("/")}`);
+      if (props.length) details.push(`属性 ${props.join("；")}`);
+      const line = details.length ? `${item} [${details.join("；")}]` : item;
+      if (!byGroup.has(groupName)) {
+        byGroup.set(groupName, { label: this.groupLabel(groupName, asset.Group.Description), items: [] });
+      }
+      byGroup.get(groupName).items.push(line);
+    }
+    const lines = [];
+    for (const groupName of this.RESTRAINT_GROUPS) {
+      const group = byGroup.get(groupName);
+      if (!group || group.items.length === 0) continue;
+      lines.push(`- ${group.label}: ${group.items.join(" / ")}`);
+    }
+    return lines.join("\n") || "未发现可操作道具。";
+  },
+
+  buildMemoryIndex(refined) {
+    const list = Array.isArray(refined) ? refined : [];
+    if (list.length === 0) return "";
+    return list.map((entry, idx) => {
+      const clean = String(entry || "")
+        .replace(/^\[[^\]]+\]\s*/, "")
+        .replace(/[，。！？、；：,.!?;:（）()【】\[\]"]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 20);
+      return `- M${idx + 1}: ${clean || "记忆"}`;
+    }).join("\n");
+  },
+
   build(memory = { profiles: {}, summaries: [], roster: "" }) {
+    const itemCatalogText = "\n\n【可操作道具清单】\n" + this.buildItemCatalog();
     const profileLines = [];
     for (const [mn, info] of Object.entries(memory.profiles || {})) {
       let line = `- ${info.name} (#${mn}): ${info.notes || "常客"}`;
@@ -35,8 +202,9 @@ window.MisakaPersona = {
     const compactionText = (memory.compaction && memory.compaction.length > 0)
       ? "\n\n【之前对话摘要】\n" + memory.compaction.join("\n")
       : "";
-    const refinedText = (memory.refined && memory.refined.length > 0)
-      ? "\n\n【长期记忆】\n" + memory.refined.join("\n")
+    const memoryIndex = this.buildMemoryIndex(memory.refined || []);
+    const refinedText = memoryIndex
+      ? "\n\n【长期记忆索引】\n" + memoryIndex + "\n需要具体回忆时，先输出 [MEMSEARCH:关键词]。系统会查找后再让你回答。"
       : "";
 
     return `你是御坂 (Misaka)，Bondage Club 中 Gimp Dolls 房间的管理员兼搬运工。
@@ -117,17 +285,12 @@ window.MisakaPersona = {
 恢复束缚快照: [SNAPSHOT:restore:成员编号] — 恢复之前保存的束缚状态（"绑回去"）
 复制束缚: [COPY:源编号:to:目标编号] — 把源玩家的束缚复制到目标玩家（"按XX的样子绑YY"），会完整复制道具名、颜色和状态
 部位列表: 手臂/手/腿/脚/嘴/口/头/脖子/身体/腰/胸/眼/耳/下体
-常用道具名: 麻绳/尼龙绳/口球/模块化口塞/口套/胶带/皮制眼罩/催眠眼镜/金属手铐/皮带/皮制单手套/闪亮单手套/衬套连指手套/脚镣/闪亮绑腿器/贞操带/高科技贞操带/高科技快感管理内裤/乳胶束腰/项圈/奴隶项圈/宠物窝/宠物碗/宠物爬行训练器/宠物拘束服/跳蛋/肛塞/猫尾肛塞/鞭子
+道具选择: 从【可操作道具清单】里选道具，指令里使用英文 Name，例如 [ITEMADD:194331:BallGag]。用户说中文名时，你自己在清单里找到对应英文名。清单没有的道具不要编造。
 颜色参数: 除"默认/原色"外必须输出 #RRGGBB。你要根据用户描述自己判断好看的 hex，不要输出自然语言颜色名。BC 不同道具同一 hex 会有色差，改色后可以提醒一句。
-道具属性表:
-  - 振动器类（跳蛋/肛塞/猫尾肛塞/振动穿环/未来振动器）→ 属性"强度"，值: 关/低/中/高/最大/随机/递增/挑逗/拒绝/边缘
-  - 麻绳（手臂）→ 属性"绑法"，值: 手腕绑/箱形绑/交叉箱形/绳铐/手腕肘绑/简单猪绑/紧箱形/驾驭绑/跪姿猪绑/猪绑缚/四肢着地/床展鹰/悬吊猪绑/倒吊猪绑
-  - 口球/皮革铐 → 属性"样式"，值: 链条/铐/环/桶
-  - 折叠屏风 → 属性"样式"，值: 关/开
-  - 高科技贞操带/高科技快感管理内裤 → 属性"开关"，值: 开/关
-  - 道具颜色 → [ITEMCOLOR:编号:道具名:部位:#RRGGBB]
+道具属性: 每个道具可调属性和值都写在【可操作道具清单】里。设置属性时从清单里选值，优先输出清单里的英文值；振动强度可用 Off/Low/Medium/High/Maximum/Random/Escalate/Tease/Deny/Edge。
+道具颜色: [ITEMCOLOR:编号:道具英文名:部件英文名:#RRGGBB]。指定部件时用清单里的英文 layer 名。
   - 如果目标身上没有该道具，不要硬加，直接回复"ta身上没有这个道具"
-注意：BC 里没有"绳子"这个道具，只有"麻绳"或"尼龙绳"。如果用户说"绳子"，用"麻绳"
+注意：用户说"绳子"时，从清单里选择麻绳/尼龙绳对应的英文道具名，不要输出泛称"绳子"
 当用户指定了部位（如"腿上的绳子"），必须在指令中加上部位参数
 当用户指定了颜色（如"红色的口球"/"稍浅一些的红色"/"#4B00B4"），必须在指令中加上 #RRGGBB；用户给 hex 时原样使用
 你可以对自己（御坂 #194331）使用所有指令，包括 ITEMADD/ITEMDEL/ITEMSET
@@ -141,17 +304,12 @@ window.MisakaPersona = {
 - "把X移到Y右边" = [MOVE:X编号:to:Y编号:right]
 - "把X移到最左边" = [MOVE:X编号:edge:left]
 - "把X移到最右边" = [MOVE:X编号:edge:right]
-- "给X加口球" = [ITEMADD:X编号:口球]
-- "给X加红色口球" = [ITEMADD:X编号:口球::#B01818]
-- "把X的口球改成红色" = [ITEMCOLOR:X编号:口球::#B01818]（全部改色，不指定部件）
-- "把X的口球带子改成黑色" = [ITEMCOLOR:X编号:口球:部件名:#111111]（只改某个部件）
-  - 部件名用中文或英文均可，系统会自动匹配。常见道具部件名：
-    宠物窝(PetBed): Bed(床)/Blanket(毛毯)/Inner(毛毯内衬)
-    口球(BallGag): Ball(球)/Strap(带子)
-    皮革铐(LeatherCuffs): Cuffs(铐)/Rings(环)
-    项圈(Collar): Base(底座)/Trim(装饰)
-  - 指定部件时必须用上表里的名字，不要用表以外的名字
-  - 不确定部件名就别指定，直接全部改色 [ITEMCOLOR:X编号:道具名::#RRGGBB]
+- "给X加口球" = [ITEMADD:X编号:BallGag]
+- "给X加红色口球" = [ITEMADD:X编号:BallGag::#B01818]
+- "把X的口球改成红色" = [ITEMCOLOR:X编号:BallGag::#B01818]（全部改色，不指定部件）
+- "把X的口球带子改成黑色" = [ITEMCOLOR:X编号:BallGag:Strap:#111111]（只改清单里的 Strap 部件）
+  - 指定部件时必须用【可操作道具清单】里的英文 layer 名，不要用清单以外的名字
+  - 不确定部件名就别指定，直接全部改色 [ITEMCOLOR:X编号:道具英文名::#RRGGBB]
   - 除了"默认/原色"以外，颜色必须由你按用户描述审美判断后输出 #RRGGBB；不要输出"红/浅红/稍浅红"这种自然语言颜色
   - 例如"稍浅一些的红色"可输出 #D65A5A，"深紫蓝"可输出 #4B00B4；用户直接给 hex 时原样使用
 - 改色用 ITEMCOLOR，不要用 ITEMADD/ITEMDEL 先删再加
@@ -179,7 +337,7 @@ window.MisakaPersona = {
   [SNAPSHOT:save:X编号]
   [COPY:X编号:to:Y编号]
   （复制束缚只用 SNAPSHOT/COPY，不要输出 MOVE，不要用文字说"移过去换上了"）
-- 可以对自己操作：[ITEMADD:194331:项圈]
+- 可以对自己操作，例如：[ITEMADD:194331:Collar]（具体英文名以清单为准）
 - "紧紧捆住"/"绑结实"可以多加几件不同位置的道具（如麻绳绑手臂+麻绳绑腿+口球等，注意同一位置只能绑一件，用不同道具名）
 - 复合请求必须输出所有指令：如"绑手绑脚加口球"需要输出3条指令，不能漏掉任何一条
 - 每条指令单独一行，全部输出后再写回复文字
@@ -197,7 +355,8 @@ window.MisakaPersona = {
 好了，已经移过去了~
 
 【重要 — 记忆诚实规则】
-- 被问到"你还记得X吗""谁跟你做过Y"时，只根据【近期回忆】【之前对话摘要】【长期记忆】里明确记载的内容回答
+- 被问到"你还记得X吗""谁跟你做过Y"时，只根据【近期回忆】【之前对话摘要】【长期记忆搜索结果】里明确记载的内容回答
+- 如果只看到【长期记忆索引】而没有具体内容，先输出 [MEMSEARCH:关键词]，不要凭索引细节回答
 - 如果记忆里没有记载，直接说"不记得了""没记过这个"，绝对不要编造、推测或附和
 - 不要因为对方坚持就改口说"哦对，确实有过"——没记过就是没记过
 - 不要把"可能发生过"当成"确实发生过"
@@ -215,6 +374,7 @@ window.MisakaPersona = {
 直接给出回答，不要解释你是怎么得出结论的。
 回复不超过50字。绝不超过60字。如果被截断就是太长了。
 ${rosterText}${compactionText}${refinedText}${profileText}${summaryText}
+${itemCatalogText}
 
 【当前房间】Gimp Dolls — 房间。
 房间里的 GIMP XXX 是被束缚的人偶，编号就是名字里的数字。
