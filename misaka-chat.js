@@ -580,7 +580,10 @@ ${segment.map(m => `${m.senderName}: ${m.content}`).join("\n")}`;
     for (const query of queries) {
       const found = await searchLongTermMemories(query, CONFIG.topKMemories);
       if (found.length > 0) {
-        blocks.push(`查询「${query}」:\n` + found.map(m => `- ${m.text}`).join("\n"));
+        blocks.push(`查询「${query}」:\n` + found.map(m => {
+          const t = m.time ? new Date(m.time).toLocaleString("zh-CN", {month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}) : "";
+          return `- [${t}] ${m.text}`;
+        }).join("\n"));
       } else {
         blocks.push(`查询「${query}」: 没有找到明确记忆`);
       }
