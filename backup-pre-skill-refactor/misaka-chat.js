@@ -261,53 +261,6 @@ ${segment.map(m => `${m.senderName}: ${m.content}`).join("\n")}`;
     return scored.slice(0, topK).filter(s => s.score > 0.3);  // 相似度阈值
   }
 
-  async function searchLongTermMemories(query, topK = CONFIG.topKMemories) {
-    const results = [];
-    try {
-      const semantic = await searchMemories(query, topK);
-      for (const item of semantic) {
-        if (item?.text) results.push({ text: item.text, score: item.score || 0, source: "semantic" });
-      }
-    } catch(e) {
-      console.warn("[MisakaChat] 长期记忆语义搜索失败:", e.message);
-    }
-
-    const q = String(query || "").toLowerCase();
-    const terms = q.split(/[\s,，、。.!！?？;；:：]+/).filter(t => t.length >= 2);
-    for (const text of state.refinedMemories || []) {
-      const lower = String(text || "").toLowerCase();
-      let score = lower.includes(q) ? 3 : 0;
-      for (const term of terms) if (lower.includes(term)) score++;
-      if (score > 0) results.push({ text, score, source: "refined" });
-    }
-
-    const seen = new Set();
-    return results
-      .filter(item => {
-        const key = item.text;
-        if (!key || seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      })
-      .sort((a, b) => b.score - a.score)
-      .slice(0, topK);
-  }
-
-  async function buildMemorySearchContext(memCommands) {
-    const queries = [...new Set((memCommands || []).map(c => c.query).filter(Boolean))].slice(0, 3);
-    if (queries.length === 0) return "";
-    const blocks = [];
-    for (const query of queries) {
-      const found = await searchLongTermMemories(query, CONFIG.topKMemories);
-      if (found.length > 0) {
-        blocks.push(`查询「${query}」:\n` + found.map(m => `- ${m.text}`).join("\n"));
-      } else {
-        blocks.push(`查询「${query}」: 没有找到明确记忆`);
-      }
-    }
-    return "\n\n【长期记忆搜索结果】\n" + blocks.join("\n");
-  }
-
   function preferenceMemoryGuard(content) {
     const text = String(content || "");
     if (!/(喜欢|偏好|最喜欢|讨厌)/.test(text)) return "";
@@ -451,62 +404,29 @@ ${recentSemantic}`;
   ];
   let idleTimer = null;
 
-  async function generateIdleLine() {
-    try {
-      let roster = "";
-      if (typeof MisakaPersona !== "undefined" && typeof ChatRoomCharacter !== "undefined" && Array.isArray(ChatRoomCharacter) && typeof Player !== "undefined") {
-        roster = MisakaPersona.buildCompactRoster(ChatRoomCharacter, Player.MemberNumber)
-          .split("\n")
-          .slice(0, 12)
-          .join("\n");
-      }
-      const recent = state.recentMessages.slice(-3).map(m => `${m.senderName}: ${m.content}`).join("\n");
-      const systemPrompt = `你是御坂，BC Gimp Dolls 房间管理员。现在房间安静了，请根据当前房间状态自然说一句闲聊或做一个小动作。
-要求：中文为主，不超过40字；不要提AI、脚本、系统；不要输出操作指令；只用纯说话、*动作*、或 *动作*|说话。`;
-      const userPrompt = `当前房间名单:
-${roster || "暂无名单"}
-
-最近消息:
-${recent || "暂无"}
-
-生成一句自然的 idle 闲聊。`;
-      const reply = await callLLM(systemPrompt, [{ role: "user", content: userPrompt }], {
-        model: CONFIG.fallbackModel,
-        fallbackModel: CONFIG.fallbackModel,
-        maxTokens: 120,
-        temperature: 0.9,
-      });
-      return sanitizeReply(reply || "");
-    } catch(e) {
-      console.warn("[MisakaChat] idle LLM 生成失败:", e.message);
-      return "";
-    }
-  }
-
   function startIdleTimer() {
     if (idleTimer) clearInterval(idleTimer);
-    idleTimer = setInterval(async () => {
+    idleTimer = setInterval(() => {
       if (!isCurrent() || !CONFIG.enabled || state.busy) return;
       if (typeof CurrentScreen === "undefined" || CurrentScreen !== "ChatRoom") return;
       const now = Date.now();
       if (state.lastNonSelfMsgTime && now - state.lastNonSelfMsgTime > CONFIG.idleTimeoutMs) {
+        // 触发 idle 闲聊
+        const line = IDLE_LINES[Math.floor(Math.random() * IDLE_LINES.length)];
+        state.lastNonSelfMsgTime = now;  // 重置防再次触发
+        // idle 也要设 busy 防冲突
         if (window.__misakaReplyInProgress || window.__misakaGlobalBusy) return;
         window.__misakaGlobalBusy = true;
         window.__misakaReplyInProgress = true;
-        state.busy = true;
         try {
-          const generated = await generateIdleLine();
-          const line = generated || IDLE_LINES[Math.floor(Math.random() * IDLE_LINES.length)];
-          state.lastNonSelfMsgTime = Date.now();  // 重置防再次触发
           if (typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom") {
             ElementValue("InputChat", line);
             ChatRoomSendChat();
-            state.recentMessages.push({ senderName: "御搬", content: line, isSelf: true, time: Date.now() });
+            state.recentMessages.push({ senderName: "御搬", content: line, isSelf: true, time: now });
             if (state.recentMessages.length > 50) state.recentMessages.shift();
           }
         } catch(e) { console.warn("[MisakaChat] idle 发送失败:", e.message); }
         finally {
-          state.busy = false;
           window.__misakaGlobalBusy = false;
           window.__misakaReplyInProgress = false;
         }
@@ -566,18 +486,14 @@ ${recent || "暂无"}
   }
 
   // === API 调用 ===
-  async function callLLM(systemPrompt, contextMessages, options = {}) {
+  async function callLLM(systemPrompt, contextMessages) {
     const apiKey = localStorage.getItem(storageKey("apikey")) || "";
     if (!apiKey) { console.warn("[MisakaChat] 未设置 API key"); return null; }
     const messages = [{ role: "system", content: systemPrompt }, ...contextMessages];
-    const primaryModel = options.model || CONFIG.model;
-    const fallbackModel = options.fallbackModel || CONFIG.fallbackModel;
-    const maxTokens = options.maxTokens || CONFIG.maxTokens;
-    const temperature = options.temperature ?? CONFIG.temperature;
 
     return new Promise((resolve) => {
       const doRequest = (url, model, isFallback) => {
-        const reqBody = JSON.stringify({ model, messages, max_tokens: maxTokens, temperature });
+        const reqBody = JSON.stringify({ model, messages, max_tokens: CONFIG.maxTokens, temperature: CONFIG.temperature });
         const useGM = typeof window.__GM_xmlhttpRequest !== "undefined";
 
         if (useGM) {
@@ -589,15 +505,15 @@ ${recent || "暂无"}
             onload: (resp) => {
               try {
                 const data = JSON.parse(resp.responseText);
-                if (data.choices?.length > 0) { const r = extractReply(data.choices[0].message); if (r) resolve(r); else if (!isFallback) doRequest(url, fallbackModel, true); else resolve(null); }
+                if (data.choices?.length > 0) { const r = extractReply(data.choices[0].message); if (r) resolve(r); else if (!isFallback) doRequest(url, CONFIG.fallbackModel, true); else resolve(null); }
                 else resolve(null);
               } catch (e) {
-                if (!isFallback) doRequest(url, fallbackModel, true);
+                if (!isFallback) doRequest(url, CONFIG.fallbackModel, true);
                 else resolve(null);
               }
             },
-            onerror: () => { if (!isFallback) doRequest(url, fallbackModel, true); else resolve(null); },
-            ontimeout: () => { if (!isFallback) doRequest(url, fallbackModel, true); else resolve(null); }
+            onerror: () => { if (!isFallback) doRequest(url, CONFIG.fallbackModel, true); else resolve(null); },
+            ontimeout: () => { if (!isFallback) doRequest(url, CONFIG.fallbackModel, true); else resolve(null); }
           });
         } else {
           const xhr = new XMLHttpRequest();
@@ -608,19 +524,19 @@ ${recent || "暂无"}
           xhr.onload = () => {
             try {
               const data = JSON.parse(xhr.responseText);
-              if (data.choices?.length > 0) { const r = extractReply(data.choices[0].message); if (r) resolve(r); else if (!isFallback) doRequest(url, fallbackModel, true); else resolve(null); }
+              if (data.choices?.length > 0) { const r = extractReply(data.choices[0].message); if (r) resolve(r); else if (!isFallback) doRequest(url, CONFIG.fallbackModel, true); else resolve(null); }
               else resolve(null);
             } catch (e) {
-              if (!isFallback) doRequest(url, fallbackModel, true);
+              if (!isFallback) doRequest(url, CONFIG.fallbackModel, true);
               else resolve(null);
             }
           };
-          xhr.onerror = () => { if (!isFallback) doRequest(url, fallbackModel, true); else resolve(null); };
-          xhr.ontimeout = () => { if (!isFallback) doRequest(url, fallbackModel, true); else resolve(null); };
+          xhr.onerror = () => { if (!isFallback) doRequest(url, CONFIG.fallbackModel, true); else resolve(null); };
+          xhr.ontimeout = () => { if (!isFallback) doRequest(url, CONFIG.fallbackModel, true); else resolve(null); };
           xhr.send(reqBody);
         }
       };
-      doRequest(CONFIG.apiBase, primaryModel, false);
+      doRequest(CONFIG.apiBase, CONFIG.model, false);
     });
   }
 
@@ -672,14 +588,6 @@ ${recent || "暂无"}
   function parseActionCommands(reply) {
     const commands = [];
     const cleaned = String(reply || "")
-      .replace(/\[MEMSEARCH:([^\]]+)\]/gi, (m, query) => {
-        commands.push({ type: "memsearch", query: query.trim() });
-        return "";
-      })
-      .replace(/\[BCEQUERY:([^\]]+)\]/gi, (m, target) => {
-        commands.push({ type: "bcequery", target: target.trim() });
-        return "";
-      })
       .replace(/\[SNAPSHOT:save:(\d+)\]/gi, (m, mn) => {
         commands.push({ type: "snapshotSave", memberNumber: parseInt(mn) });
         return "";
@@ -905,8 +813,7 @@ ${recent || "暂无"}
         for (const g of groups) {
           const item = char.Appearance.find(a => 
             a?.Asset?.Group?.Name === g && 
-            (a?.Asset?.Name === searchName || a?.Asset?.Name === itemName ||
-             a?.Asset?.Description === searchName || a?.Asset?.Description === itemName ||
+            (a?.Asset?.Description === searchName || a?.Asset?.Description === itemName ||
              a?.Asset?.Description?.includes(searchName) || a?.Asset?.Description?.includes(itemName))
           );
           if (item) return item;
@@ -916,12 +823,12 @@ ${recent || "暂无"}
     // 不限定部位 — 精确匹配
     let target = char.Appearance.find(a => 
       a?.Asset?.Group?.Name?.startsWith("Item") && 
-      (a?.Asset?.Name === searchName || a?.Asset?.Description === searchName)
+      a?.Asset?.Description === searchName
     );
     if (!target && searchName !== itemName) {
       target = char.Appearance.find(a => 
         a?.Asset?.Group?.Name?.startsWith("Item") && 
-        (a?.Asset?.Name === itemName || a?.Asset?.Description === itemName)
+        a?.Asset?.Description === itemName
       );
     }
     // 包含匹配
@@ -942,46 +849,16 @@ ${recent || "暂无"}
     "ItemVulvaPiercings","ItemButt","ItemDevices","ItemClit"
   ];
   const LOW_PRIORITY_GROUPS = ["ItemHandheld","ItemScript","ItemAddon","ItemMisc","ItemNeckRestraints"];
-
-  function translateAssetText(text) {
-    if (!text) return "";
-    try {
-      const cache = typeof TranslationCache !== "undefined" && TranslationCache["Assets/Female3DCG/Female3DCG_CN.txt"];
-      if (!cache) return text;
-      if (Array.isArray(cache)) {
-        for (let i = 0; i < cache.length - 1; i += 2) {
-          if (cache[i] === text && cache[i + 1]) return cache[i + 1];
-        }
-        const idx = cache.indexOf(text);
-        if (idx >= 0 && cache[idx + 1]) return cache[idx + 1];
-      } else if (typeof cache === "object" && cache[text]) {
-        return cache[text];
-      }
-    } catch(e) {}
-    return text;
-  }
-
-  function assetCnName(asset) {
-    if (!asset) return "";
-    const translated = translateAssetText(asset.Description || asset.Name || "");
-    if (translated && translated !== asset.Name) return translated;
-    return asset.Description || asset.Name || "";
-  }
   
   function findItemAsset(itemName) {
     if (!itemName) return null;
-    if (typeof Asset === "undefined" || !Array.isArray(Asset)) return null;
-    const rawName = String(itemName).trim();
-    if (!rawName) return null;
-
-    const exact = Asset.find(a => a?.Group?.Name?.startsWith("Item") && a.Name === rawName);
-    if (exact) return { group: exact.Group.Name, asset: exact.Name };
-
     // 同义词转换
-    itemName = SYNONYMS[rawName] || rawName;
+    itemName = SYNONYMS[itemName] || itemName;
     // 模糊同义词：包含"绳"字的都映射到"麻绳"
     if (itemName.includes("绳") && !itemName.includes("颈") && !itemName.includes("纯")) itemName = "麻绳";
     if (itemName.includes("口塞") && !itemName.includes("模块")) itemName = "口球";
+    if (typeof Asset === "undefined" || !Array.isArray(Asset)) return null;
+    const family = Player.AssetFamily;
     
     // 按优先级分组查找
     const priorityOrder = [
@@ -998,10 +875,7 @@ ${recent || "暂无"}
         const isMatch = priorityGroup === null 
           ? !RESTRAINT_GROUPS.includes(gName) && !LOW_PRIORITY_GROUPS.includes(gName)
           : gName === priorityGroup;
-        if (isMatch && a.Name === itemName) {
-          return { group: gName, asset: a.Name };
-        }
-        if (isMatch && (a.Description === itemName || assetCnName(a) === itemName)) {
+        if (isMatch && a.Description === itemName) {
           return { group: gName, asset: a.Name };
         }
       }
@@ -1015,8 +889,7 @@ ${recent || "暂无"}
         const isMatch = priorityGroup === null 
           ? !RESTRAINT_GROUPS.includes(gName) && !LOW_PRIORITY_GROUPS.includes(gName)
           : gName === priorityGroup;
-        const cn = assetCnName(a);
-        if (isMatch && ((a.Description && a.Description.includes(itemName)) || (cn && cn.includes(itemName)))) {
+        if (isMatch && a.Description && a.Description.includes(itemName)) {
           return { group: gName, asset: a.Name };
         }
       }
@@ -1030,8 +903,7 @@ ${recent || "暂无"}
         const isMatch = priorityGroup === null 
           ? !RESTRAINT_GROUPS.includes(gName) && !LOW_PRIORITY_GROUPS.includes(gName)
           : gName === priorityGroup;
-        const cn = assetCnName(a);
-        if (isMatch && ((a.Description && itemName.includes(a.Description)) || (cn && itemName.includes(cn)))) {
+        if (isMatch && a.Description && itemName.includes(a.Description)) {
           return { group: gName, asset: a.Name };
         }
       }
@@ -1177,6 +1049,17 @@ ${recent || "暂无"}
     return true;
   }
 
+  // 中文 layer 名 → 英文 layer 名映射
+  // 优先从 BC 翻译表动态查，找不到再用手动映射
+  const LAYER_NAME_CN = {
+    "内衬": "Inner", "毛毯内衬": "Inner", "床": "Bed", "床身": "Bed", "毛毯": "Blanket", "内部": "Inner",
+    "球": "Ball", "带子": "Strap", "锁": "Lock",
+    "铐": "Cuffs", "环": "Rings",
+    "主体": "Body", "底": "Base", "顶": "Top", "上": "Top", "下": "Bottom",
+    "装饰": "Trim", "细节": "Detail",
+    "左": "Left", "右": "Right",
+  };
+
   // 找道具的可上色 layer 名列表
   function getItemColorLayers(asset) {
     if (!asset?.Layer) return [];
@@ -1205,14 +1088,27 @@ ${recent || "暂无"}
     if (!layerName) return undefined;
     const layers = getItemColorLayers(asset);
     if (layers.length === 0) return undefined;
-    const raw = String(layerName).trim();
-    // 1. 精确匹配英文 layer 名（清单里展示的名字）
-    let found = layers.find(l => l.name === raw);
+    // 1. 精确匹配英文名
+    let found = layers.find(l => l.name === layerName);
     if (found) return found.index;
-    // fallback: 英文大小写不敏感/包含匹配放最后，兼容少量旧输出
-    const lower = raw.toLowerCase();
-    found = layers.find(l => l.name && l.name.toLowerCase() === lower);
-    if (found) return found.index;
+    // 2. 手动中文映射
+    const enName = LAYER_NAME_CN[layerName];
+    if (enName) {
+      found = layers.find(l => l.name === enName);
+      if (found) return found.index;
+    }
+    // 3. BC 翻译表动态查
+    try {
+      const cn = TranslationCache["Assets/Female3DCG/Female3DCG_CN.txt"];
+      const cnIdx = cn.indexOf(layerName);
+      if (cnIdx > 0) {
+        const enFromCN = cn[cnIdx - 1]; // 前一个就是英文
+        found = layers.find(l => l.name === enFromCN);
+        if (found) return found.index;
+      }
+    } catch(e) {}
+    // 4. 模糊匹配（只允许 layerName 包含 layer 英文名，且英文名长度≥2，防误匹配）
+    const lower = layerName.toLowerCase();
     found = layers.find(l => l.name && l.name.length >= 2 && lower.includes(l.name.toLowerCase()));
     if (found) return found.index;
     return undefined;
@@ -1341,30 +1237,13 @@ ${recent || "暂无"}
     "乳胶衣": "Latex", "透视": "UnZip",
   };
 
-  function isVibratorAsset(asset) {
-    return /Vibrating|Vibrator|Vibe|Egg|ButtPlug|CatButtPlug|ClitPiercing/i.test(asset?.Name || "");
-  }
-
-  function readAllowedTypedProperties(asset) {
-    const values = [];
-    const add = (entry) => {
-      if (!entry) return;
-      if (typeof entry === "string") values.push(entry);
-      else if (entry.Name) values.push(entry.Name);
-      else if (entry.Property) values.push(entry.Property);
-      else if (entry.Option) values.push(entry.Option);
-      else if (entry.Type) values.push(entry.Type);
-    };
-    if (Array.isArray(asset?.AllowTypedProperties)) {
-      for (const entry of asset.AllowTypedProperties) add(entry);
-    }
-    return [...new Set(values)].filter(Boolean);
-  }
-
-  // 在 setExtendedItemProperty 的 typed 分支里用动态 BC 选项，中文表只作 fallback
+  // 在 setExtendedItemProperty 的 typed 分支里用中文映射
   // 返回 BC 选项名（英文），而非索引
   function findTypedOptionName(item, valueName) {
-    // 先尝试直接作为英文选项名，运行时用 TypedItemDataLookup 验证
+    // 先查中文映射表
+    if (STYLE_NAME_CN[valueName]) return STYLE_NAME_CN[valueName];
+    // 尝试直接作为英文选项名
+    // 运行时用 TypedItemDataLookup 验证
     try {
       const key = item.Asset.Group.Name + item.Asset.Name;
       const data = TypedItemDataLookup[key];
@@ -1373,31 +1252,7 @@ ${recent || "暂无"}
         if (opt) return opt.Name;
       }
     } catch(e) {}
-
-    const valueLower = String(valueName || "").toLowerCase();
-    const dynamicNames = readAllowedTypedProperties(item.Asset);
-    const dynamic = dynamicNames.find(n => n === valueName || String(n).toLowerCase() === valueLower);
-    if (dynamic) return dynamic;
-
-    // 旧中文映射表保留作 fallback
-    if (STYLE_NAME_CN[valueName]) return STYLE_NAME_CN[valueName];
     return null;
-  }
-
-  function findDynamicPropertyKey(asset, propName) {
-    const keys = readAllowedTypedProperties(asset);
-    const raw = String(propName || "");
-    const lower = raw.toLowerCase();
-    return keys.find(k => k === raw || String(k).toLowerCase() === lower) || null;
-  }
-
-  function normalizeDirectPropertyValue(valueName, valueMap) {
-    if (valueMap && Object.prototype.hasOwnProperty.call(valueMap, valueName)) return valueMap[valueName];
-    if (/^(true|on|open|yes|1|开|开启|打开)$/i.test(valueName)) return true;
-    if (/^(false|off|close|closed|no|0|关|关闭)$/i.test(valueName)) return false;
-    const num = Number(valueName);
-    if (!Number.isNaN(num) && String(valueName).trim() !== "") return num;
-    return valueName;
   }
 
   // 通用：设置 Extended 道具属性
@@ -1409,21 +1264,7 @@ ${recent || "暂无"}
     if (!item.Property) item.Property = {};
     if (!item.Property.TypeRecord) item.Property.TypeRecord = {};
 
-    const fallbackProperty = PROPERTY_MAP[propName];
-    if (fallbackProperty?.type === "direct") {
-      item.Property[fallbackProperty.key] = normalizeDirectPropertyValue(valueName, fallbackProperty.values);
-      ChatRoomCharacterUpdate(char);
-      return { ok: true, msg: `已设置 ${item.Asset.Description} ${fallbackProperty.key}=${item.Property[fallbackProperty.key]}` };
-    }
-
-    const dynamicPropertyKey = findDynamicPropertyKey(item.Asset, propName);
-    if (dynamicPropertyKey && archetype !== "typed" && archetype !== "modular") {
-      item.Property[dynamicPropertyKey] = normalizeDirectPropertyValue(valueName, null);
-      ChatRoomCharacterUpdate(char);
-      return { ok: true, msg: `已设置 ${item.Asset.Description} ${dynamicPropertyKey}=${item.Property[dynamicPropertyKey]}` };
-    }
-
-    if (archetype === "vibrating" || isVibratorAsset(item.Asset)) {
+    if (archetype === "vibrating") {
       // 振动器：propName 应该是 "强度" 或 "震动" 或 "模式"
       const idx = VIB_INTENSITY_CN[valueName];
       if (idx === undefined) {
@@ -2081,58 +1922,45 @@ ${recent || "暂无"}
       // 构建系统 prompt（含精简房间名单）
       const systemPrompt = getSystemPrompt();
 
+      // BCE 查询（仅明确查档时）
+      const bceTarget = parseBCEQueryRequest(content);
+      let bceInfo = "";
+      if (bceTarget) {
+        const results = await queryProfile(bceTarget);
+        if (results) {
+          bceInfo = "\n\n【BCE档案查询结果：" + bceTarget + "】\n";
+          bceInfo += results.map(r => {
+            let line = `${r.lastNick || r.name} (#${r.memberNumber}) - 档案查看: ${r.seen}`;
+            if (r.owner && r.owner !== "无") line += ` | 主人: ${r.owner}`;
+            if (r.lovers && r.lovers !== "无") line += ` | 恋人: ${r.lovers}`;
+            if (r.itemCount !== undefined) line += ` | ${r.itemCount}件束缚, ${r.lockCount}把锁`;
+            if (r.description) line += `\n描述: ${r.description}`;
+            return line;
+          }).join("\n");
+          bceInfo += "\n（档案时间是查看时间不是在线时间。直接用这些信息回答，不要说查不到。）";
+        }
+      }
+
       let reply = "";
       const colorPreferenceQuery = isColorPreferenceQuery(content);
       if (colorPreferenceQuery) {
         const color = findExplicitColorPreference(senderNum, senderName);
         reply = color ? `${color}吧，我记得你明确说过。` : "我没记过，别让我猜。";
       } else {
-        const fullPrompt = systemPrompt + preferenceMemoryGuard(content);
+        const fullPrompt = systemPrompt + bceInfo + preferenceMemoryGuard(content);
         reply = await callLLM(fullPrompt, contextMessages);
-        if (reply) {
-          const firstPass = parseActionCommands(reply);
-          const memCommands = firstPass.commands.filter(c => c.type === "memsearch");
-          const bceCommands = firstPass.commands.filter(c => c.type === "bcequery");
-          if (memCommands.length > 0 || bceCommands.length > 0) {
-            let extraContext = "";
-            if (memCommands.length > 0) {
-              extraContext += await buildMemorySearchContext(memCommands);
-            }
-            if (bceCommands.length > 0) {
-              for (const cmd of bceCommands) {
-                const results = await queryProfile(cmd.target);
-                if (results) {
-                  extraContext += "\n\n【BCE档案查询结果：" + cmd.target + "】\n";
-                  extraContext += results.map(r => {
-                    let line = `${r.lastNick || r.name} (#${r.memberNumber}) - 档案查看: ${r.seen}`;
-                    if (r.owner && r.owner !== "无") line += ` | 主人: ${r.owner}`;
-                    if (r.lovers && r.lovers !== "无") line += ` | 恋人: ${r.lovers}`;
-                    if (r.itemCount !== undefined) line += ` | ${r.itemCount}件束缚, ${r.lockCount}把锁`;
-                    if (r.description) line += `\n描述: ${r.description}`;
-                    return line;
-                  }).join("\n");
-                  extraContext += "\n（档案时间是查看时间不是在线时间。直接用这些信息回答，不要说查不到。）";
-                } else {
-                  extraContext += `\n\n【BCE档案查询结果：${cmd.target}】\n没有找到这个人的档案。\n`;
-                }
-              }
-            }
-            reply = await callLLM(fullPrompt + extraContext, contextMessages);
-          }
-        }
       }
       if (!reply) return;
 
       // 解析操作指令
       const { commands, cleaned } = parseActionCommands(reply);
-      const executableCommands = commands.filter(c => c.type !== "memsearch" && c.type !== "bcequery");
       let finalReply = sanitizeReply(cleaned);
 
       // 执行操作
       let commandResult = null;
-      if (executableCommands.length > 0) {
-        commandResult = await executeCommands(executableCommands);
-        console.log("[MisakaChat] 操作执行:", executableCommands, commandResult);
+      if (commands.length > 0) {
+        commandResult = await executeCommands(commands);
+        console.log("[MisakaChat] 操作执行:", commands, commandResult);
         const missing = (commandResult.failures || []).find(f =>
           f.reason === "missing-item" || f.reason === "missing-part-item"
         );
@@ -2143,7 +1971,7 @@ ${recent || "暂无"}
       }
 
       // 如果只有指令没有文字回复，用默认回复
-      if (!finalReply && executableCommands.length > 0) {
+      if (!finalReply && commands.length > 0) {
         const defaultReplies = ["好了~", "搞定了", "嗯，处理好了", "弄好了~", "已经调好了"];
         finalReply = defaultReplies[Math.floor(Math.random() * defaultReplies.length)];
       }
