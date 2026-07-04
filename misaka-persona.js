@@ -171,7 +171,9 @@ window.MisakaPersona = {
     const list = Array.isArray(refined) ? refined : [];
     if (list.length === 0) return "";
     return list.map((entry, idx) => {
-      const clean = String(entry || "")
+      // 兼容旧格式(string)和新格式({text, embedding})
+      const raw = typeof entry === "string" ? entry : (entry?.text || "");
+      const clean = String(raw)
         .replace(/^\[[^\]]+\]\s*/, "")
         .replace(/[，。！？、；：,.!?;:（）()【】\[\]"]/g, " ")
         .replace(/\s+/g, " ")

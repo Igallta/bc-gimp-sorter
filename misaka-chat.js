@@ -263,22 +263,57 @@ ${segment.map(m => `${m.senderName}: ${m.content}`).join("\n")}`;
 
   async function searchLongTermMemories(query, topK = CONFIG.topKMemories) {
     const results = [];
+    const qEmb = await getEmbedding(query);
+
+    // 语义搜索 semantic_mem
     try {
-      const semantic = await searchMemories(query, topK);
-      for (const item of semantic) {
-        if (item?.text) results.push({ text: item.text, score: item.score || 0, source: "semantic" });
+      if (qEmb && state.semanticMemories.length > 0) {
+        const scored = state.semanticMemories.map(m => ({
+          text: m.text, score: cosineSim(qEmb, m.embedding), source: "semantic", ...m,
+        }));
+        scored.sort((a, b) => b.score - a.score);
+        for (const item of scored.slice(0, topK).filter(s => s.score > 0.3)) {
+          if (item?.text) results.push({ text: item.text, score: item.score, source: "semantic" });
+        }
       }
     } catch(e) {
-      console.warn("[MisakaChat] 长期记忆语义搜索失败:", e.message);
+      console.warn("[MisakaChat] 语义搜索失败:", e.message);
     }
 
-    const q = String(query || "").toLowerCase();
-    const terms = q.split(/[\s,，、。.!！?？;；:：]+/).filter(t => t.length >= 2);
-    for (const text of state.refinedMemories || []) {
-      const lower = String(text || "").toLowerCase();
-      let score = lower.includes(q) ? 3 : 0;
-      for (const term of terms) if (lower.includes(term)) score++;
-      if (score > 0) results.push({ text, score, source: "refined" });
+    // 语义搜索 refined_mem（现在每条带 embedding）
+    try {
+      if (qEmb && Array.isArray(state.refinedMemories)) {
+        const refinedScored = state.refinedMemories.map(m => {
+          if (typeof m === "string") return { text: m, score: 0, source: "refined", _legacy: true };
+          if (m.embedding && qEmb) return { text: m.text, score: cosineSim(qEmb, m.embedding), source: "refined" };
+          return { text: m.text, score: 0, source: "refined", _legacy: true };
+        });
+        refinedScored.sort((a, b) => b.score - a.score);
+        for (const item of refinedScored.slice(0, topK).filter(s => s.score > 0.3)) {
+          results.push({ text: item.text, score: item.score, source: "refined" });
+        }
+      }
+    } catch(e) {
+      console.warn("[MisakaChat] refined 语义搜索失败:", e.message);
+    }
+
+    // fallback: 关键词匹配 refined_mem（兼容旧格式 string 条目）
+    if (qEmb) {
+      const q = String(query || "").toLowerCase();
+      const terms = q.split(/[\s,，、。.!！?？;；:：]+/).filter(t => t.length >= 2);
+      for (const entry of state.refinedMemories || []) {
+        const text = typeof entry === "string" ? entry : entry?.text;
+        if (!text) continue;
+        const lower = text.toLowerCase();
+        let kwScore = lower.includes(q) ? 3 : 0;
+        for (const term of terms) if (lower.includes(term)) kwScore++;
+        if (kwScore > 0) {
+          // 避免重复（语义搜索已经命中的不再加）
+          if (!results.some(r => r.text === text)) {
+            results.push({ text, score: kwScore, source: "refined-keyword" });
+          }
+        }
+      }
     }
 
     const seen = new Set();
@@ -391,7 +426,11 @@ ${recentSemantic}`;
       const refined = await callLLM("你是记忆提炼助手。只提炼有明确证据的长期信息，禁止把操作请求推断成偏好。", [{role:"user", content: prompt}]);
       if (refined) {
         const time = new Date().toLocaleDateString("zh-CN", {month:"2-digit",day:"2-digit"});
-        state.refinedMemories.push(`[${time}] ${refined.slice(0, 100)}`);
+        const refinedText = `[${time}] ${refined.slice(0, 100)}`;
+        // 给 refined memory 算 embedding，让语义搜索能命中
+        let refinedEmb = null;
+        try { refinedEmb = await getEmbedding(refinedText); } catch(e) {}
+        state.refinedMemories.push({ text: refinedText, embedding: refinedEmb });
         if (state.refinedMemories.length > CONFIG.maxRefinedMemories) {
           state.refinedMemories.shift();
         }
