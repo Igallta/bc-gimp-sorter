@@ -449,6 +449,7 @@ ${recentSemantic}`;
     const delay = 2000 + Math.random() * 3000;
     setTimeout(() => {
       if (!isCurrent() || !CONFIG.enabled || state.busy) return;
+      if (!state.greetEnabled) return;
       if (typeof CurrentScreen === "undefined" || CurrentScreen !== "ChatRoom") return;
       // 100% 打招呼
       // if (Math.random() > 0.85) return;
@@ -2105,6 +2106,7 @@ ${recentSemantic}`;
   window.__misakaGetState = function() {
     return {
       enabled: CONFIG.enabled, busy: state.busy, lastReplyTime: state.lastReplyTime,
+      greetEnabled: state.greetEnabled,
       messageCount: state.messageCount, recentMsgs: state.recentMessages.slice(-5),
       model: CONFIG.model, hasApiKey: !!(localStorage.getItem(storageKey("apikey"))||""),
       hasPersona: typeof MisakaPersona !== "undefined"
