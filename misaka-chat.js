@@ -32,8 +32,8 @@
     idleCheckMs: 60000,  // 每分钟检查一次 idle
     embeddingBase: "https://api.openai.com/v1/embeddings",
     embeddingModel: "text-embedding-3-large",
-    embeddingDim: 3072,
-    maxMemoryEntries: 200,  // 最多存多少条带 embedding 的记忆
+    embeddingDim: 512,
+    maxMemoryEntries: 2000, // IndexedDB 容量大，放宽到 2000 条
     memoryRefineInterval: 200,  // 每 N 条消息提炼一次长期记忆
     maxRefinedMemories: 10,  // 保留最近 N 条提炼记忆
     topKMemories: 3,  // 查询时返回最相似的 K 条记忆
@@ -66,19 +66,148 @@
     else state.compactionSummaries = [];
   } catch(e) { state.compactionSummaries = []; }
 
-  // 从 localStorage 加载语义记忆条目
-  try {
-    const savedEntries = JSON.parse(localStorage.getItem("misaka_semantic_mem") || "[]");
-    if (Array.isArray(savedEntries)) state.semanticMemories = savedEntries;
-    else state.semanticMemories = [];
-  } catch(e) { state.semanticMemories = []; }
+  // === IndexedDB 封装（embedding 数据量大，localStorage 存不下） ===
+  const IDB = (() => {
+    const DB_NAME = "misaka_chat";
+    const DB_VERSION = 1;
+    const STORE_SEMANTIC = "semantic_mem";
+    const STORE_REFINED = "refined_mem";
+    let dbPromise = null;
 
-  // 从 localStorage 加载提炼记忆
-  try {
-    const savedRefined = JSON.parse(localStorage.getItem("misaka_refined_mem") || "[]");
-    if (Array.isArray(savedRefined)) state.refinedMemories = savedRefined;
-    else state.refinedMemories = [];
-  } catch(e) { state.refinedMemories = []; }
+    function openDB() {
+      if (dbPromise) return dbPromise;
+      dbPromise = new Promise((resolve, reject) => {
+        const req = indexedDB.open(DB_NAME, DB_VERSION);
+        req.onupgradeneeded = (e) => {
+          const db = e.target.result;
+          if (!db.objectStoreNames.contains(STORE_SEMANTIC)) {
+            db.createObjectStore(STORE_SEMANTIC, { keyPath: "id", autoIncrement: true });
+          }
+          if (!db.objectStoreNames.contains(STORE_REFINED)) {
+            db.createObjectStore(STORE_REFINED, { keyPath: "id", autoIncrement: true });
+          }
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+      return dbPromise;
+    }
+
+    async function getAll(store) {
+      try {
+        const db = await openDB();
+        return await new Promise((resolve, reject) => {
+          const tx = db.transaction(store, "readonly");
+          const req = tx.objectStore(store).getAll();
+          req.onsuccess = () => resolve(req.result || []);
+          req.onerror = () => reject(req.error);
+        });
+      } catch (e) {
+        console.warn("[MisakaChat] IDB getAll 失败:", e.message);
+        return [];
+      }
+    }
+
+    async function putMany(store, items) {
+      try {
+        const db = await openDB();
+        return await new Promise((resolve, reject) => {
+          const tx = db.transaction(store, "readwrite");
+          const os = tx.objectStore(store);
+          for (const item of items) os.put(item);
+          tx.oncomplete = () => resolve(true);
+          tx.onerror = () => reject(tx.error);
+        });
+      } catch (e) {
+        console.warn("[MisakaChat] IDB putMany 失败:", e.message);
+        return false;
+      }
+    }
+
+    async function clearStore(store) {
+      try {
+        const db = await openDB();
+        return await new Promise((resolve, reject) => {
+          const tx = db.transaction(store, "readwrite");
+          tx.objectStore(store).clear();
+          tx.oncomplete = () => resolve(true);
+          tx.onerror = () => reject(tx.error);
+        });
+      } catch (e) {
+        console.warn("[MisakaChat] IDB clear 失败:", e.message);
+        return false;
+      }
+    }
+
+    return {
+      getSemantic: () => getAll(STORE_SEMANTIC),
+      getRefined: () => getAll(STORE_REFINED),
+      putSemantic: (items) => putMany(STORE_SEMANTIC, items),
+      putRefined: (items) => putMany(STORE_REFINED, items),
+      clearSemantic: () => clearStore(STORE_SEMANTIC),
+      clearRefined: () => clearStore(STORE_REFINED),
+      clearAll: () => Promise.all([clearStore(STORE_SEMANTIC), clearStore(STORE_REFINED)]),
+      STORE_SEMANTIC,
+      STORE_REFINED,
+    };
+  })();
+
+  // 从 IndexedDB 异步加载语义记忆和提炼记忆（加载完成前用空数组占位）
+  state.semanticMemories = [];
+  state.refinedMemories = [];
+  state.idbReady = false;
+
+  IDB.getSemantic().then(entries => {
+    if (Array.isArray(entries)) {
+      // 按 time 排序（IndexedDB autoIncrement id 基本保序，但显式排序更稳）
+      entries.sort((a, b) => (a.time || 0) - (b.time || 0));
+      state.semanticMemories = entries;
+    }
+    state.idbReady = true;
+    console.log(`[MisakaChat] IDB 加载完成: ${state.semanticMemories.length} 条语义记忆`);
+  }).catch(e => {
+    state.idbReady = true;
+    console.warn("[MisakaChat] IDB 加载语义记忆失败，从空开始:", e.message);
+  });
+
+  IDB.getRefined().then(entries => {
+    if (Array.isArray(entries)) {
+      entries.sort((a, b) => (a.time || 0) - (b.time || 0));
+      state.refinedMemories = entries;
+    }
+    console.log(`[MisakaChat] IDB 加载完成: ${state.refinedMemories.length} 条提炼记忆`);
+  }).catch(e => {
+    console.warn("[MisakaChat] IDB 加载提炼记忆失败:", e.message);
+  });
+
+  // 兼容：如果 IDB 为空但 localStorage 有旧数据，迁移一次
+  setTimeout(() => {
+    if (state.semanticMemories.length === 0 && !state._idbMigrated) {
+      try {
+        const old = JSON.parse(localStorage.getItem("misaka_semantic_mem") || "[]");
+        if (Array.isArray(old) && old.length > 0) {
+          state.semanticMemories = old;
+          IDB.putSemantic(old).then(() => {
+            localStorage.removeItem("misaka_semantic_mem");
+            console.log(`[MisakaChat] 从 localStorage 迁移 ${old.length} 条语义记忆到 IDB`);
+          });
+        }
+      } catch(e) {}
+    }
+    if (state.refinedMemories.length === 0 && !state._idbMigrated) {
+      try {
+        const old = JSON.parse(localStorage.getItem("misaka_refined_mem") || "[]");
+        if (Array.isArray(old) && old.length > 0) {
+          state.refinedMemories = old;
+          IDB.putRefined(old).then(() => {
+            localStorage.removeItem("misaka_refined_mem");
+            console.log(`[MisakaChat] 从 localStorage 迁移 ${old.length} 条提炼记忆到 IDB`);
+          });
+        }
+      } catch(e) {}
+    }
+    state._idbMigrated = true;
+  }, 2000);
 
   try {
     const savedLog = JSON.parse(localStorage.getItem("misaka_joinlog") || "[]");
@@ -200,7 +329,7 @@ ${segment.map(m => `${m.senderName}: ${m.content}`).join("\n")}`;
             catch(e) { reject(new Error("embedding parse error")); }
           } else { reject(new Error("embedding HTTP " + xhr.status)); }
         };
-        xhr.send(JSON.stringify({ model: CONFIG.embeddingModel, input: text.slice(0, 2000) }));
+        xhr.send(JSON.stringify({ model: CONFIG.embeddingModel, input: text.slice(0, 2000), dimensions: CONFIG.embeddingDim || 512 }));
       });
       if (resp && resp.data && resp.data[0] && resp.data[0].embedding) {
         return resp.data[0].embedding;
@@ -239,11 +368,7 @@ ${segment.map(m => `${m.senderName}: ${m.content}`).join("\n")}`;
       time: Date.now(),
       ...meta,
     });
-    try { localStorage.setItem("misaka_semantic_mem", JSON.stringify(state.semanticMemories)); } catch(e) {
-      // localStorage 满了（embedding 很大），减半存储
-      state.semanticMemories = state.semanticMemories.slice(-Math.floor(CONFIG.maxMemoryEntries / 2));
-      try { localStorage.setItem("misaka_semantic_mem", JSON.stringify(state.semanticMemories)); } catch(e2) {}
-    }
+    IDB.putSemantic(state.semanticMemories); // 异步写入 IndexedDB，不阻塞
   }
 
   // 语义搜索：用 query embedding 找最相似的 K 条记忆
@@ -434,7 +559,7 @@ ${recentSemantic}`;
         if (state.refinedMemories.length > CONFIG.maxRefinedMemories) {
           state.refinedMemories.shift();
         }
-        try { localStorage.setItem("misaka_refined_mem", JSON.stringify(state.refinedMemories)); } catch(e) {}
+        IDB.putRefined(state.refinedMemories); // 异步写入 IndexedDB
         console.log("[MisakaChat] 长期记忆提炼完成:", refined.slice(0, 50));
       }
     } catch(e) {
@@ -2248,8 +2373,14 @@ ${recent || "暂无"}
       const mem = loadMemory();
       const apiKeySet = localStorage.getItem(storageKey("apikey")) ? "✅" : "❌";
       const model = localStorage.getItem(storageKey("model")) || CONFIG.model;
-      sendLocal(`状态: ${CONFIG.enabled?"开启":"关闭"} | Key: ${apiKeySet} | 模型: ${model} | 认识 ${Object.keys(mem.profiles||{}).length} 人 | 摘要 ${(mem.summaries||[]).length} 条`);
-    } else if (sub === "forget") { localStorage.setItem(storageKey("memory"), "{}"); sendLocal("🧹 记忆已清空"); }
+      sendLocal(`状态: ${CONFIG.enabled?"开启":"关闭"} | Key: ${apiKeySet} | 模型: ${model} | 认识 ${Object.keys(mem.profiles||{}).length} 人 | 摘要 ${(mem.summaries||[]).length} 条 | 语义记忆 ${state.semanticMemories.length} 条 | 提炼 ${state.refinedMemories.length} 条`);
+    } else if (sub === "forget") {
+      localStorage.setItem(storageKey("memory"), "{}");
+      state.semanticMemories = [];
+      state.refinedMemories = [];
+      IDB.clearAll();
+      sendLocal("🧹 记忆已清空（含 IndexedDB 语义记忆）");
+    }
     else if (sub === "memory") {
       const mem = loadMemory();
       const profiles = Object.entries(mem.profiles || {});

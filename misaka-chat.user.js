@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         BC Misaka Auto Chat
 // @namespace    https://igallta.github.io/bc-gimp-sorter
-// @version      2.1.0
-// @description  御坂 BC 自动回复系统 — LLM 驱动 + 语义记忆 + Context Compaction
+// @version      2.2.0
+// @description  御坂 BC 自动回复系统 — LLM 驱动 + 语义记忆(IDB) + Context Compaction
 // @match        https://www.bondage-europe.com/R129/BondageClub/*
 // @match        https://www.bondageclub.com/R129/BondageClub/*
 // @grant        GM_xmlhttpRequest
