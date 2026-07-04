@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BC Misaka Auto Chat
 // @namespace    https://igallta.github.io/bc-gimp-sorter
-// @version      2.2.1
+// @version      2.3.0
 // @description  御坂 BC 自动回复系统 — LLM 驱动 + 语义记忆(IDB) + Context Compaction
 // @match        https://www.bondage-europe.com/R129/BondageClub/*
 // @match        https://www.bondageclub.com/R129/BondageClub/*
@@ -21,8 +21,10 @@
   // 预设 OpenAI key — embedding 用 (text-embedding-3-large)
   const PRESET_OPENAI_KEY = atob("c2stcHJvai1obzRuck1FY2NBakZUdVAwWnoxbHZ3ZDA3R3hYUmZTZTctcHhIcnZtTFgxR0FJYkkxbDh5b2EydDhidFVJM1c1WEppZXNKVTlMQVQzQmxia0ZKYk9OTFhKMzZJRnBQWFhZSHhkSGZ4T1lrdlJBMFFfcGVrVG5EVW4xcHA3VVZ5LVpjOXVtUHNNbmZjZ1VsQVhMaEJoUXRRbzdvb0E=");
 
-  // 把 GM_xmlhttpRequest 暴露到 window，让注入的脚本能用
+  // 把 GM 函数暴露到 window，让注入的脚本能用
   window.__GM_xmlhttpRequest = GM_xmlhttpRequest;
+  window.__GM_getValue = GM_getValue;
+  window.__GM_setValue = GM_setValue;
 
   function waitForReady(cb, attempts) {
     attempts = attempts || 0;
@@ -47,9 +49,11 @@
   }
 
   waitForReady(() => {
-    // 强制更新 API key
+    // API key 存到 GM 存储（BC 页面脚本读不到 localStorage 里的 key）
+    GM_setValue("misaka_apikey", PRESET_KEY);
+    GM_setValue("misaka_openai_key", PRESET_OPENAI_KEY);
+    // 同时写 localStorage 作为兼容 fallback
     localStorage.setItem("misaka_apikey", PRESET_KEY);
-    // 强制更新 OpenAI key（embedding 用）
     localStorage.setItem("misaka_openai_key", PRESET_OPENAI_KEY);
 
     // 加载人设文件

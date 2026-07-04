@@ -23,8 +23,6 @@
     apiKeyTimeout: 45000,
     replyDelayMs: 800,
     maxProfileEntries: 20,
-    maxSummaries: 50,
-    summaryInterval: 30,
     moveCooldownMs: 5000,  // 移动操作冷却
     compactionInterval: 50,  // 每 N 条消息生成一次 context compaction
     maxCompactionSummaries: 5,  // 保留最近 N 条 compaction 摘要
@@ -58,6 +56,12 @@
   try {
     const savedGreet = localStorage.getItem("misaka_greet_enabled");
     if (savedGreet !== null) state.greetEnabled = savedGreet === "true";
+  } catch(e) {}
+
+  // 恢复 messageCount（避免刷新后归零导致 compaction/refined 不触发）
+  try {
+    const saved = parseInt(localStorage.getItem("misaka_msg_count") || "0", 10);
+    if (saved > 0) state.messageCount = saved;
   } catch(e) {}
 
   try {
@@ -139,14 +143,37 @@
       }
     }
 
+    async function putOne(store, item) {
+      try {
+        const db = await openDB();
+        return await new Promise((resolve, reject) => {
+          const tx = db.transaction(store, "readwrite");
+          tx.objectStore(store).put(item);
+          tx.oncomplete = () => resolve(true);
+          tx.onerror = () => reject(tx.error);
+        });
+      } catch (e) {
+        console.warn("[MisakaChat] IDB putOne 失败:", e.message);
+        return false;
+      }
+    }
+
     return {
       getSemantic: () => getAll(STORE_SEMANTIC),
       getRefined: () => getAll(STORE_REFINED),
       putSemantic: (items) => putMany(STORE_SEMANTIC, items),
       putRefined: (items) => putMany(STORE_REFINED, items),
+      putSemanticOne: (item) => putOne(STORE_SEMANTIC, item),
+      putRefinedOne: (item) => putOne(STORE_REFINED, item),
       clearSemantic: () => clearStore(STORE_SEMANTIC),
       clearRefined: () => clearStore(STORE_REFINED),
       clearAll: () => Promise.all([clearStore(STORE_SEMANTIC), clearStore(STORE_REFINED)]),
+      exportAll: async () => ({ semantic: await getAll(STORE_SEMANTIC), refined: await getAll(STORE_REFINED) }),
+      importAll: async (data) => {
+        if (data?.semantic) { await clearStore(STORE_SEMANTIC); await putMany(STORE_SEMANTIC, data.semantic); }
+        if (data?.refined) { await clearStore(STORE_REFINED); await putMany(STORE_REFINED, data.refined); }
+        return true;
+      },
       STORE_SEMANTIC,
       STORE_REFINED,
     };
@@ -302,20 +329,6 @@
     saveMemory(mem);
   }
 
-  function maybeGenerateSummary() {
-    if (state.messageCount % CONFIG.summaryInterval !== 0) return;
-    const mem = loadMemory();
-    if (!mem.summaries) mem.summaries = [];
-    const recent = state.recentMessages.slice(-CONFIG.summaryInterval);
-    const senders = [...new Set(recent.map(m => m.senderName))];
-    mem.summaries.push(`${new Date().toISOString().slice(5, 16)}: ${senders.join("、")} 在房间里聊了天`);
-    if (mem.summaries.length > CONFIG.maxSummaries) {
-      const old = mem.summaries.slice(0, 2).join("；");
-      mem.summaries = [old, ...mem.summaries.slice(2)];
-    }
-    saveMemory(mem);
-  }
-
   // === Context Compaction ===
   // 每 compactionInterval 条消息，用 LLM 生成一段摘要，塞入 system prompt
   // 这样即使 recentMessages 超过 50 条被截断，御坂仍然记得之前发生了什么
@@ -338,8 +351,9 @@
 ${segment.map(m => `${m.senderName}: ${m.content}`).join("\n")}`;
       const summary = await callLLM("你是聊天摘要助手。只总结明确事实，禁止把操作请求推断成偏好。", [{role:"user", content: summaryPrompt}]);
       if (summary) {
-        const time = new Date().toLocaleTimeString("zh-CN", {hour:"2-digit",minute:"2-digit"});
-        state.compactionSummaries.push(`[${time}] ${summary.slice(0, 80)}`);
+        const tStart = segment[0]?.time ? new Date(segment[0].time).toLocaleString("zh-CN", {month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}) : "";
+        const tEnd = new Date().toLocaleString("zh-CN", {month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"});
+        state.compactionSummaries.push(`[${tStart}~${tEnd}] ${summary.slice(0, 80)}`);
         if (state.compactionSummaries.length > CONFIG.maxCompactionSummaries) {
           state.compactionSummaries.shift();
         }
@@ -353,14 +367,29 @@ ${segment.map(m => `${m.senderName}: ${m.content}`).join("\n")}`;
     }
   }
 
+  // === Embedding cache (LRU) ===
+  const embeddingCache = new Map();
+  const EMBEDDING_CACHE_MAX = 20;
+
   // === Semantic Memory (Embedding-based) ===
   // 调用 OpenAI embedding API (text-embedding-3-large)
   function getEmbeddingKey() {
-    // 从 localStorage 读 OpenAI API key
+    // 优先从 GM_getValue 读（Tampermonkey 存储，BC 脚本读不到）
+    if (typeof window.__GM_getValue === "function") {
+      const v = window.__GM_getValue("misaka_openai_key");
+      if (v) return v;
+    }
     return localStorage.getItem("misaka_openai_key") || "";
   }
 
   async function getEmbedding(text) {
+    const cacheKey = text.slice(0, 200);
+    if (embeddingCache.has(cacheKey)) {
+      const cached = embeddingCache.get(cacheKey);
+      embeddingCache.delete(cacheKey);
+      embeddingCache.set(cacheKey, cached); // LRU: move to end
+      return cached;
+    }
     const key = getEmbeddingKey();
     if (!key) return null;
     try {
@@ -378,10 +407,16 @@ ${segment.map(m => `${m.senderName}: ${m.content}`).join("\n")}`;
             catch(e) { reject(new Error("embedding parse error")); }
           } else { reject(new Error("embedding HTTP " + xhr.status)); }
         };
-        xhr.send(JSON.stringify({ model: CONFIG.embeddingModel, input: text.slice(0, 2000), dimensions: CONFIG.embeddingDim || 512 }));
+        xhr.send(JSON.stringify({ model: CONFIG.embeddingModel, input: text.slice(0, 2000), dimensions: CONFIG.embeddingDim }));
       });
       if (resp && resp.data && resp.data[0] && resp.data[0].embedding) {
-        return resp.data[0].embedding;
+        const result = resp.data[0].embedding;
+        if (embeddingCache.size >= EMBEDDING_CACHE_MAX) {
+          const firstKey = embeddingCache.keys().next().value;
+          embeddingCache.delete(firstKey);
+        }
+        embeddingCache.set(cacheKey, result);
+        return result;
       }
       return null;
     } catch(e) {
@@ -402,49 +437,80 @@ ${segment.map(m => `${m.senderName}: ${m.content}`).join("\n")}`;
     return denom > 0 ? dot / denom : 0;
   }
 
+  // 智能遗忘：超限时按价值评分淘汰低价值记忆，而非简单 FIFO
+  function smartForget() {
+    const now = Date.now();
+    const scored = state.semanticMemories.map((m, i) => {
+      const ageDays = (now - (m.time || 0)) / 86400000;
+      const textLen = (m.text || "").length;
+      // 价值 = 文本长度（信息量）× 时间衰减（越新价值越高）
+      const value = textLen * Math.max(0.2, 1 - ageDays / 90);
+      return { idx: i, value };
+    });
+    scored.sort((a, b) => a.value - b.value);
+    // 淘汰价值最低的 10 条
+    const toDrop = scored.slice(0, 10).map(s => s.idx).sort((a, b) => b - a);
+    for (const idx of toDrop) {
+      state.semanticMemories.splice(idx, 1);
+    }
+    // 全量同步 IDB（超限淘汰是稀有事件，全量写可接受）
+    IDB.clearSemantic().then(() => IDB.putSemantic(state.semanticMemories));
+    console.log(`[MisakaChat] 智能遗忘: 淘汰 ${toDrop.length} 条低价值记忆`);
+  }
+
   // 存一条语义记忆（带 embedding）
   async function storeSemanticMemory(text, meta = {}) {
     if (!text || text.length < 5) return;
+
+    // 去重：搜索已有记忆，相似度 > 0.92 则跳过
+    const dup = await searchMemories(text, 1);
+    if (dup.length > 0 && dup[0].score > 0.92) return;
+
     if (state.semanticMemories.length >= CONFIG.maxMemoryEntries) {
-      // 丢掉最老的 10 条
-      state.semanticMemories.splice(0, 10);
+      smartForget();
     }
     const emb = await getEmbedding(text);
     if (!emb) return;  // embedding 失败就不存
-    state.semanticMemories.push({
+    const entry = {
       text: text.slice(0, 500),
       embedding: emb,
       time: Date.now(),
       ...meta,
-    });
-    IDB.putSemantic(state.semanticMemories); // 异步写入 IndexedDB，不阻塞
+    };
+    state.semanticMemories.push(entry);
+    IDB.putSemanticOne(entry); // 增量写入，不再全量覆盖
   }
 
-  // 语义搜索：用 query embedding 找最相似的 K 条记忆
+  // 语义搜索：用 query embedding 找最相似的 K 条记忆（带时间衰减）
   async function searchMemories(query, topK = CONFIG.topKMemories) {
     if (!query || state.semanticMemories.length === 0) return [];
     const qEmb = await getEmbedding(query);
     if (!qEmb) return [];
-    const scored = state.semanticMemories.map(m => ({
-      text: m.text,
-      time: m.time,
-      score: cosineSim(qEmb, m.embedding),
-      ...m,
-    }));
+    const now = Date.now();
+    const scored = state.semanticMemories.map(m => {
+      const cosine = cosineSim(qEmb, m.embedding);
+      const ageDays = (now - (m.time || 0)) / 86400000;
+      const decayed = cosine * Math.max(0.3, 1 - ageDays / 90); // 90天后最低保留30%权重
+      return { text: m.text, time: m.time, score: decayed, ...m };
+    });
     scored.sort((a, b) => b.score - a.score);
-    return scored.slice(0, topK).filter(s => s.score > 0.3);  // 相似度阈值
+    return scored.slice(0, topK).filter(s => s.score > 0.3);
   }
 
   async function searchLongTermMemories(query, topK = CONFIG.topKMemories) {
     const results = [];
     const qEmb = await getEmbedding(query);
+    const now = Date.now();
 
-    // 语义搜索 semantic_mem
+    // 语义搜索 semantic_mem（带时间衰减）
     try {
       if (qEmb && state.semanticMemories.length > 0) {
-        const scored = state.semanticMemories.map(m => ({
-          text: m.text, score: cosineSim(qEmb, m.embedding), source: "semantic", ...m,
-        }));
+        const scored = state.semanticMemories.map(m => {
+          const cosine = cosineSim(qEmb, m.embedding);
+          const ageDays = (now - (m.time || 0)) / 86400000;
+          const decayed = cosine * Math.max(0.3, 1 - ageDays / 90);
+          return { text: m.text, score: decayed, source: "semantic", ...m };
+        });
         scored.sort((a, b) => b.score - a.score);
         for (const item of scored.slice(0, topK).filter(s => s.score > 0.3)) {
           if (item?.text) results.push({ text: item.text, score: item.score, source: "semantic" });
@@ -454,12 +520,17 @@ ${segment.map(m => `${m.senderName}: ${m.content}`).join("\n")}`;
       console.warn("[MisakaChat] 语义搜索失败:", e.message);
     }
 
-    // 语义搜索 refined_mem（现在每条带 embedding）
+    // 语义搜索 refined_mem（带时间衰减）
     try {
       if (qEmb && Array.isArray(state.refinedMemories)) {
         const refinedScored = state.refinedMemories.map(m => {
           if (typeof m === "string") return { text: m, score: 0, source: "refined", _legacy: true };
-          if (m.embedding && qEmb) return { text: m.text, score: cosineSim(qEmb, m.embedding), source: "refined" };
+          if (m.embedding && qEmb) {
+            const cosine = cosineSim(qEmb, m.embedding);
+            const ageDays = (now - (m.time || 0)) / 86400000;
+            const decayed = cosine * Math.max(0.3, 1 - ageDays / 90);
+            return { text: m.text, score: decayed, source: "refined" };
+          }
           return { text: m.text, score: 0, source: "refined", _legacy: true };
         });
         refinedScored.sort((a, b) => b.score - a.score);
@@ -779,9 +850,27 @@ ${recent || "暂无"}
   }
 
   // === API 调用 ===
+  // === LLM 速率限制 ===
+  const rateLimiter = {
+    window: 60000, maxCalls: 20, calls: [],
+    canCall() { const now = Date.now(); this.calls = this.calls.filter(t => now - t < this.window); return this.calls.length < this.maxCalls; },
+    record() { this.calls.push(Date.now()); }
+  };
+
   async function callLLM(systemPrompt, contextMessages, options = {}) {
-    const apiKey = localStorage.getItem(storageKey("apikey")) || "";
+    // 速率限制检查
+    if (!rateLimiter.canCall()) {
+      console.warn("[MisakaChat] LLM 速率限制: 1分钟内超过 " + rateLimiter.maxCalls + " 次调用");
+      return null;
+    }
+    // 优先从 GM_getValue 读 API key
+    let apiKey = "";
+    if (typeof window.__GM_getValue === "function") {
+      apiKey = window.__GM_getValue("misaka_apikey") || "";
+    }
+    if (!apiKey) apiKey = localStorage.getItem(storageKey("apikey")) || "";
     if (!apiKey) { console.warn("[MisakaChat] 未设置 API key"); return null; }
+    rateLimiter.record();
     const messages = [{ role: "system", content: systemPrompt }, ...contextMessages];
     const primaryModel = options.model || CONFIG.model;
     const fallbackModel = options.fallbackModel || CONFIG.fallbackModel;
@@ -837,17 +926,25 @@ ${recent || "暂无"}
     });
   }
 
-  // === 人设 + 房间名单 ===
+  // === 人设 + 房间名单（带缓存） ===
+  let _rosterCache = { snapshot: "", roster: "", time: 0 };
   function getSystemPrompt() {
     const mem = loadMemory();
     if (typeof MisakaPersona === "undefined") {
       return `你是御坂 (Misaka)，Bondage Club 中 Gimp Dolls 房间的管理员。安静、简短、偶尔傲娇。中文为主，回复不超过50字。不提及AI或现实信息。`;
     }
 
-    // 构建精简房间名单
+    // 缓存房间名单：人员变化或超过 30 秒才重建
     let roster = "";
     if (typeof ChatRoomCharacter !== "undefined" && Array.isArray(ChatRoomCharacter) && typeof Player !== "undefined") {
-      roster = MisakaPersona.buildCompactRoster(ChatRoomCharacter, Player.MemberNumber);
+      const snapshot = ChatRoomCharacter.map(c => c.MemberNumber + ":" + (c.Nickname || c.Name)).join(",");
+      const now = Date.now();
+      if (snapshot === _rosterCache.snapshot && now - _rosterCache.time < 30000) {
+        roster = _rosterCache.roster; // 用缓存
+      } else {
+        roster = MisakaPersona.buildCompactRoster(ChatRoomCharacter, Player.MemberNumber);
+        _rosterCache = { snapshot, roster, time: now };
+      }
     }
     mem.roster = roster;
 
@@ -2067,11 +2164,12 @@ ${recent || "暂无"}
 
     if (!isGimpDoll) {
       state.recentMessages.push({ senderName: senderName, content: readableContent, senderMemberNumber: senderNum, isSelf: false, time: now });
-      if (state.recentMessages.length > 30) state.recentMessages.shift();
+      if (state.recentMessages.length > CONFIG.maxContext) state.recentMessages.shift();
       state.lastNonSelfMsgTime = now;  // 更新 idle 计时
     }
 
     state.messageCount++;
+    try { localStorage.setItem("misaka_msg_count", String(state.messageCount)); } catch(e) {}
     
     // 触发 context compaction（不阻塞回复）
     if (state.messageCount % CONFIG.compactionInterval === 0 && !state.compactionPending) {
@@ -2398,7 +2496,6 @@ ${recent || "暂无"}
         if (state.recentMessages.length > 50) state.recentMessages.shift();
       }
 
-      maybeGenerateSummary();
     } catch (e) {
       console.error("[MisakaChat] 回复失败:", e.message);
     } finally {
@@ -2434,6 +2531,30 @@ ${recent || "暂无"}
       sendLocal("🔄 开始重新 embedding...");
       rembedMemories().then(() => sendLocal("✅ Re-embedding 完成")).catch(e => sendLocal("❌ Re-embedding 失败: " + e.message));
     }
+    else if (sub === "export") {
+      IDB.exportAll().then(data => {
+        const blob = JSON.stringify(data);
+        // 存到 localStorage 作为备份（可能太大，try-catch）
+        try { localStorage.setItem("misaka_idb_backup", blob); sendLocal(`📦 已导出 ${data.semantic.length} 语义 + ${data.refined.length} 提炼到 localStorage(misaka_idb_backup)`); }
+        catch(e) { // localStorage 太大，截取前 200 字符预览
+          sendLocal(`📦 导出 ${data.semantic.length} 条，localStorage 存不下。请从控制台复制：window.__misakaExport()`); }
+        window.__misakaExportData = blob;
+      });
+    }
+    else if (sub === "import") {
+      const backup = localStorage.getItem("misaka_idb_backup");
+      if (!backup) { sendLocal("❌ 没有找到备份"); }
+      else {
+        try {
+          const data = JSON.parse(backup);
+          IDB.importAll(data).then(() => {
+            state.semanticMemories = data.semantic || [];
+            state.refinedMemories = data.refined || [];
+            sendLocal(`✅ 已导入 ${data.semantic?.length || 0} 语义 + ${data.refined?.length || 0} 提炼`);
+          });
+        } catch(e) { sendLocal("❌ 导入失败: " + e.message); }
+      }
+    }
     else if (sub === "memory") {
       const mem = loadMemory();
       const profiles = Object.entries(mem.profiles || {});
@@ -2443,7 +2564,7 @@ ${recent || "暂无"}
       localStorage.setItem(storageKey("persona_extra"), parts.slice(1).join(" "));
       sendLocal("📝 人设附加备注已更新");
     } else {
-      sendLocal("用法: /misaka on|off|key <key>|model <name>|status|forget|memory|persona <text>|rembed");
+      sendLocal("用法: /misaka on|off|key <key>|model <name>|status|forget|memory|persona <text>|rembed|export|import");
     }
     return true;
   }
@@ -2519,6 +2640,12 @@ ${recent || "暂无"}
 
   window.__misakaDebugParseBCE = function(content) {
     return parseBCEQueryRequest(content);
+  };
+
+  window.__misakaExport = async function() {
+    const data = await IDB.exportAll();
+    console.log(JSON.stringify(data));
+    return data;
   };
 
   if (document.readyState === "complete" || document.readyState === "interactive") setTimeout(init, 2000);
