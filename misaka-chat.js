@@ -2492,8 +2492,8 @@ ${recent || "暂无"}
           ElementValue("InputChat", finalReply);
           ChatRoomSendChat();
         }
-        state.recentMessages.push({ senderName: "御搬", content: finalReply, isSelf: true, time: Date.now() });
-        if (state.recentMessages.length > 50) state.recentMessages.shift();
+        // 不再手动 push——BC 的 ChatRoomMessage hook 会自动处理 self message
+        if (state.recentMessages.length > CONFIG.maxContext) state.recentMessages.shift();
       }
 
     } catch (e) {
