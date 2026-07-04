@@ -673,16 +673,19 @@ ${compactions}
 ${recentSemantic}`;
       const refined = await callLLM("你是记忆提炼助手。只提炼有明确证据的长期信息，禁止把操作请求推断成偏好。", [{role:"user", content: prompt}]);
       if (refined) {
-        const time = new Date().toLocaleDateString("zh-CN", {month:"2-digit",day:"2-digit"});
+        const ts = Date.now();
+        const time = new Date(ts).toLocaleDateString("zh-CN", {month:"2-digit",day:"2-digit"});
         const refinedText = `[${time}] ${refined.slice(0, 100)}`;
         // 给 refined memory 算 embedding，让语义搜索能命中
         let refinedEmb = null;
         try { refinedEmb = await getEmbedding(refinedText); } catch(e) {}
-        state.refinedMemories.push({ text: refinedText, embedding: refinedEmb });
+        const entry = { text: refinedText, embedding: refinedEmb, time: ts };
+        state.refinedMemories.push(entry);
         if (state.refinedMemories.length > CONFIG.maxRefinedMemories) {
           state.refinedMemories.shift();
         }
-        IDB.putRefined(state.refinedMemories); // 异步写入 IndexedDB
+        // refined 最多 20 条，先 clear 再全量写，避免 autoIncrement 重复堆积
+        IDB.clearRefined().then(() => IDB.putRefined(state.refinedMemories));
         console.log("[MisakaChat] 长期记忆提炼完成:", refined.slice(0, 50));
       }
     } catch(e) {
