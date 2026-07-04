@@ -858,7 +858,7 @@ ${recent || "暂无"}
   // === API 调用 ===
   // === LLM 速率限制 ===
   const rateLimiter = {
-    window: 60000, maxCalls: 20, calls: [],
+    window: 60000, maxCalls: 30, calls: [], // 御坂有 3s 全局冷却 + 5s 单用户冷却，30 次/分钟足够
     canCall() { const now = Date.now(); this.calls = this.calls.filter(t => now - t < this.window); return this.calls.length < this.maxCalls; },
     record() { this.calls.push(Date.now()); }
   };
@@ -2458,7 +2458,7 @@ ${recent || "暂无"}
           }
         }
       }
-      if (!reply) return;
+      if (!reply) { console.warn("[MisakaChat] LLM 返回空，未回复"); return; }
 
       // 解析操作指令
       const { commands, cleaned } = parseActionCommands(reply);
