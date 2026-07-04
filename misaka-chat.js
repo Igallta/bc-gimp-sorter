@@ -33,9 +33,9 @@
     embeddingBase: "https://api.openai.com/v1/embeddings",
     embeddingModel: "text-embedding-3-large",
     embeddingDim: 3072,
-    maxMemoryEntries: 2000, // IndexedDB 容量大，放宽到 2000 条
+    maxMemoryEntries: 5000, // 约 30 天对话量
     memoryRefineInterval: 200,  // 每 N 条消息提炼一次长期记忆
-    maxRefinedMemories: 10,  // 保留最近 N 条提炼记忆
+    maxRefinedMemories: 30,  // 约 30 天的提炼记忆（每 200 条消息生成 1 条）
     topKMemories: 3,  // 查询时返回最相似的 K 条记忆
   };
 
