@@ -2401,7 +2401,9 @@ ${recent || "暂无"}
     // 动作在开头：*动作*说话 → *动作*|说话
     cleaned = cleaned.replace(/^\*([^*]+)\*\s*(?!\|)([^*])/g, '*$1*|$2');
 
-    return cleaned.trim().slice(0, 120);
+    const result = cleaned.trim().slice(0, 120);
+    console.log("[MisakaChat] cleanReply result:", result);
+    return result;
   }
 
   async function handleReply(senderNum, senderName, content) {
