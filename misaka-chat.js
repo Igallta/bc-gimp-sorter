@@ -2391,11 +2391,15 @@ ${recent || "暂无"}
     cleaned = (lines[0] || cleaned).replace(/^(御[搬坂]|Misaka|misaka)\s*[:：]\s*/i, "");
 
     // 去除粘连的动作+说话（LLM 没用 | 分隔的情况）
-    // 模式：*动作*说话（中间没有 |）
-    cleaned = cleaned.replace(/\*([^*]+)\*\s*(?!\|)([^*])/g, (m, action, rest) => {
-      // 如果 action 后面直接跟了说话内容（没有|），加上分隔符
-      return `*${action}*|${rest}`;
-    });
+    // 模式1：*动作*说话（动作在前）
+    // 模式2：说话 *动作* 说话（动作夹在中间）
+    // 模式3：说话*动作*（说话在前动作在后）
+    // 先处理动作在末尾的情况：说话*动作* → 说话|*动作*
+    cleaned = cleaned.replace(/([^*\s])\s*\*([^*]+)\*$/g, '$1|*$2*');
+    // 再处理动作在中间：说话 *动作* 说话 → 说话 |*动作*| 说话
+    cleaned = cleaned.replace(/([^*])\s*\*([^*]+)\*\s*(?!\|)([^*])/g, '$1|*$2*|$3');
+    // 动作在开头：*动作*说话 → *动作*|说话
+    cleaned = cleaned.replace(/^\*([^*]+)\*\s*(?!\|)([^*])/g, '*$1*|$2');
 
     return cleaned.trim().slice(0, 120);
   }
@@ -2505,15 +2509,20 @@ ${recent || "暂无"}
       if (typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom") {
         // 用 | 分割动作和说话，过滤空段
         const parts = finalReply.split("|").map(p => p.trim()).filter(Boolean);
-        const hasAction = parts[0]?.startsWith("*") && parts[0]?.endsWith("*");
-        if (hasAction && parts.length >= 2) {
-          // 第一段是动作，第二段是说话，分两条发
-          ElementValue("InputChat", parts[0]);
-          ChatRoomSendChat();
-          setTimeout(() => {
-            ElementValue("InputChat", parts.slice(1).join(" "));
-            ChatRoomSendChat();
-          }, 600);
+        if (parts.length >= 2) {
+          // 多段交替发送（动作/说话/动作/说话...）
+          let delay = 0;
+          for (let i = 0; i < parts.length; i++) {
+            const p = parts[i];
+            if (!p) continue;
+            const isAction = p.startsWith("*") && p.endsWith("*");
+            if (isAction) {
+              setTimeout(() => { ElementValue("InputChat", p); ChatRoomSendChat(); }, delay);
+            } else {
+              setTimeout(() => { ElementValue("InputChat", p); ChatRoomSendChat(); }, delay);
+            }
+            delay += 600;
+          }
         } else {
           ElementValue("InputChat", finalReply);
           ChatRoomSendChat();
