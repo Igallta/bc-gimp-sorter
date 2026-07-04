@@ -2121,6 +2121,7 @@ ${recent || "暂无"}
       if (data.Content === "ServerEnter" && who) {
         maybeGreetNewcomer(who);
       }
+      return; // 进出消息处理完毕，不再进入后续的上下文/计数逻辑
     }
 
     const validTypes = ["Chat","Talk","Emote","Whisper","Activity","Action"];
