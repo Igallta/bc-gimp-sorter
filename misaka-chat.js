@@ -2410,29 +2410,39 @@ function sanitizeReply(reply) {
       }
     }
 
-    // 截断 thinking/推理段落（marker 在开头时整条丢弃，在中间截取前半段）
+    // === thinking/推理段落过滤 ===
     const thinkMarkers = ["等一下","从上下文来看","这里可能有误","也许是","我理解了","让我想想","分析一下","分析：","根据上下文","这意味着","我推测","可能是指","我需要","让我考虑","根据用户"];
-    // 找最早的 thinking marker 位置
-    let earliestIdx = -1;
-    for (const marker of thinkMarkers) {
-      const idx = cleaned.indexOf(marker);
-      if (idx >= 0 && (earliestIdx === -1 || idx < earliestIdx)) earliestIdx = idx;
-    }
-    if (earliestIdx === 0) { console.warn("[MisakaChat] thinking marker 在开头，丢弃"); return ""; }
-    if (earliestIdx > 0) {
-      const before = cleaned.slice(0, earliestIdx).trim();
-      if (before.length >= 2) cleaned = before;
-      else return "";
+
+    // 先按行分割
+    let lines = cleaned.split(/\n+/).map(l => l.trim().replace(/^(御[搬坂]|Misaka|misaka)\s*[:：]\s*/i, "").trim()).filter(Boolean);
+
+    // 过滤含 thinking marker 的行
+    lines = lines.filter(l => {
+      for (const m of thinkMarkers) { if (l.includes(m)) return false; }
+      return true;
+    });
+
+    // 如果所有行都被过滤了，尝试单行截断（marker 在同一行中间）
+    if (lines.length === 0) {
+      let earliestIdx = -1;
+      for (const marker of thinkMarkers) {
+        const idx = cleaned.indexOf(marker);
+        if (idx >= 0 && (earliestIdx === -1 || idx < earliestIdx)) earliestIdx = idx;
+      }
+      if (earliestIdx === 0) return "";
+      if (earliestIdx > 0) {
+        const before = cleaned.slice(0, earliestIdx).trim();
+        if (before.length >= 2) return before.slice(0, 120);
+      }
+      return "";
     }
 
-    // === 按行处理（LLM 用换行分隔动作和说话） ===
-    let lines = cleaned.split(/\n+/).map(l => l.trim().replace(/^(御[搬坂]|Misaka|misaka)\s*[:：]\s*/i, "").trim()).filter(Boolean);
     // 最多取前两行（动作 + 说话）
     lines = lines.slice(0, 2);
     // 兼容旧 | 格式：如果单行包含 |，拆成多行
     lines = lines.flatMap(l => l.split(/\|/).map(s => s.trim()).filter(Boolean));
     lines = lines.slice(0, 2);
-    // 清理每行：去掉末尾孤立 *
+    // 清理每行：奇数 * 时去掉末尾孤立 *
     lines = lines.map(l => {
       const stars = (l.match(/\*/g) || []).length;
       if (stars % 2 !== 0) l = l.replace(/\*+$/, '');
