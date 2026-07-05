@@ -26,7 +26,7 @@
     moveCooldownMs: 5000,  // 移动操作冷却
     compactionInterval: 50,  // 每 N 条消息生成一次 context compaction
     maxCompactionSummaries: 5,  // 保留最近 N 条 compaction 摘要
-    idleTimeoutMs: 300000,  // 5 分钟无人说话触发 idle
+    idleTimeoutMs: 600000,  // 10 分钟无人说话触发 idle
     idleCheckMs: 60000,  // 每分钟检查一次 idle
     embeddingBase: "https://api.openai.com/v1/embeddings",
     embeddingModel: "text-embedding-3-large",
@@ -743,30 +743,42 @@ ${recentSemantic}`;
 
   async function generateIdleLine() {
     try {
-      let roster = "";
-      if (typeof MisakaPersona !== "undefined" && typeof ChatRoomCharacter !== "undefined" && Array.isArray(ChatRoomCharacter) && typeof Player !== "undefined") {
-        roster = MisakaPersona.buildCompactRoster(ChatRoomCharacter, Player.MemberNumber)
-          .split("\n")
-          .slice(0, 12)
-          .join("\n");
-      }
-      const recent = state.recentMessages.slice(-3).map(m => `${m.senderName}: ${m.content}`).join("\n");
-      const systemPrompt = `你是御坂，BC Gimp Dolls 房间管理员。现在房间安静了，请根据当前房间状态自然说一句闲聊或做一个小动作。
-要求：中文为主，不超过40字；不要提AI、脚本、系统；不要输出操作指令；只用纯说话、*动作*、或 *动作*|说话。`;
-      const userPrompt = `当前房间名单:
-${roster || "暂无名单"}
-
-最近消息:
-${recent || "暂无"}
-
-生成一句自然的 idle 闲聊。`;
+      // idle 去重：记录最近发过的 idle 内容
+      if (!state.recentIdleLines) state.recentIdleLines = [];
+      const recentIdle = state.recentIdleLines.slice(-3);
+      // 用完整 systemPrompt（包含 persona 规则 + "不要输出思考过程"）
+      const systemPrompt = getSystemPrompt() +
+        "\n\n【当前任务】房间安静了。自然地说一句闲聊或做一个小动作。只输出最终回复本身，不要分析、不要描述你在做什么、不要输出思考过程。直接给出那句话。";
+      const recent = state.recentMessages.slice(-5).map(m => `${m.senderName}: ${m.content}`).join("\n");
+      const idleGuard = recentIdle.length
+        ? `\n最近你已经说过:\n${recentIdle.join("\n")}\n不要重复类似内容。`
+        : "";
+      const userPrompt = `最近消息:\n${recent || "暂无消息"}${idleGuard}\n\n直接输出一句自然的闲聊（不超过40字），不要分析，不要解释。`;
       const reply = await callLLM(systemPrompt, [{ role: "user", content: userPrompt }], {
-        model: CONFIG.fallbackModel,
+        model: CONFIG.model,
         fallbackModel: CONFIG.fallbackModel,
-        maxTokens: 120,
+        maxTokens: 80,
         temperature: 0.9,
       });
-      return sanitizeReply(reply || "");
+      const cleaned = sanitizeReply(reply || "");
+      if (!cleaned || cleaned.length < 2) return "";
+      // 简易去重：字符集相似度 > 0.7 跳过
+      const similarity = (a, b) => {
+        if (!a || !b) return 0;
+        const setA = new Set(a.split(''));
+        const setB = new Set(b.split(''));
+        const intersect = [...setA].filter(c => setB.has(c)).length;
+        return intersect / Math.max(setA.size, setB.size);
+      };
+      for (const prev of recentIdle) {
+        if (similarity(cleaned, prev) > 0.7) {
+          console.log("[MisakaChat] idle 去重: 与最近 idle 相似，跳过");
+          return "";
+        }
+      }
+      state.recentIdleLines.push(cleaned);
+      if (state.recentIdleLines.length > 5) state.recentIdleLines.shift();
+      return cleaned;
     } catch(e) {
       console.warn("[MisakaChat] idle LLM 生成失败:", e.message);
       return "";
@@ -2136,18 +2148,46 @@ ${recent || "暂无"}
       /^ActionActivateSafewordRelease$/i,
       /^ChatSelf-ItemMouth-MoanGag(Giggle)?$/i,
     ];
+    // BC 自动 Emote 噪音：高重复的自动描述，无实质对话价值
+    const EMOTE_NOISE_PATTERNS = [
+      /呻吟着[、，]无声地尖叫着.*振动刺激戛然而止/,
+      /兴奋的颤抖着.*身体依旧灼热的发烫/,
+      /闭上眼睛.*试图让身体沉浸在即将到来的高潮里.*刺激突然停止了/,
+      /颤抖着.*清楚地感受到她脖子上的紧项圈/,
+      /试图专注于呼吸.*项圈中每次吸气都很费力/,
+      /被她的项圈紧紧勒住.*发出轻声呻吟/,
+      /每当她艰难地想要进行一次完整的呼吸时.*都会可怜巴巴地呜咽着/,
+      /当她的项圈紧压在她的脖子上时.*的眼睛虚弱地眨动着/,
+      /在她的紧项圈里不舒服地喘着气/,
+      /在她的紧项圈里紧张地扭动/,
+      /试图忍耐高潮.*玩具突然停止.*高潮中止/,
+      /振动玩具突兀地停止后.*兴奋感完全没得到满足/,
+      /.TO..\u0674.*\u1260\u1270/, // 乱码角色名
+    ];
     function isNoise(type, rawContent, senderName) {
       if (senderName && senderName.startsWith("GIMP ")) return true;
       for (const pat of NOISE_PATTERNS) {
         if (pat.test(rawContent)) return true;
       }
+      // Emote 类型的自动描述噪音
+      if (type === "Emote") {
+        for (const pat of EMOTE_NOISE_PATTERNS) {
+          if (pat.test(rawContent)) return true;
+        }
+      }
       return false;
     }
 
-    // 把 BC 内部动作消息转成可读文字
+    // 把 BC 内部动作消息转成可读文字（含目标角色名）
     let readableContent = content;
     if (data.Type === "Activity" || data.Type === "Emote") {
-      // ChatOther-ItemNose-Pet → "摸了摸鼻子"
+      // 从 Dictionary 提取目标角色名
+      let targetName = "";
+      if (data.Dictionary?.length) {
+        const targetChar = data.Dictionary.find(d => d.Tag === "TargetCharacter" || d.Tag === "DestinationCharacter");
+        if (targetChar?.Text) targetName = targetChar.Text;
+      }
+      // ChatOther-ItemNose-Pet → "摸了摸XX的鼻子"（含目标）
       // ChatSelf-ItemMouth-MoanGag → "被口塞住发出呻吟"
       readableContent = content
         .replace(/^Chat(?:Other|Self)-Item([A-Za-z]+)-([A-Za-z]+)$/, (_, part, action) => {
@@ -2155,7 +2195,7 @@ ${recent || "暂无"}
           const actionMap = { Pet:"摸了摸", Spank:"拍了拍", Slap:"打了一下", Tickle:"挠了挠", Rub:"揉了揉", Kiss:"亲了亲", Lick:"舔了舔", Bite:"咬了一口", Suck:"吸了吸", Pinch:"捏了捏", Grab:"抓住", SlapAss:"拍了屁股", MoanGag:"被口塞住呻吟", MoanGagGiggle:"被口塞住偷笑", Orgasm:"高潮了" };
           const p = partMap[part] || part;
           const a = actionMap[action] || action;
-          return `${a}${p}`;
+          return targetName ? `${a}${targetName}的${p}` : `${a}${p}`;
         })
         .replace(/^Orgasm(\d+)?$/, (_, n) => n ? `高潮了(${n})` : "高潮了")
         .replace(/^OrgasmFailSurrender(\d+)?$/, () => "高潮失败了")
@@ -2376,12 +2416,28 @@ ${recent || "暂无"}
   function sanitizeReply(reply) {
     let cleaned = String(reply || "").replace(/^["""''''']+|["""''''']+$/g, "").trim();
 
+    // === 元指令/思考过程泄漏过滤 ===
+    // 检测 LLM 把 prompt 引导文本或推理过程直接输出的情况
+    const metaPatterns = [
+      /^[^*]{0,5}(可选|参考之前|超过\d+字|观察当前|想到[：:])/,
+      /^[^*]{0,5}(可以简单描述|可以看看|可以用[：:]|比如[：:])/,
+      /^[^*]{0,5}(根据当前.*状态|延续这个氛围|顺着.*说下去)/,
+      /^[^*]{0,5}(注意不要提|不要提AI|不要输出操作)/,
+      /\(嗯[，,].*就.*说下去.*[）)\)]/,
+      /说不了话的笨蛋娃娃/,  // 这个是 Eshway 的原话，不应该出现在御坂回复里
+    ];
+    for (const pat of metaPatterns) {
+      if (pat.test(cleaned)) {
+        console.warn("[MisakaChat] 检测到元指令泄漏，丢弃:", cleaned.slice(0, 80));
+        return "";
+      }
+    }
+
     // 截断 thinking/推理段落
-    const thinkMarkers = ["等一下","从上下文来看","这里可能有误","也许是","我理解了","让我想想","分析一下","根据上下文","这意味着","我推测","可能是指"];
+    const thinkMarkers = ["等一下","从上下文来看","这里可能有误","也许是","我理解了","让我想想","分析一下","根据上下文","这意味着","我推测","可能是指","我需要","让我考虑","根据用户"];
     for (const marker of thinkMarkers) {
       const idx = cleaned.indexOf(marker);
       if (idx > 0) {
-        // 如果 marker 不在开头，截断到 marker 之前
         const before = cleaned.slice(0, idx).trim();
         if (before.length > 5) { cleaned = before; break; }
       }
@@ -2391,18 +2447,28 @@ ${recent || "暂无"}
     cleaned = (lines[0] || cleaned).replace(/^(御[搬坂]|Misaka|misaka)\s*[:：]\s*/i, "");
 
     // === 动作/说话分隔修复 ===
-    // LLM 经常不遵从 | 格式规则，这里暴力修复
-    //
-    // 修复策略：
     // 1. 动作在末尾：说话 *动作* → 说话|*动作*
     cleaned = cleaned.replace(/([^*\s])\s*\*([^*]+)\*\s*$/g, '$1|*$2*');
     // 2. 动作在开头：*动作*说话 → *动作*|说话（但动作后面已有 | 就跳过）
     cleaned = cleaned.replace(/^\*([^*]+)\*\s*(?!\|)([^|])/g, '*$1*|$2');
     // 3. 动作在中间：说话 *动作* 说话 → 说话|*动作*|说话
-    //    注意：这个必须最后跑，因为前面的可能已经处理了开头/末尾的情况
     cleaned = cleaned.replace(/([^*])\s*\*([^*]+)\*\s*(?!\|)([^|])/g, '$1|*$2*|$3');
 
-    const result = cleaned.trim().slice(0, 120);
+    // === 格式清理 ===
+    // 去掉多重 | → 单 |
+    cleaned = cleaned.replace(/\|{2,}/g, '|');
+    // 去掉 | 周围空格
+    cleaned = cleaned.replace(/\s*\|\s*/g, '|');
+    // 去掉末尾孤立的 *
+    cleaned = cleaned.replace(/\*+$/g, '');
+    // 去掉开头的空 |
+    cleaned = cleaned.replace(/^\|+/g, '');
+    // 去掉末尾的空 |
+    cleaned = cleaned.replace(/\|+$/g, '');
+    // 去掉开头的多余空格
+    cleaned = cleaned.trim();
+
+    const result = cleaned.slice(0, 120);
     console.log("[MisakaChat] cleanReply result:", result);
     return result;
   }
