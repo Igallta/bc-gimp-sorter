@@ -2392,18 +2392,16 @@ ${recentSemantic}`;
     return null;
   }
 
-  function sanitizeReply(reply) {
+function sanitizeReply(reply) {
     let cleaned = String(reply || "").replace(/^["""''''']+|["""''''']+$/g, "").trim();
 
     // === 元指令/思考过程泄漏过滤 ===
-    // 检测 LLM 把 prompt 引导文本或推理过程直接输出的情况
     const metaPatterns = [
       /^[^*]{0,5}(可选|参考之前|超过\d+字|观察当前|想到[：:])/,
       /^[^*]{0,5}(可以简单描述|可以看看|可以用[：:]|比如[：:])/,
       /^[^*]{0,5}(根据当前.*状态|延续这个氛围|顺着.*说下去)/,
       /^[^*]{0,5}(注意不要提|不要提AI|不要输出操作)/,
       /\(嗯[，,].*就.*说下去.*[）)\)]/,
-      /说不了话的笨蛋娃娃/,  // 这个是 Eshway 的原话，不应该出现在御坂回复里
     ];
     for (const pat of metaPatterns) {
       if (pat.test(cleaned)) {
@@ -2412,40 +2410,32 @@ ${recentSemantic}`;
       }
     }
 
-    // 截断 thinking/推理段落
+    // 截断 thinking/推理段落（marker 在开头时整条丢弃，在中间截取前半段）
     const thinkMarkers = ["等一下","从上下文来看","这里可能有误","也许是","我理解了","让我想想","分析一下","根据上下文","这意味着","我推测","可能是指","我需要","让我考虑","根据用户"];
     for (const marker of thinkMarkers) {
       const idx = cleaned.indexOf(marker);
-      if (idx > 0) {
+      if (idx >= 0) {
+        if (idx === 0) { console.warn("[MisakaChat] thinking marker 在开头，丢弃:", marker); return ""; }
         const before = cleaned.slice(0, idx).trim();
         if (before.length > 5) { cleaned = before; break; }
+        return "";
       }
     }
 
-    const lines = cleaned.split(/\n+/).map(l => l.trim().replace(/^(御[搬坂]|Misaka|misaka)\s*[:：]\s*/i, "").trim()).filter(Boolean);
-    cleaned = (lines[0] || cleaned).replace(/^(御[搬坂]|Misaka|misaka)\s*[:：]\s*/i, "");
-
-    // === 动作/说话分隔修复 ===
-    // 1. 动作在末尾：说话 *动作* → 说话|*动作*
-    cleaned = cleaned.replace(/([^*\s])\s*\*([^*]+)\*\s*$/g, '$1|*$2*');
-    // 2. 动作在开头：*动作*说话 → *动作*|说话（但动作后面已有 | 就跳过）
-    cleaned = cleaned.replace(/^\*([^*]+)\*\s*(?!\|)([^|])/g, '*$1*|$2');
-    // 3. 动作在中间：说话 *动作* 说话 → 说话|*动作*|说话
-    cleaned = cleaned.replace(/([^*])\s*\*([^*]+)\*\s*(?!\|)([^|])/g, '$1|*$2*|$3');
-
-    // === 格式清理 ===
-    // 去掉多重 | → 单 |
-    cleaned = cleaned.replace(/\|{2,}/g, '|');
-    // 去掉 | 周围空格
-    cleaned = cleaned.replace(/\s*\|\s*/g, '|');
-    // 去掉末尾孤立的 *
-    cleaned = cleaned.replace(/\*+$/g, '');
-    // 去掉开头的空 |
-    cleaned = cleaned.replace(/^\|+/g, '');
-    // 去掉末尾的空 |
-    cleaned = cleaned.replace(/\|+$/g, '');
-    // 去掉开头的多余空格
-    cleaned = cleaned.trim();
+    // === 按行处理（LLM 用换行分隔动作和说话） ===
+    let lines = cleaned.split(/\n+/).map(l => l.trim().replace(/^(御[搬坂]|Misaka|misaka)\s*[:：]\s*/i, "").trim()).filter(Boolean);
+    // 最多取前两行（动作 + 说话）
+    lines = lines.slice(0, 2);
+    // 兼容旧 | 格式：如果单行包含 |，拆成多行
+    lines = lines.flatMap(l => l.split(/\|/).map(s => s.trim()).filter(Boolean));
+    lines = lines.slice(0, 2);
+    // 清理每行：去掉末尾孤立 *
+    lines = lines.map(l => {
+      const stars = (l.match(/\*/g) || []).length;
+      if (stars % 2 !== 0) l = l.replace(/\*+$/, '');
+      return l.trim();
+    }).filter(Boolean);
+    cleaned = lines.join('\n');
 
     const result = cleaned.slice(0, 120);
     console.log("[MisakaChat] cleanReply result:", result);
@@ -2555,24 +2545,22 @@ ${recentSemantic}`;
       window.__misakaLastSentReplyTime = sentAt;
 
       if (typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom") {
-        // 用 | 分割动作和说话，过滤空段
-        const parts = finalReply.split("|").map(p => p.trim()).filter(Boolean);
+        // 按换行分割动作和说话（兼容旧 | 格式）
+        let parts = finalReply.split(/\n/).map(p => p.trim()).filter(Boolean);
+        // 兼容旧 | 格式：单行含 | 时拆开
+        if (parts.length === 1 && parts[0].includes("|")) {
+          parts = parts[0].split(/\|/).map(p => p.trim()).filter(Boolean);
+        }
         if (parts.length >= 2) {
-          // 多段交替发送（动作/说话/动作/说话...）
+          // 多段发送（动作/说话）
           let delay = 0;
-          for (let i = 0; i < parts.length; i++) {
-            const p = parts[i];
+          for (const p of parts) {
             if (!p) continue;
-            const isAction = p.startsWith("*") && p.endsWith("*");
-            if (isAction) {
-              setTimeout(() => { ElementValue("InputChat", p); ChatRoomSendChat(); }, delay);
-            } else {
-              setTimeout(() => { ElementValue("InputChat", p); ChatRoomSendChat(); }, delay);
-            }
+            setTimeout(() => { ElementValue("InputChat", p); ChatRoomSendChat(); }, delay);
             delay += 600;
           }
         } else {
-          ElementValue("InputChat", finalReply);
+          ElementValue("InputChat", parts[0] || finalReply);
           ChatRoomSendChat();
         }
         // 不再手动 push——BC 的 ChatRoomMessage hook 会自动处理 self message
