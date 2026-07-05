@@ -2411,32 +2411,13 @@ function sanitizeReply(reply) {
     }
 
     // === thinking/推理段落过滤 ===
-    const thinkMarkers = ["等一下","从上下文来看","这里可能有误","也许是","我理解了","让我想想","分析一下","分析：","根据上下文","这意味着","我推测","可能是指","我需要","让我考虑","根据用户"];
+    // 兜底：过滤以分析性词开头的行（prompt 已禁止，这只是保险）
+    const thinkLinePattern = /^(等一下|从上下文来看|这里可能有误|也许是|我理解了|让我想想|分析一下|分析[：:]|根据上下文|这意味着|我推测|可能是指|我需要|让我考虑|根据用户)/;
 
-    // 先按行分割
     let lines = cleaned.split(/\n+/).map(l => l.trim().replace(/^(御[搬坂]|Misaka|misaka)\s*[:：]\s*/i, "").trim()).filter(Boolean);
-
-    // 过滤含 thinking marker 的行
-    lines = lines.filter(l => {
-      for (const m of thinkMarkers) { if (l.includes(m)) return false; }
-      return true;
-    });
-
-    // 如果所有行都被过滤了，尝试单行截断（marker 在同一行中间）
-    if (lines.length === 0) {
-      let earliestIdx = -1;
-      for (const marker of thinkMarkers) {
-        const idx = cleaned.indexOf(marker);
-        if (idx >= 0 && (earliestIdx === -1 || idx < earliestIdx)) earliestIdx = idx;
-      }
-      if (earliestIdx === 0) return "";
-      if (earliestIdx > 0) {
-        const before = cleaned.slice(0, earliestIdx).trim();
-        if (before.length >= 2) return before.slice(0, 120);
-      }
-      return "";
-    }
-
+    // 只过滤以分析性词开头的行（不影响行中间的正常对话）
+    lines = lines.filter(l => !thinkLinePattern.test(l));
+    if (lines.length === 0) return "";
     // 最多取前两行（动作 + 说话）
     lines = lines.slice(0, 2);
     // 兼容旧 | 格式：如果单行包含 |，拆成多行
