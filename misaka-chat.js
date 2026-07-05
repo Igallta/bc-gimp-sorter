@@ -2148,32 +2148,11 @@ ${recentSemantic}`;
       /^ActionActivateSafewordRelease$/i,
       /^ChatSelf-ItemMouth-MoanGag(Giggle)?$/i,
     ];
-    // BC 自动 Emote 噪音：高重复的自动描述，无实质对话价值
-    const EMOTE_NOISE_PATTERNS = [
-      /呻吟着[、，]无声地尖叫着.*振动刺激戛然而止/,
-      /兴奋的颤抖着.*身体依旧灼热的发烫/,
-      /闭上眼睛.*试图让身体沉浸在即将到来的高潮里.*刺激突然停止了/,
-      /颤抖着.*清楚地感受到她脖子上的紧项圈/,
-      /试图专注于呼吸.*项圈中每次吸气都很费力/,
-      /被她的项圈紧紧勒住.*发出轻声呻吟/,
-      /每当她艰难地想要进行一次完整的呼吸时.*都会可怜巴巴地呜咽着/,
-      /当她的项圈紧压在她的脖子上时.*的眼睛虚弱地眨动着/,
-      /在她的紧项圈里不舒服地喘着气/,
-      /在她的紧项圈里紧张地扭动/,
-      /试图忍耐高潮.*玩具突然停止.*高潮中止/,
-      /振动玩具突兀地停止后.*兴奋感完全没得到满足/,
-      /.TO..\u0674.*\u1260\u1270/, // 乱码角色名
-    ];
     function isNoise(type, rawContent, senderName) {
+      // GIMP 娃娃全部过滤（包括 Chat/Talk/Emote/Activity）
       if (senderName && senderName.startsWith("GIMP ")) return true;
       for (const pat of NOISE_PATTERNS) {
         if (pat.test(rawContent)) return true;
-      }
-      // Emote 类型的自动描述噪音
-      if (type === "Emote") {
-        for (const pat of EMOTE_NOISE_PATTERNS) {
-          if (pat.test(rawContent)) return true;
-        }
       }
       return false;
     }
