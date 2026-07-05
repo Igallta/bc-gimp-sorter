@@ -2401,7 +2401,7 @@ function sanitizeReply(reply) {
       /^[^*]{0,5}(可以简单描述|可以看看|可以用[：:]|比如[：:])/,
       /^[^*]{0,5}(根据当前.*状态|延续这个氛围|顺着.*说下去)/,
       /^[^*]{0,5}(注意不要提|不要提AI|不要输出操作)/,
-      /\(嗯[，,].*就.*说下去.*[）)\]）]/,
+      /[（(]嗯[，,].*就.*说下去.*[）)\]）]/,
     ];
     for (const pat of metaPatterns) {
       if (pat.test(cleaned)) {
@@ -2412,14 +2412,17 @@ function sanitizeReply(reply) {
 
     // 截断 thinking/推理段落（marker 在开头时整条丢弃，在中间截取前半段）
     const thinkMarkers = ["等一下","从上下文来看","这里可能有误","也许是","我理解了","让我想想","分析一下","分析：","根据上下文","这意味着","我推测","可能是指","我需要","让我考虑","根据用户"];
+    // 找最早的 thinking marker 位置
+    let earliestIdx = -1;
     for (const marker of thinkMarkers) {
       const idx = cleaned.indexOf(marker);
-      if (idx >= 0) {
-        if (idx === 0) { console.warn("[MisakaChat] thinking marker 在开头，丢弃:", marker); return ""; }
-        const before = cleaned.slice(0, idx).trim();
-        if (before.length >= 2) { cleaned = before; break; }
-        return "";
-      }
+      if (idx >= 0 && (earliestIdx === -1 || idx < earliestIdx)) earliestIdx = idx;
+    }
+    if (earliestIdx === 0) { console.warn("[MisakaChat] thinking marker 在开头，丢弃"); return ""; }
+    if (earliestIdx > 0) {
+      const before = cleaned.slice(0, earliestIdx).trim();
+      if (before.length >= 2) cleaned = before;
+      else return "";
     }
 
     // === 按行处理（LLM 用换行分隔动作和说话） ===
