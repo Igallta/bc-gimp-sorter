@@ -8,6 +8,7 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
+// @grant        unsafeWindow
 // @connect      api.deepseek.com
 // @connect      api.openai.com
 // @run-at       document-end
@@ -22,9 +23,9 @@
   const PRESET_OPENAI_KEY = atob("c2stcHJvai1obzRuck1FY2NBakZUdVAwWnoxbHZ3ZDA3R3hYUmZTZTctcHhIcnZtTFgxR0FJYkkxbDh5b2EydDhidFVJM1c1WEppZXNKVTlMQVQzQmxia0ZKYk9OTFhKMzZJRnBQWFhZSHhkSGZ4T1lrdlJBMFFfcGVrVG5EVW4xcHA3VVZ5LVpjOXVtUHNNbmZjZ1VsQVhMaEJoUXRRbzdvb0E=");
 
   // 把 GM 函数暴露到 window，让注入的脚本能用
-  window.__GM_xmlhttpRequest = GM_xmlhttpRequest;
-  window.__GM_getValue = GM_getValue;
-  window.__GM_setValue = GM_setValue;
+  try { unsafeWindow.__GM_xmlhttpRequest = GM_xmlhttpRequest; } catch(e) { window.__GM_xmlhttpRequest = GM_xmlhttpRequest; }
+  try { unsafeWindow.__GM_getValue = GM_getValue; } catch(e) { window.__GM_getValue = GM_getValue; }
+  try { unsafeWindow.__GM_setValue = GM_setValue; } catch(e) { window.__GM_setValue = GM_setValue; }
 
   function waitForReady(cb, attempts) {
     attempts = attempts || 0;
@@ -53,8 +54,8 @@
     GM_setValue("misaka_apikey", PRESET_KEY);
     GM_setValue("misaka_openai_key", PRESET_OPENAI_KEY);
     // 同时写 localStorage 作为兼容 fallback
-    localStorage.setItem("misaka_apikey", PRESET_KEY);
-    localStorage.setItem("misaka_openai_key", PRESET_OPENAI_KEY);
+    try { unsafeWindow.localStorage.setItem("misaka_apikey", PRESET_KEY); } catch(e) { localStorage.setItem("misaka_apikey", PRESET_KEY); }
+    try { unsafeWindow.localStorage.setItem("misaka_openai_key", PRESET_OPENAI_KEY); } catch(e) { localStorage.setItem("misaka_openai_key", PRESET_OPENAI_KEY); }
 
     // 加载人设文件
     loadScript("https://cdn.jsdelivr.net/gh/Igallta/bc-gimp-sorter@latest/misaka-persona.js", () => {
