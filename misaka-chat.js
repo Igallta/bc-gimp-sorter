@@ -43,14 +43,11 @@
     busy: false,
     lastMoveTime: 0,  // 移动操作冷却
     lastNonSelfMsgTime: 0,  // 上次非自己消息时间（idle 检测用）
-    greetEnabled: true,  // 自动欢迎开关，玩家可以语音开关
   };
 
   // 从 localStorage 加载 compaction 摘要
   // 从 localStorage 加载欢迎开关状态
   try {
-    const savedGreet = localStorage.getItem("misaka_greet_enabled");
-    if (savedGreet !== null) state.greetEnabled = savedGreet === "true";
   } catch(e) {}
 
   // 恢复 messageCount（避免刷新后归零导致 compaction/refined 不触发）
@@ -68,7 +65,6 @@
   // === IndexedDB 封装（embedding 数据量大，localStorage 存不下） ===
   const IDB = (() => {
     const DB_NAME = "misaka_chat";
-    const DB_VERSION = 1;
     const STORE_SEMANTIC = "semantic_mem";
     const STORE_REFINED = "refined_mem";
     let dbPromise = null;
@@ -76,15 +72,11 @@
     function openDB() {
       if (dbPromise) return dbPromise;
       dbPromise = new Promise((resolve, reject) => {
-        const req = indexedDB.open(DB_NAME, DB_VERSION);
+        const req = indexedDB.open(DB_NAME, 2);
         req.onupgradeneeded = (e) => {
           const db = e.target.result;
-          if (!db.objectStoreNames.contains(STORE_SEMANTIC)) {
-            db.createObjectStore(STORE_SEMANTIC, { keyPath: "id", autoIncrement: true });
-          }
-          if (!db.objectStoreNames.contains(STORE_REFINED)) {
-            db.createObjectStore(STORE_REFINED, { keyPath: "id", autoIncrement: true });
-          }
+          if (!db.objectStoreNames.contains(STORE_SEMANTIC)) db.createObjectStore(STORE_SEMANTIC, { keyPath: "id", autoIncrement: true });
+          if (!db.objectStoreNames.contains(STORE_REFINED)) db.createObjectStore(STORE_REFINED, { keyPath: "id", autoIncrement: true });
         };
         req.onsuccess = () => resolve(req.result);
         req.onerror = () => reject(req.error);
@@ -92,12 +84,26 @@
       return dbPromise;
     }
 
+    async function transact(store, mode, fn) {
+      try {
+        const db = await openDB();
+        return await new Promise((resolve, reject) => {
+          const tx = db.transaction(store, mode);
+          fn(tx.objectStore(store));
+          tx.oncomplete = () => resolve(true);
+          tx.onerror = () => reject(tx.error);
+        });
+      } catch (e) {
+        console.warn("[MisakaChat] IDB transact 失败:", e.message);
+        return false;
+      }
+    }
+
     async function getAll(store) {
       try {
         const db = await openDB();
         return await new Promise((resolve, reject) => {
-          const tx = db.transaction(store, "readonly");
-          const req = tx.objectStore(store).getAll();
+          const req = db.transaction(store, "readonly").objectStore(store).getAll();
           req.onsuccess = () => resolve(req.result || []);
           req.onerror = () => reject(req.error);
         });
@@ -107,70 +113,22 @@
       }
     }
 
-    async function putMany(store, items) {
-      try {
-        const db = await openDB();
-        return await new Promise((resolve, reject) => {
-          const tx = db.transaction(store, "readwrite");
-          const os = tx.objectStore(store);
-          for (const item of items) os.put(item);
-          tx.oncomplete = () => resolve(true);
-          tx.onerror = () => reject(tx.error);
-        });
-      } catch (e) {
-        console.warn("[MisakaChat] IDB putMany 失败:", e.message);
-        return false;
-      }
-    }
-
-    async function clearStore(store) {
-      try {
-        const db = await openDB();
-        return await new Promise((resolve, reject) => {
-          const tx = db.transaction(store, "readwrite");
-          tx.objectStore(store).clear();
-          tx.oncomplete = () => resolve(true);
-          tx.onerror = () => reject(tx.error);
-        });
-      } catch (e) {
-        console.warn("[MisakaChat] IDB clear 失败:", e.message);
-        return false;
-      }
-    }
-
-    async function putOne(store, item) {
-      try {
-        const db = await openDB();
-        return await new Promise((resolve, reject) => {
-          const tx = db.transaction(store, "readwrite");
-          tx.objectStore(store).put(item);
-          tx.oncomplete = () => resolve(true);
-          tx.onerror = () => reject(tx.error);
-        });
-      } catch (e) {
-        console.warn("[MisakaChat] IDB putOne 失败:", e.message);
-        return false;
-      }
-    }
-
     return {
       getSemantic: () => getAll(STORE_SEMANTIC),
       getRefined: () => getAll(STORE_REFINED),
-      putSemantic: (items) => putMany(STORE_SEMANTIC, items),
-      putRefined: (items) => putMany(STORE_REFINED, items),
-      putSemanticOne: (item) => putOne(STORE_SEMANTIC, item),
-      putRefinedOne: (item) => putOne(STORE_REFINED, item),
-      clearSemantic: () => clearStore(STORE_SEMANTIC),
-      clearRefined: () => clearStore(STORE_REFINED),
-      clearAll: () => Promise.all([clearStore(STORE_SEMANTIC), clearStore(STORE_REFINED)]),
+      putSemanticOne: (item) => transact(STORE_SEMANTIC, "readwrite", os => os.put(item)),
+      putRefinedOne: (item) => transact(STORE_REFINED, "readwrite", os => os.put(item)),
+      clearRefined: () => transact(STORE_REFINED, "readwrite", os => os.clear()),
+      clearAll: () => Promise.all([
+        transact(STORE_SEMANTIC, "readwrite", os => os.clear()),
+        transact(STORE_REFINED, "readwrite", os => os.clear())
+      ]),
       exportAll: async () => ({ semantic: await getAll(STORE_SEMANTIC), refined: await getAll(STORE_REFINED) }),
       importAll: async (data) => {
-        if (data?.semantic) { await clearStore(STORE_SEMANTIC); await putMany(STORE_SEMANTIC, data.semantic); }
-        if (data?.refined) { await clearStore(STORE_REFINED); await putMany(STORE_REFINED, data.refined); }
+        if (data?.semantic) { await transact(STORE_SEMANTIC, "readwrite", os => os.clear()); await transact(STORE_SEMANTIC, "readwrite", os => data.semantic.forEach(i => os.put(i))); }
+        if (data?.refined) { await transact(STORE_REFINED, "readwrite", os => os.clear()); await transact(STORE_REFINED, "readwrite", os => data.refined.forEach(i => os.put(i))); }
         return true;
       },
-      STORE_SEMANTIC,
-      STORE_REFINED,
     };
   })();
 
@@ -204,10 +162,6 @@
 
 
 
-  try {
-    const savedLog = JSON.parse(localStorage.getItem("misaka_joinlog") || "[]");
-    if (Array.isArray(savedLog) && savedLog.length > 0) state.roomJoinLog = savedLog;
-  } catch(e) {}
 
   function storageKey(prefix) { return "misaka_" + prefix; }
 
@@ -339,7 +293,7 @@
       state.semanticMemories.splice(idx, 1);
     }
     // 全量同步 IDB（超限淘汰是稀有事件，全量写可接受）
-    IDB.clearSemantic().then(() => IDB.putSemantic(state.semanticMemories));
+    IDB.clearAll().then(() => Promise.all(state.semanticMemories.map(m => IDB.putSemanticOne(m))));
     console.log(`[MisakaChat] 智能遗忘: 淘汰 ${toDrop.length} 条低价值记忆`);
   }
 
@@ -452,7 +406,6 @@
       const mem = loadMemory();
       const profiles = Object.entries(mem.profiles || {}).map(([mn, info]) =>
         `#${mn} ${info.name}: ${info.notes || ""} (${info.chatCount || 0}次互动)`).join("\n");
-      const compactions = ([] || []).join("\n");
       const recentSemantic = (state.semanticMemories || []).slice(-20).map(m => m.text).join("\n");
       
       const prompt = `根据以下 BC 聊天记录片段，提炼出御坂应该长期记住的重要信息（人际关系、明确偏好、重要事件、约束关系），不超过100字，用中文。
@@ -467,9 +420,6 @@
 
 人物档案:
 ${profiles}
-
-对话摘要:
-${compactions}
 
 记忆片段:
 ${recentSemantic}`;
@@ -487,7 +437,7 @@ ${recentSemantic}`;
           state.refinedMemories.shift();
         }
         // refined 最多 20 条，先 clear 再全量写，避免 autoIncrement 重复堆积
-        IDB.clearRefined().then(() => IDB.putRefined(state.refinedMemories));
+        IDB.clearRefined().then(() => Promise.all(state.refinedMemories.map(m => IDB.putRefinedOne(m))));
         console.log("[MisakaChat] 长期记忆提炼完成:", refined.slice(0, 50));
       }
     } catch(e) {
@@ -1074,11 +1024,6 @@ ${recentSemantic}`;
     return true;
   }
 
-  const COLOR_NAME_TO_HEX = {
-    "黑":"#000000","白":"#FFFFFF","红":"#FF0000","蓝":"#0000FF","绿":"#00FF00",
-    "黄":"#FFFF00","紫":"#8000FF","粉":"#FFC0CB","橙":"#FFA500","灰":"#808080",
-    "浅灰":"#C0C0C0","深灰":"#404040","金":"#FFD700","银":"#C0C0C0","棕":"#8B4513",
-  };
 
   function colorNameToHex(name) {
     if (!name) return null;
@@ -1149,14 +1094,14 @@ ${recentSemantic}`;
 
     const fallbackProperty = PROPERTY_MAP[propName];
     if (fallbackProperty?.type === "direct") {
-      item.Property[fallbackProperty.key] = normalizeDirectPropertyValue(valueName, fallbackProperty.values);
+      item.Property[fallbackProperty.key] = (fallbackProperty.values && Object.prototype.hasOwnProperty.call(fallbackProperty.values, valueName)) ? fallbackProperty.values[valueName] : valueName;
       ChatRoomCharacterUpdate(char);
       return { ok: true, msg: `已设置 ${item.Asset.Description} ${fallbackProperty.key}=${item.Property[fallbackProperty.key]}` };
     }
 
     const dynamicPropertyKey = findDynamicPropertyKey(item.Asset, propName);
     if (dynamicPropertyKey && archetype !== "typed" && archetype !== "modular") {
-      item.Property[dynamicPropertyKey] = normalizeDirectPropertyValue(valueName, null);
+      item.Property[dynamicPropertyKey] = valueName;
       ChatRoomCharacterUpdate(char);
       return { ok: true, msg: `已设置 ${item.Asset.Description} ${dynamicPropertyKey}=${item.Property[dynamicPropertyKey]}` };
     }
@@ -1297,89 +1242,48 @@ ${recentSemantic}`;
     }
   }
 
+  function findEmptyGroup(char, groups, assetName) {
+    // 先找空 group，再找有同名 asset 的 group（覆盖）
+    for (const g of groups) {
+      if (!char.Appearance.find(a => a?.Asset?.Group?.Name === g) && AssetGet(char.AssetFamily, g, assetName))
+        return g;
+    }
+    for (const g of groups) {
+      if (AssetGet(char.AssetFamily, g, assetName)) return g;
+    }
+    return null;
+  }
+
   function executeItemAdd(memberNumber, itemName, part, color) {
     try {
       const mapping = findItemAsset(itemName);
       if (!mapping) { console.log("[MisakaChat] 未知道具:", itemName); return false; }
-      const char = (memberNumber === Player.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === memberNumber); if (!char) { console.log("[MisakaChat] 找不到玩家 #" + memberNumber); return false; }
-      if (!char) return false;
-      
-      // 如果指定了部位，优先用该部位的 group
-      let targetGroup = mapping.group;
-      let targetAsset = AssetGet(char.AssetFamily, mapping.group, mapping.asset);
-      
-      if (part) {
-        const groups = BODY_PART_GROUPS[part];
-        if (groups) {
-          // 在指定部位找一个空的 group
-          for (const g of groups) {
-            // 检查这个 group 是否有同名 asset
-            const partAsset = AssetGet(char.AssetFamily, g, mapping.asset);
-            if (partAsset) {
-              const existing = char.Appearance.find(a => a?.Asset?.Group?.Name === g);
-              if (!existing) {
-                targetGroup = g;
-                targetAsset = partAsset;
-                break;
-              }
-            }
-          }
-          // 如果指定部位都有道具了，用第一个有该 asset 的 group 覆盖
-          if (targetGroup === mapping.group) {
-            for (const g of groups) {
-              const partAsset = AssetGet(char.AssetFamily, g, mapping.asset);
-              if (partAsset) {
-                targetGroup = g;
-                targetAsset = partAsset;
-                break;
-              }
-            }
-          }
-        }
-      } else {
-        // 没指定部位 — 如果该 group 已有道具，尝试其他 group
-        const existing = char.Appearance.find(a => a.Asset?.Group?.Name === mapping.group);
-        if (existing) {
-          const altGroups = [];
-          for (const a of Asset) {
-            if (a?.Group?.Name?.startsWith("Item") && a.Name === mapping.asset && a.Group.Name !== mapping.group) {
-              altGroups.push(a.Group.Name);
-            }
-          }
-          for (const g of altGroups) {
-            const hasItem = char.Appearance.find(a => a?.Asset?.Group?.Name === g);
-            if (!hasItem) {
-              const altAsset = AssetGet(char.AssetFamily, g, mapping.asset);
-              if (altAsset) {
-                targetGroup = g;
-                targetAsset = altAsset;
-                break;
-              }
-            }
-          }
-        }
-      }
-      
+      const char = (memberNumber === Player.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === memberNumber);
+      if (!char) { console.log("[MisakaChat] 找不到玩家 #" + memberNumber); return false; }
+
+      // 找目标 group
+      const candidateGroups = part ? (BODY_PART_GROUPS[part] || []) : [];
+      let targetGroup = candidateGroups.length > 0
+        ? (findEmptyGroup(char, candidateGroups, mapping.asset) || mapping.group)
+        : (char.Appearance.find(a => a.Asset?.Group?.Name === mapping.group)
+            ? (findEmptyGroup(char, [mapping.group, ...Asset.filter(a => a?.Group?.Name?.startsWith("Item") && a.Name === mapping.asset && a.Group.Name !== mapping.group).map(a => a.Group.Name)], mapping.asset) || mapping.group)
+            : mapping.group);
+      let targetAsset = AssetGet(char.AssetFamily, targetGroup, mapping.asset);
+
       // 颜色覆盖
       let colorOverride = null;
       if (color) {
         const hex = colorNameToHex(color);
         if (hex) {
-          const colorSchema = targetAsset?.ColorSchema;
-          colorOverride = Array.isArray(colorSchema) ? colorSchema.map(() => hex) : [hex];
-        } else {
-          console.log("[MisakaChat] 未知颜色:", color);
+          const cs = targetAsset?.ColorSchema;
+          colorOverride = Array.isArray(cs) ? cs.map(() => hex) : [hex];
         }
       }
-      // 如果该 group 已有道具且只改颜色，用 directSetColor（保留原有 Property）
       const existingItem = char.Appearance.find(a => a.Asset?.Group?.Name === targetGroup);
-      if (existingItem && colorOverride) {
-        directSetColor(char, targetGroup, colorOverride);
-      } else {
-        directSetItem(char, targetGroup, targetAsset, colorOverride);
-      }
+      if (existingItem && colorOverride) directSetColor(char, targetGroup, colorOverride);
+      else directSetItem(char, targetGroup, targetAsset, colorOverride);
       ChatRoomCharacterUpdate(char);
-      console.log(`[MisakaChat] 已给 #${memberNumber} 添加 ${itemName} (group: ${targetGroup}${part ? ", 部位:" + part : ""}${color ? ", 颜色:" + color : ""})`);
+      console.log(`[MisakaChat] 已给 #${memberNumber} 添加 ${itemName} (group: ${targetGroup})`);
       return true;
     } catch(e) {
       console.error("[MisakaChat] 添加道具失败:", e.message);
@@ -1454,7 +1358,7 @@ ${recentSemantic}`;
   }
 
   async function executeCommands(commands) {
-    let moveOk = true, itemOk = true, snapOk = true;
+    let moveOk = true, itemOk = true;
     const failures = [];
 
     const itemKey = (c) => (c && (c.type === "itemadd" || c.type === "itemdel"))
@@ -1500,15 +1404,9 @@ ${recentSemantic}`;
       } else if (cmd.type === "itemdelall") {
         console.log(`[MisakaChat] CMD itemdelall #${cmd.memberNumber}`);
         itemOk = record(cmd, executeItemDelAll(cmd.memberNumber)) && itemOk;
-      } else if (cmd.type === "snapshotSave") {
-        snapOk = record(cmd, saveSnapshot(cmd.memberNumber)) && snapOk;
-      } else if (cmd.type === "snapshotRestore") {
-        snapOk = record(cmd, await executeRestoreSnapshot(cmd.memberNumber)) && snapOk;
-      } else if (cmd.type === "copyBonds") {
-        snapOk = record(cmd, await executeCopyBonds(cmd.srcNumber, cmd.dstNumber)) && snapOk;
       }
     }
-    return { moveOk, itemOk, snapOk, failures };
+    return { moveOk, itemOk, failures };
   }
 
   function displayNameByMemberNumber(memberNumber) {
@@ -1531,9 +1429,6 @@ ${recentSemantic}`;
         const ne = data.Dictionary.find(d => d.Tag === "SourceCharacter");
         if (ne) who = ne.Text || "";
       }
-      state.roomJoinLog.push({ name: who, memberNum: data.Sender, time: Date.now(), action: data.Content === "ServerEnter" ? "join" : "leave" });
-      if (state.roomJoinLog.length > 50) state.roomJoinLog.shift();
-      try { localStorage.setItem("misaka_joinlog", JSON.stringify(state.roomJoinLog)); } catch(e) {}
       // 有人进入时打招呼
       if (data.Content === "ServerEnter" && who) {
       }
@@ -1611,17 +1506,6 @@ ${recentSemantic}`;
       maybeRefineMemory().catch(e => console.warn("[MisakaChat] refine error:", e.message));
     }
 
-    // 欢迎开关检测
-    if (/(?:停止|关闭|不要|取消|关掉).{0,4}欢迎|stop.*greet/i.test(readableContent) && state.greetEnabled) {
-      state.greetEnabled = false; localStorage.setItem("misaka_greet_enabled", "false");
-      setTimeout(() => { ElementValue("InputChat", "好，不自动欢迎了~"); ChatRoomSendChat(); }, 1000);
-      return;
-    }
-    if (/(?:开启|打开|恢复|开始).{0,4}欢迎|start.*greet/i.test(readableContent) && !state.greetEnabled) {
-      state.greetEnabled = true; localStorage.setItem("misaka_greet_enabled", "true");
-      setTimeout(() => { ElementValue("InputChat", "好，自动欢迎已开启~"); ChatRoomSendChat(); }, 1000);
-      return;
-    }
 
     // trigger 检测用原始 content 和可读 content 都匹配
     const triggers = ["misaka","御搬","御坂","misaki的","搬运工"];
@@ -1860,10 +1744,7 @@ function sanitizeReply(reply) {
     else if (sub === "key" && parts[1]) { localStorage.setItem(storageKey("apikey"), parts[1]); sendLocal("🔑 API key 已保存"); }
     else if (sub === "model" && parts[1]) { localStorage.setItem(storageKey("model"), parts[1]); CONFIG.model = parts[1]; sendLocal("🤖 模型已切换: " + parts[1]); }
     else if (sub === "status") {
-      const mem = loadMemory();
-      const apiKeySet = localStorage.getItem(storageKey("apikey")) ? "✅" : "❌";
-      const model = localStorage.getItem(storageKey("model")) || CONFIG.model;
-      sendLocal(`状态: ${CONFIG.enabled?"开启":"关闭"} | Key: ${apiKeySet} | 模型: ${model} | 认识 ${Object.keys(mem.profiles||{}).length} 人 | 语义记忆 ${state.semanticMemories.length} 条 | 提炼 ${state.refinedMemories.length} 条`);
+      sendLocal(`状态: ${CONFIG.enabled?"开启":"关闭"} | 语义 ${state.semanticMemories.length} | 提炼 ${state.refinedMemories.length} | 认识 ${Object.keys(loadMemory().profiles||{}).length} 人`);
     } else if (sub === "forget") {
       localStorage.setItem(storageKey("memory"), "{}");
       state.semanticMemories = [];
@@ -1896,7 +1777,7 @@ function sanitizeReply(reply) {
       const mem = loadMemory();
       const profiles = Object.entries(mem.profiles || {});
       if (profiles.length === 0) sendLocal("记忆为空");
-      else profiles.forEach(([mn, info]) => sendLocal(`  ${info.name} (#${mn}): ${info.notes||""} | ${info.chatCount||0}次 | ${info.lastChat||""}`));
+      else profiles.forEach(([mn, info]) => sendLocal(`  ${info.name} (#${mn}): ${info.chatCount||0}次 | ${info.lastChat||""}`));
     } else if (sub === "persona" && parts[1]) {
       localStorage.setItem(storageKey("persona_extra"), parts.slice(1).join(" "));
       sendLocal("📝 人设附加备注已更新");
