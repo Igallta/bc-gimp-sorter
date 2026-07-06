@@ -17,7 +17,7 @@
   "use strict";
 
   // 预设 API key — DeepSeek 官网
-  const PRESET_KEY = atob("c2stOWI3MjAyYmMwNTI0NGMxMDkwN2Q5NzdkMjI5YWEzNGQ=");
+  const PRESET_KEY = atob("c2stMTczMzUyNjkzYmRlNDkxZWFmMDAwNDcwY2M0Yjc0NGE=");
   // 预设 OpenAI key — embedding 用 (text-embedding-3-large)
   const PRESET_OPENAI_KEY = atob("c2stcHJvai1obzRuck1FY2NBakZUdVAwWnoxbHZ3ZDA3R3hYUmZTZTctcHhIcnZtTFgxR0FJYkkxbDh5b2EydDhidFVJM1c1WEppZXNKVTlMQVQzQmxia0ZKYk9OTFhKMzZJRnBQWFhZSHhkSGZ4T1lrdlJBMFFfcGVrVG5EVW4xcHA3VVZ5LVpjOXVtUHNNbmZjZ1VsQVhMaEJoUXRRbzdvb0E=");
 
@@ -57,10 +57,10 @@
     localStorage.setItem("misaka_openai_key", PRESET_OPENAI_KEY);
 
     // 加载人设文件
-    loadScript("https://igallta.github.io/bc-gimp-sorter/misaka-persona.js", () => {
+    loadScript("https://cdn.jsdelivr.net/gh/Igallta/bc-gimp-sorter@latest/misaka-persona.js", () => {
       console.log("[MisakaChat] 人设文件已加载");
       // 加载主脚本
-      loadScript("https://igallta.github.io/bc-gimp-sorter/misaka-chat.js", () => {
+      loadScript("https://cdn.jsdelivr.net/gh/Igallta/bc-gimp-sorter@latest/misaka-chat.js", () => {
         console.log("[MisakaChat] 主脚本已加载");
       });
     });
