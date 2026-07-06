@@ -1641,7 +1641,11 @@ ${recentSemantic}`;
 
   // 检测明确的档案查询请求（只在很明确的场景触发 BCE 查询）
 
-function sanitizeReply(reply) {
+function unescapeHTML(s) {
+    return s.replace(/&quot;/g, '"').replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&#39;/g, "'");
+  }
+
+  function sanitizeReply(reply) {
     let cleaned = String(reply || "").replace(/^["""''''']+|["""''''']+$/g, "").trim();
 
     // thinking 模式下思考过程在 reasoning_content 里，content 是干净的回复
