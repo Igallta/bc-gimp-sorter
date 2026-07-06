@@ -18,6 +18,7 @@
     maxTokens: 8192,
     temperature: 0.8,
     maxContext: 50,
+    maxContextTokens: 6000, // context messages 的 token 预算上限（system prompt 不算）
     cooldownMs: 3000,
     perUserCooldownMs: 5000,
     apiKeyTimeout: 45000,
@@ -299,7 +300,7 @@
 
   // 存一条语义记忆（带 embedding）
   async function storeSemanticMemory(text, meta = {}) {
-    if (!text || text.length < 5) return;
+    if (!text || text.length < 15) return; // 太短的消息不值得存 embedding
 
     // 去重：搜索已有记忆，相似度 > 0.92 则跳过
     const dup = await searchMemories(text, 1);
@@ -423,7 +424,11 @@ ${profiles}
 
 记忆片段:
 ${recentSemantic}`;
-      const refined = await callLLM("你是记忆提炼助手。只提炼有明确证据的长期信息，禁止把操作请求推断成偏好。", [{role:"user", content: prompt}]);
+      const refined = await callLLM("你是记忆提炼助手。只提炼有明确证据的长期信息，禁止把操作请求推断成偏好。", [{role:"user", content: prompt}], {
+        model: CONFIG.fallbackModel,
+        fallbackModel: CONFIG.fallbackModel,
+        thinking: false,
+      });
       if (refined) {
         const ts = Date.now();
         const time = new Date(ts).toLocaleDateString("zh-CN", {month:"2-digit",day:"2-digit"});
@@ -462,9 +467,10 @@ ${recentSemantic}`;
         : "";
       const userPrompt = `最近消息:\n${recent || "暂无消息"}${idleGuard}\n\n直接输出一句自然的闲聊（不超过40字），不要分析，不要解释。`;
       const reply = await callLLM(systemPrompt, [{ role: "user", content: userPrompt }], {
-        model: CONFIG.model,
+        model: CONFIG.fallbackModel,
         fallbackModel: CONFIG.fallbackModel,
         maxTokens: 80,
+        thinking: false,
       });
       const cleaned = sanitizeReply(reply || "");
       if (!cleaned || cleaned.length < 2) return "";
@@ -540,6 +546,31 @@ ${recentSemantic}`;
     record() { this.calls.push(Date.now()); }
   };
 
+  // 粗估 token 数：中文≈2 token/字，英文≈1.3 token/字，符号≈1 token/字
+  function estimateTokens(text) {
+    if (!text) return 0;
+    let tokens = 0;
+    for (const ch of text) {
+      if (/[[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/.test(ch)) tokens += 2;
+      else if (/[a-zA-Z0-9]/.test(ch)) tokens += 1.3;
+      else tokens += 1;
+    }
+    return Math.ceil(tokens);
+  }
+
+  // 按 token 预算截断 context messages（从末尾保留最近的）
+  function trimContextByTokenBudget(messages, budget) {
+    if (!messages || messages.length === 0) return messages;
+    let total = 0;
+    let cutIdx = messages.length;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const t = estimateTokens(messages[i].content || "");
+      if (total + t > budget) { cutIdx = i + 1; break; }
+      total += t;
+    }
+    return messages.slice(Math.max(0, cutIdx));
+  }
+
   async function callLLM(systemPrompt, contextMessages, options = {}) {
     // 速率限制检查
     if (!rateLimiter.canCall()) {
@@ -559,11 +590,14 @@ ${recentSemantic}`;
     const fallbackModel = options.fallbackModel || CONFIG.fallbackModel;
     const maxTokens = options.maxTokens || CONFIG.maxTokens;
 
+    const useThinking = options.thinking !== false;
     return new Promise((resolve) => {
       const doRequest = (url, model, isFallback) => {
         // thinking 模式：思考进 reasoning_content，回复进 content
         // thinking 模式下 temperature 无效（设了不报错但不生效）
-        const reqBody = JSON.stringify({ model, messages, max_tokens: maxTokens, thinking: { type: "enabled" } });
+        const bodyObj = { model, messages, max_tokens: maxTokens };
+        if (useThinking) bodyObj.thinking = { type: "enabled" };
+        const reqBody = JSON.stringify(bodyObj);
         const useGM = typeof window.__GM_xmlhttpRequest !== "undefined";
 
         if (useGM) {
@@ -1448,8 +1482,11 @@ ${recentSemantic}`;
       /^ChatSelf-ItemMouth-MoanGag(Giggle)?$/i,
     ];
     function isNoise(type, rawContent, senderName) {
-      // GIMP 娃娃全部过滤（包括 Chat/Talk/Emote/Activity）
-      if (senderName && senderName.startsWith("GIMP ")) return true;
+      // GIMP 娃娃只过滤自动消息类型（Activity/Emote/Action），保留 Chat/Talk/Whisper（可能是真人）
+      if (senderName && senderName.startsWith("GIMP ")) {
+        return type === "Activity" || type === "Emote" || type === "Action" ||
+               NOISE_PATTERNS.some(pat => pat.test(rawContent));
+      }
       for (const pat of NOISE_PATTERNS) {
         if (pat.test(rawContent)) return true;
       }
@@ -1616,11 +1653,12 @@ function sanitizeReply(reply) {
     try {
       await new Promise(r => setTimeout(r, CONFIG.replyDelayMs));
 
-      // 构建上下文
-      const contextMessages = state.recentMessages.slice(-CONFIG.maxContext).map(m => ({
+      // 构建上下文（先按条数截，再按 token 预算截）
+      let contextMessages = state.recentMessages.slice(-CONFIG.maxContext).map(m => ({
         role: m.isSelf ? "assistant" : "user",
         content: `${m.senderName}: ${m.content}`
       }));
+      contextMessages = trimContextByTokenBudget(contextMessages, CONFIG.maxContextTokens);
 
       // 构建系统 prompt（含精简房间名单）
       const systemPrompt = getSystemPrompt();
