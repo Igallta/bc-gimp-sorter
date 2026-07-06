@@ -48,17 +48,40 @@ window.MisakaPersona = {
 
   assetCnName(asset) {
     if (!asset) return "";
-    return asset.Name || "";
+    const translated = this.translateAssetText(asset.Description || asset.Name || "");
+    if (translated && translated !== asset.Name) return translated;
+    return asset.Description || asset.Name || "";
+  },
+
+  LAYER_CN_FALLBACK: {
+    "Inner": "内衬", "Inside": "内部", "Outside": "外部",
+    "Top": "顶部", "Bottom": "底部", "Main": "主体",
+    "Front": "正面", "Rear": "背面", "Back": "背面",
+    "Sheet": "外层布料", "SheetBack": "后层布料", "SheetFront": "前层布料",
+    "Mattress": "床垫", "Pillow": "枕头", "Padding": "软垫",
+    "Carpet": "地毯", "Frame": "框架", "Door": "门",
+    "Strap": "束带", "Straps": "束带",
+    "Belt": "腰带", "Belts": "腰带", "Ring": "环", "Rings": "环",
+    "Chain": "链条", "Lock": "锁", "Base": "底座",
+    "Shine": "光泽", "Gate": "门栏",
+    "LegsClosed": "腿并拢", "LegsSpread": "腿张开",
+    "ArmsDown": "手臂下垂", "ArmsYoked": "手臂约束",
+    "Custom Text": "自定义文字",
   },
 
   layerCnName(layer) {
     if (!layer?.Name) return "";
     const translated = this.translateAssetText(layer.Name);
-    return translated && translated !== layer.Name ? translated : "";
+    if (translated && translated !== layer.Name) return translated;
+    const fb = this.LAYER_CN_FALLBACK[layer.Name];
+    return fb || "";
   },
 
-  groupLabel(groupName) {
-    return groupName;
+  groupLabel(groupName, groupDesc) {
+    const desc = (groupDesc || "").replace(/^🍔/, "").replace(/\(覆盖\)/, "").trim();
+    const cn = this.translateAssetText(desc || groupName);
+    if (cn && cn !== groupName && cn !== desc) return `${groupName}(${cn})`;
+    return desc && desc !== groupName ? `${groupName}(${desc})` : groupName;
   },
 
   getColorLayers(asset) {
@@ -66,7 +89,8 @@ window.MisakaPersona = {
     const layers = [];
     for (const layer of asset.Layer) {
       if (layer.AllowColorize === true && typeof layer.ColorIndex === "number" && layer.Name) {
-        layers.push(layer.Name);
+        const cn = this.layerCnName(layer);
+        layers.push(cn && cn !== layer.Name ? `${layer.Name}(${cn})` : layer.Name);
       }
     }
     return [...new Set(layers)];
@@ -301,7 +325,7 @@ window.MisakaPersona = {
 颜色参数: 除"默认/原色"外必须输出 #RRGGBB。你要根据用户描述自己判断好看的 hex，不要输出自然语言颜色名。BC 不同道具同一 hex 会有色差，改色后可以提醒一句。
 道具属性: 每个道具可调属性和值都写在【可操作道具清单】里。设置属性时从清单里选值，优先输出清单里的英文值；振动强度可用 Off/Low/Medium/High/Maximum/Random/Escalate/Tease/Deny/Edge。
 道具颜色: [ITEMCOLOR:编号:道具英文名:部件英文名:#RRGGBB]。指定部件时用清单里的英文 layer 名。
-  - 常见 layer 名含义: Bed=床体, Blanket=毛毯, Inner=内衬/内层, Strap=带子, Frame=框架, Base=底座, Front=正面, Back=背面/后背, Padding=软垫, Mesh=网面, Panel=面板, Rivets=铆钉, Sheet=外层布料, Mattress=床垫, Pillow=枕头
+  - 常见 layer 名含义: Bed=床体, Blanket=毛毯, Inner=内衬/内层, Strap=束带, Frame=框架, Base=底座, Front=正面, Back=背面/后背, Padding=软垫, Mesh=网面, Panel=面板, Rivets=铆钉, Sheet=外层布料, Mattress=床垫, Pillow=枕头
   - 用户说"毛毯的内衬"时，"内衬"=Inner，"毛毯"=Blanket，要改的是 Inner 不是 Blanket
   - 如果目标身上没有该道具，不要硬加，直接回复"ta身上没有这个道具"
 注意：用户说"绳子"时，从清单里选择麻绳/尼龙绳对应的英文道具名，不要输出泛称"绳子"
