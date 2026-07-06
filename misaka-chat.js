@@ -24,8 +24,6 @@
     replyDelayMs: 800,
     maxProfileEntries: 20,
     moveCooldownMs: 5000,  // 移动操作冷却
-    compactionInterval: 50,  // 每 N 条消息生成一次 context compaction
-    maxCompactionSummaries: 5,  // 保留最近 N 条 compaction 摘要
     idleTimeoutMs: 600000,  // 10 分钟无人说话触发 idle
     idleCheckMs: 60000,  // 每分钟检查一次 idle
     embeddingBase: "https://api.openai.com/v1/embeddings",
@@ -40,14 +38,11 @@
   let state = {
     recentMessages: [],
     lastReplyTime: 0,
-    lastReplyTo: null,
     lastUserReplyTime: {},
     messageCount: 0,
     busy: false,
-    roomJoinLog: [],
     lastMoveTime: 0,  // 移动操作冷却
     lastNonSelfMsgTime: 0,  // 上次非自己消息时间（idle 检测用）
-    compactionPending: false,  // 正在生成 compaction 摘要
     greetEnabled: true,  // 自动欢迎开关，玩家可以语音开关
   };
 
@@ -207,83 +202,7 @@
     console.warn("[MisakaChat] IDB 加载提炼记忆失败:", e.message);
   });
 
-  // 兼容：如果 IDB 为空但 localStorage 有旧数据，迁移一次
-  setTimeout(() => {
-    if (state.semanticMemories.length === 0 && !state._idbMigrated) {
-      try {
-        const old = JSON.parse(localStorage.getItem("misaka_semantic_mem") || "[]");
-        if (Array.isArray(old) && old.length > 0) {
-          state.semanticMemories = old;
-          IDB.putSemantic(old).then(() => {
-            localStorage.removeItem("misaka_semantic_mem");
-            console.log(`[MisakaChat] 从 localStorage 迁移 ${old.length} 条语义记忆到 IDB`);
-          });
-        }
-      } catch(e) {}
-    }
-    if (state.refinedMemories.length === 0 && !state._idbMigrated) {
-      try {
-        const old = JSON.parse(localStorage.getItem("misaka_refined_mem") || "[]");
-        if (Array.isArray(old) && old.length > 0) {
-          state.refinedMemories = old;
-          IDB.putRefined(old).then(() => {
-            localStorage.removeItem("misaka_refined_mem");
-            console.log(`[MisakaChat] 从 localStorage 迁移 ${old.length} 条提炼记忆到 IDB`);
-          });
-        }
-      } catch(e) {}
-    }
-    state._idbMigrated = true;
-  }, 2000);
 
-  // === Embedding 维度迁移：512 → 3072 ===
-  // 已有记忆的 embedding 是 512 维的，和新的 3072 维向量算 cosine 会维度不匹配
-  // 用每条的 text 重新调 embedding API，替换旧向量
-  async function rembedMemories() {
-    const allSemantic = state.semanticMemories || [];
-    const allRefined = state.refinedMemories || [];
-    const needSemantic = allSemantic.filter(m => m.embedding && m.embedding.length !== 3072);
-    const needRefined = allRefined.filter(m => m.embedding && m.embedding.length !== 3072);
-    const total = needSemantic.length + needRefined.length;
-    if (total === 0) {
-      console.log("[MisakaChat] embedding 维度无需迁移");
-      return;
-    }
-    console.log(`[MisakaChat] 开始重新 embedding ${total} 条记忆 (${needSemantic.length} 语义 + ${needRefined.length} 提炼)`);
-    let done = 0;
-    const BATCH = 5;
-    // 分批重算 semantic
-    for (let i = 0; i < needSemantic.length; i += BATCH) {
-      const batch = needSemantic.slice(i, i + BATCH);
-      await Promise.all(batch.map(async (m) => {
-        const newEmb = await getEmbedding(m.text);
-        if (newEmb && newEmb.length === 3072) {
-          m.embedding = newEmb;
-        }
-        done++;
-      }));
-      // 每批间隔 500ms 避免限速
-      await new Promise(r => setTimeout(r, 500));
-      console.log(`[MisakaChat] re-embedding 进度: ${done}/${total}`);
-    }
-    // 分批重算 refined
-    for (let i = 0; i < needRefined.length; i += BATCH) {
-      const batch = needRefined.slice(i, i + BATCH);
-      await Promise.all(batch.map(async (m) => {
-        const newEmb = await getEmbedding(m.text);
-        if (newEmb && newEmb.length === 3072) {
-          m.embedding = newEmb;
-        }
-        done++;
-      }));
-      await new Promise(r => setTimeout(r, 500));
-      console.log(`[MisakaChat] re-embedding 进度: ${done}/${total}`);
-    }
-    // 写回 IDB
-    IDB.putSemantic(allSemantic);
-    IDB.putRefined(allRefined);
-    console.log(`[MisakaChat] re-embedding 完成，已写回 IDB`);
-  }
 
   try {
     const savedLog = JSON.parse(localStorage.getItem("misaka_joinlog") || "[]");
@@ -332,40 +251,6 @@
   // === Context Compaction ===
   // 每 compactionInterval 条消息，用 LLM 生成一段摘要，塞入 system prompt
   // 这样即使 recentMessages 超过 50 条被截断，御坂仍然记得之前发生了什么
-  async function maybeCompactContext() {
-    if (state.messageCount % CONFIG.compactionInterval !== 0 || state.compactionPending) return;
-    if (state.messageCount === 0) return;
-    state.compactionPending = true;
-    try {
-      // 取上一段 compactionInterval 条消息
-      const segment = state.recentMessages.slice(-CONFIG.compactionInterval);
-      if (segment.length < 5) { state.compactionPending = false; return; }
-      
-      const summaryPrompt = `用一句话概括以下 BC 聊天片段的要点（谁说了什么、发生了什么事、提到什么操作），不超过80字，用中文。
-重要限制：
-1. 用户让御坂改色/换色/调颜色，只能总结为"请求改色"，绝不要总结成"用户喜欢某颜色"。只有用户明确说"我喜欢/我偏好/我最喜欢"时才能写成偏好。
-2. 御坂的回答可能包含编造/猜测的记忆（如"XX和我玩过YY"），只总结"御坂回答了XX"，不要把御坂的回答当作事实记录。
-3. 区分"用户说的"和"御坂说的"，御坂说的内容不等于事实。
-
-聊天片段：
-${segment.map(m => `${m.senderName}: ${m.content}`).join("\n")}`;
-      const summary = await callLLM("你是聊天摘要助手。只总结明确事实，禁止把操作请求推断成偏好。", [{role:"user", content: summaryPrompt}]);
-      if (summary) {
-        const tStart = segment[0]?.time ? new Date(segment[0].time).toLocaleString("zh-CN", {month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}) : "";
-        const tEnd = new Date().toLocaleString("zh-CN", {month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"});
-        state.compactionSummaries.push(`[${tStart}~${tEnd}] ${summary.slice(0, 80)}`);
-        if (state.compactionSummaries.length > CONFIG.maxCompactionSummaries) {
-          state.compactionSummaries.shift();
-        }
-        try { localStorage.setItem("misaka_compaction", JSON.stringify(state.compactionSummaries)); } catch(e) {}
-        console.log("[MisakaChat] Context compaction 完成:", summary.slice(0, 50));
-      }
-    } catch(e) {
-      console.warn("[MisakaChat] Context compaction 失败:", e.message);
-    } finally {
-      state.compactionPending = false;
-    }
-  }
 
   // === Embedding cache (LRU) ===
   const embeddingCache = new Map();
@@ -498,77 +383,40 @@ ${segment.map(m => `${m.senderName}: ${m.content}`).join("\n")}`;
   }
 
   async function searchLongTermMemories(query, topK = CONFIG.topKMemories) {
-    const results = [];
     const qEmb = await getEmbedding(query);
+    if (!qEmb) return [];
     const now = Date.now();
+    const results = [];
 
-    // 语义搜索 semantic_mem（带时间衰减）
-    try {
-      if (qEmb && state.semanticMemories.length > 0) {
-        const scored = state.semanticMemories.map(m => {
-          const cosine = cosineSim(qEmb, m.embedding);
-          const ageDays = (now - (m.time || 0)) / 86400000;
-          const decayed = cosine * Math.max(0.3, 1 - ageDays / 90);
-          return { text: m.text, score: decayed, source: "semantic", ...m };
-        });
-        scored.sort((a, b) => b.score - a.score);
-        for (const item of scored.slice(0, topK).filter(s => s.score > 0.3)) {
-          if (item?.text) results.push({ text: item.text, score: item.score, source: "semantic" });
-        }
-      }
-    } catch(e) {
-      console.warn("[MisakaChat] 语义搜索失败:", e.message);
-    }
-
-    // 语义搜索 refined_mem（带时间衰减）
-    try {
-      if (qEmb && Array.isArray(state.refinedMemories)) {
-        const refinedScored = state.refinedMemories.map(m => {
-          if (typeof m === "string") return { text: m, score: 0, source: "refined", _legacy: true };
-          if (m.embedding && qEmb) {
-            const cosine = cosineSim(qEmb, m.embedding);
-            const ageDays = (now - (m.time || 0)) / 86400000;
-            const decayed = cosine * Math.max(0.3, 1 - ageDays / 90);
-            return { text: m.text, score: decayed, source: "refined" };
-          }
-          return { text: m.text, score: 0, source: "refined", _legacy: true };
-        });
-        refinedScored.sort((a, b) => b.score - a.score);
-        for (const item of refinedScored.slice(0, topK).filter(s => s.score > 0.3)) {
-          results.push({ text: item.text, score: item.score, source: "refined" });
-        }
-      }
-    } catch(e) {
-      console.warn("[MisakaChat] refined 语义搜索失败:", e.message);
-    }
-
-    // fallback: 关键词匹配 refined_mem（兼容旧格式 string 条目）
-    if (qEmb) {
-      const q = String(query || "").toLowerCase();
-      const terms = q.split(/[\s,，、。.!！?？;；:：]+/).filter(t => t.length >= 2);
-      for (const entry of state.refinedMemories || []) {
-        const text = typeof entry === "string" ? entry : entry?.text;
+    // 统一语义搜索（semantic_mem + refined_mem）
+    const sources = [
+      { list: state.semanticMemories, source: "semantic" },
+      { list: state.refinedMemories, source: "refined" },
+    ];
+    for (const { list, source } of sources) {
+      if (!Array.isArray(list)) continue;
+      for (const m of list) {
+        const text = typeof m === "string" ? m : m?.text;
+        const emb = typeof m === "string" ? null : m?.embedding;
         if (!text) continue;
-        const lower = text.toLowerCase();
-        let kwScore = lower.includes(q) ? 3 : 0;
-        for (const term of terms) if (lower.includes(term)) kwScore++;
-        if (kwScore > 0) {
-          // 避免重复（语义搜索已经命中的不再加）
-          if (!results.some(r => r.text === text)) {
-            results.push({ text, score: kwScore, source: "refined-keyword" });
-          }
+        if (emb) {
+          const decayed = cosineSim(qEmb, emb) * Math.max(0.3, 1 - ((now - (m.time || 0)) / 86400000) / 90);
+          if (decayed > 0.3) results.push({ text, score: decayed, source });
+        } else {
+          // 关键词 fallback（无 embedding 的旧条目）
+          const q = query.toLowerCase(), lower = text.toLowerCase();
+          const terms = q.split(/[\s,，、。.!！?？;；:：]+/).filter(t => t.length >= 2);
+          let kw = lower.includes(q) ? 3 : 0;
+          for (const t of terms) if (lower.includes(t)) kw++;
+          if (kw > 0) results.push({ text, score: kw, source: source + "-keyword" });
         }
       }
     }
 
+    // 去重 + 排序 + 截断
     const seen = new Set();
     return results
-      .filter(item => {
-        const key = item.text;
-        if (!key || seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      })
+      .filter(r => r.text && !seen.has(r.text) && seen.add(r.text))
       .sort((a, b) => b.score - a.score)
       .slice(0, topK);
   }
@@ -591,55 +439,9 @@ ${segment.map(m => `${m.senderName}: ${m.content}`).join("\n")}`;
     return "\n\n【长期记忆搜索结果】\n" + blocks.join("\n");
   }
 
-  function preferenceMemoryGuard(content) {
-    const text = String(content || "");
-    if (!/(喜欢|偏好|最喜欢|讨厌)/.test(text)) return "";
-    if (!/(记得|还记得|上次|以前|之前|什么颜色|哪种颜色|颜色)/.test(text)) return "";
-    return `\n\n【本次是偏好记忆查询】\n只有在上下文/记忆中明确出现用户本人说过"我喜欢/我最喜欢/我偏好/我讨厌"时，才能回答偏好。\n用户曾要求你改色、换色、操作某种颜色，不等于用户喜欢这种颜色。\n如果没有明确偏好证据，必须回答"我没记过"或"不确定"，不要猜。`;
-  }
 
-  function isColorPreferenceQuery(content) {
-    const text = String(content || "");
-    if (!/(我|咲|自己).{0,8}(喜欢|偏好|最喜欢)/.test(text)) return false;
-    return /(什么颜色|哪种颜色|颜色是什么|喜欢什么|偏好什么|记得.*颜色|以前.*颜色|之前.*颜色)/.test(text);
-  }
 
-  function extractExplicitColorPreference(text, speakerName) {
-    const raw = String(text || "");
-    const beforeReply = raw.split(/→|=>/)[0];
-    const speakerPrefix = speakerName ? `${speakerName}:` : "";
-    let content = beforeReply;
-    if (speakerPrefix && content.includes(speakerPrefix)) {
-      content = content.slice(content.lastIndexOf(speakerPrefix) + speakerPrefix.length);
-    }
-    if (/(什么|哪种|哪个|吗|么|？|\?)/.test(content)) return "";
-    if (/(改|换|调|弄|染|变成|设置|窝|窝窝|口球|项圈|道具|衣服|内衬|毛毯|带子)/.test(content)) return "";
-    const match = content.match(/(?:我|咲)(?:真的|其实|比较|最)?\s*(?:最喜欢|喜欢|偏好|更喜欢)\s*(?:的颜色)?(?:是|为|:|：)?\s*(#[0-9a-fA-F]{6}|[一-龥A-Za-z0-9#]{1,12}色)/);
-    if (!match) return "";
-    const color = match[1].trim();
-    if (/(什么|哪|这个|那个|这种|那种)/.test(color)) return "";
-    return color;
-  }
 
-  function findExplicitColorPreference(senderNum, senderName) {
-    const candidates = [];
-    const recent = (state.recentMessages || []).filter(m =>
-      !m.isSelf && (m.senderMemberNumber === senderNum || m.senderName === senderName)
-    );
-    for (const m of recent) candidates.push(m.content);
-    for (const m of (state.semanticMemories || [])) {
-      if (m.memberNum === senderNum || m.sender === senderName) candidates.push(m.text);
-    }
-    const mem = loadMemory();
-    const profile = mem.profiles && mem.profiles[String(senderNum)];
-    if (profile?.notes) candidates.push(`${senderName}: ${profile.notes}`);
-
-    for (let i = candidates.length - 1; i >= 0; i--) {
-      const color = extractExplicitColorPreference(candidates[i], senderName);
-      if (color) return color;
-    }
-    return "";
-  }
 
   // === Long-term Memory Refinement ===
   // 每 memoryRefineInterval 条消息，用 LLM 从 profiles + compaction + semanticMemories 提炼一份长期记忆摘要
@@ -694,51 +496,6 @@ ${recentSemantic}`;
   }
 
   // === Idle / Heartbeat ===
-  // 常客打招呼池（更亲昵、带名字）
-  const GREET_REGULAR = [
-    "{name}，又来啦~",
-    "哦？{name}来了~",
-    "{name}，今天挺早的嘛。",
-    "欢迎回来，{name}~",
-    "*抬头看到{name}*|你来了呀~",
-    "哟，{name}。",
-    "来了来了，{name}~",
-  ];
-  // 陌生人打招呼池（友好但不带名字）
-  const GREET_STRANGER = [
-    "欢迎~",
-    "你来了呀~",
-    "*抬头看了一眼*|来了啊~",
-    "欢迎来到 Gimp Dolls~",
-    "哟，新面孔~",
-    "嗯？新人来了~",
-  ];
-  // GIMP 娃娃打招呼池（对被束缚的人偶，语气更玩味）
-  const GREET_GIMP = [
-    "又多了个娃娃~",
-    "*打量了一下新来的娃娃*",
-    "嗯，新娃娃到了。",
-    "*歪头看着新来的娃娃*",
-    "欢迎来到娃娃架~",
-  ];
-  // idle 闲聊池（带上下文）
-  const IDLE_LINES = [
-    "房间里好安静啊...",
-    "..没有人想聊聊天吗？",
-    "*整理了一下袖口*",
-    "安静下来了呢。",
-    "*百无聊赖地翻看记录本*",
-    "嗯...在等什么人吗？",
-    "*小声哼着歌*",
-    "*靠在墙边发呆*",
-    "好闲啊...来个人让我搬搬娃娃也好嘛~",
-    "咲不在吗...算了。",
-    "*打了个哈欠*",
-    "今天娃娃们都挺乖的嘛。",
-    "*数了数房间里的娃娃*|嗯...还是这些。",
-    "有人来玩吗？好无聊~",
-    "*歪头看着门口*",
-  ];
   let idleTimer = null;
 
   async function generateIdleLine() {
@@ -797,7 +554,7 @@ ${recentSemantic}`;
         state.busy = true;
         try {
           const generated = await generateIdleLine();
-          const line = generated || IDLE_LINES[Math.floor(Math.random() * IDLE_LINES.length)];
+          const line = generated || "*百无聊赖地翻看记录本*";
           state.lastNonSelfMsgTime = Date.now();  // 重置防再次触发
           if (typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom") {
             ElementValue("InputChat", line);
@@ -1064,29 +821,7 @@ ${recentSemantic}`;
         commands.push({ type: "itemdel", memberNumber: parseInt(mn), item: item.trim() });
         return "";
       })
-      // 处理被截断的指令 — [ITEMDEL:123 后面没有 ]
-      .replace(/\[ITEMADD:(\d+)$/gi, (m, mn) => {
-        console.log("[MisakaChat] 检测到截断的 ITEMADD 指令: " + m);
-        return "";
-      })
-      .replace(/\[ITEMSET:(\d+)$/gi, (m, mn) => {
-        console.log("[MisakaChat] 检测到截断的 ITEMSET 指令: " + m);
-        return "";
-      })
-      .replace(/\[ITEMDEL:(\d+)$/gi, (m, mn) => {
-        // 截断的 ITEMDEL — 当作"释放全部"处理
-        commands.push({ type: "itemdelall", memberNumber: parseInt(mn) });
-        console.log("[MisakaChat] 截断的 ITEMDEL 当作释放全部: #" + mn);
-        return "";
-      })
-      .replace(/\[MOVE:(\d+)$/gi, (m, mn) => {
-        console.log("[MisakaChat] 检测到截断的 MOVE 指令: " + m);
-        return "";
-      })
-      .replace(/\[COPY:(\d+)$/gi, (m, mn) => {
-        console.log("[MisakaChat] 检测到截断的 COPY 指令: " + m);
-        return "";
-      });
+;
     return { commands, cleaned: cleaned.trim() };
   }
 
@@ -1184,16 +919,6 @@ ${recentSemantic}`;
     }
   }
 
-  // 同义词映射 — 用户/LLM 常用泛称 → BC 实际道具名
-  const SYNONYMS = {
-    "绳子": "麻绳", "绳索": "麻绳", "绳缚": "麻绳",
-    "口塞": "口球", "堵嘴": "麻绳堵嘴",
-    "眼罩": "皮制眼罩", "蒙眼": "皮制眼罩",
-    "手铐": "金属手铐", "铐": "金属手铐",
-    "贞操": "高科技贞操带", "锁": "金属贞操带",
-    "单手套": "皮制单手套", "臂袋": "皮制单手套",
-    "高跟": "芭蕾高跟鞋", "芭蕾": "芭蕾高跟鞋",
-  };
 
   // 部位名 → BC Item group 列表（按优先级）
   const BODY_PART_GROUPS = {
@@ -1233,7 +958,7 @@ ${recentSemantic}`;
 
   function findItemByPart(char, itemName, part) {
     if (!char) return null;
-    const searchName = SYNONYMS[itemName] || itemName;
+    const searchName = itemName;
     // 限定部位
     if (part) {
       const groups = BODY_PART_GROUPS[part];
@@ -1268,16 +993,6 @@ ${recentSemantic}`;
     return target;
   }
 
-  // 动态道具查找 — 从 BC Asset 数组里按中文名搜索
-  // 优先束缚类 group，避免误配到 ItemHandheld
-  const RESTRAINT_GROUPS = [
-    "ItemMouth","ItemMouth2","ItemMouth3","ItemHead","ItemHood","ItemEars",
-    "ItemNeck","ItemNeckAccessories","ItemArms","ItemHands","ItemFeet",
-    "ItemLegs","ItemBoots","ItemTorso","ItemTorso2","ItemPelvis",
-    "ItemBreast","ItemNipples","ItemNipplesPiercings","ItemVulva",
-    "ItemVulvaPiercings","ItemButt","ItemDevices","ItemClit"
-  ];
-  const LOW_PRIORITY_GROUPS = ["ItemHandheld","ItemScript","ItemAddon","ItemMisc","ItemNeckRestraints"];
 
   function translateAssetText(text) {
     if (!text) return "";
@@ -1310,66 +1025,33 @@ ${recentSemantic}`;
     const rawName = String(itemName).trim();
     if (!rawName) return null;
 
+    // 精确匹配英文名
     const exact = Asset.find(a => a?.Group?.Name?.startsWith("Item") && a.Name === rawName);
     if (exact) return { group: exact.Group.Name, asset: exact.Name };
 
-    // 同义词转换
-    itemName = SYNONYMS[rawName] || rawName;
-    // 模糊同义词：包含"绳"字的都映射到"麻绳"
-    if (itemName.includes("绳") && !itemName.includes("颈") && !itemName.includes("纯")) itemName = "麻绳";
-    if (itemName.includes("口塞") && !itemName.includes("模块")) itemName = "口球";
-    
-    // 按优先级分组查找
-    const priorityOrder = [
-      ...RESTRAINT_GROUPS,
-      null, // 其他 Item group
-      ...LOW_PRIORITY_GROUPS
+    // 中文/描述匹配（按优先级分组）
+    const priorityGroups = [
+      "ItemMouth","ItemMouth2","ItemMouth3","ItemHead","ItemHood","ItemEars",
+      "ItemNeck","ItemNeckAccessories","ItemArms","ItemHands","ItemFeet",
+      "ItemLegs","ItemBoots","ItemTorso","ItemTorso2","ItemPelvis",
+      "ItemBreast","ItemNipples","ItemNipplesPiercings","ItemVulva",
+      "ItemVulvaPiercings","ItemButt","ItemDevices","ItemClit",
+      "ItemHandheld","ItemScript","ItemAddon","ItemMisc","ItemNeckRestraints"
     ];
-    
-    for (const priorityGroup of priorityOrder) {
-      // 1. 精确匹配
+    for (const g of priorityGroups) {
       for (const a of Asset) {
-        const gName = a?.Group?.Name || "";
-        if (!gName.startsWith("Item")) continue;
-        const isMatch = priorityGroup === null 
-          ? !RESTRAINT_GROUPS.includes(gName) && !LOW_PRIORITY_GROUPS.includes(gName)
-          : gName === priorityGroup;
-        if (isMatch && a.Name === itemName) {
-          return { group: gName, asset: a.Name };
-        }
-        if (isMatch && (a.Description === itemName || assetCnName(a) === itemName)) {
-          return { group: gName, asset: a.Name };
-        }
+        if (a?.Group?.Name !== g) continue;
+        const cn = assetCnName(a);
+        if (a.Description === rawName || cn === rawName) return { group: g, asset: a.Name };
       }
     }
-    
-    for (const priorityGroup of priorityOrder) {
-      // 2. 包含匹配
+    // 包含匹配
+    for (const g of priorityGroups) {
       for (const a of Asset) {
-        const gName = a?.Group?.Name || "";
-        if (!gName.startsWith("Item")) continue;
-        const isMatch = priorityGroup === null 
-          ? !RESTRAINT_GROUPS.includes(gName) && !LOW_PRIORITY_GROUPS.includes(gName)
-          : gName === priorityGroup;
+        if (a?.Group?.Name !== g) continue;
         const cn = assetCnName(a);
-        if (isMatch && ((a.Description && a.Description.includes(itemName)) || (cn && cn.includes(itemName)))) {
-          return { group: gName, asset: a.Name };
-        }
-      }
-    }
-    
-    for (const priorityGroup of priorityOrder) {
-      // 3. 反向包含
-      for (const a of Asset) {
-        const gName = a?.Group?.Name || "";
-        if (!gName.startsWith("Item")) continue;
-        const isMatch = priorityGroup === null 
-          ? !RESTRAINT_GROUPS.includes(gName) && !LOW_PRIORITY_GROUPS.includes(gName)
-          : gName === priorityGroup;
-        const cn = assetCnName(a);
-        if (isMatch && ((a.Description && itemName.includes(a.Description)) || (cn && itemName.includes(cn)))) {
-          return { group: gName, asset: a.Name };
-        }
+        if ((a.Description && a.Description.includes(rawName)) || (cn && cn.includes(rawName)))
+          return { group: g, asset: a.Name };
       }
     }
     return null;
@@ -1383,8 +1065,6 @@ ${recentSemantic}`;
       .filter(a => a?.Asset?.Group?.Name?.startsWith("Item"))
       .map(a => {
         const prop = a.Property ? JSON.parse(JSON.stringify(a.Property)) : {};
-        delete prop.LockedBy;
-        delete prop.LockMemberNumber;
         return {
           group: a.Asset.Group.Name,
           asset: a.Asset.Name,
@@ -1551,18 +1231,9 @@ ${recentSemantic}`;
   function findLayerIndex(asset, layerName) {
     if (!layerName) return undefined;
     const layers = getItemColorLayers(asset);
-    if (layers.length === 0) return undefined;
     const raw = String(layerName).trim();
-    // 1. 精确匹配英文 layer 名（清单里展示的名字）
-    let found = layers.find(l => l.name === raw);
-    if (found) return found.index;
-    // fallback: 英文大小写不敏感/包含匹配放最后，兼容少量旧输出
     const lower = raw.toLowerCase();
-    found = layers.find(l => l.name && l.name.toLowerCase() === lower);
-    if (found) return found.index;
-    found = layers.find(l => l.name && l.name.length >= 2 && lower.includes(l.name.toLowerCase()));
-    if (found) return found.index;
-    return undefined;
+    return layers.find(l => l.name === raw || l.name?.toLowerCase() === lower)?.index;
   }
 
   function directRemoveItem(char, groupName) {
@@ -1574,28 +1245,10 @@ ${recentSemantic}`;
     return true;
   }
 
-  // 颜色名 → hex 映射
   const COLOR_NAME_TO_HEX = {
-    "红色": "#FF0000", "红": "#FF0000",
-    "蓝色": "#0000FF", "蓝": "#0000FF",
-    "绿色": "#00FF00", "绿": "#00FF00",
-    "黄色": "#FFFF00", "黄": "#FFFF00",
-    "紫色": "#8000FF", "紫": "#8000FF",
-    "粉色": "#FFC0CB", "粉": "#FFC0CB", "粉红": "#FFC0CB",
-    "橙色": "#FFA500", "橙": "#FFA500", "橙红": "#FF4500",
-    "青色": "#00FFFF", "青": "#00FFFF",
-    "品红": "#FF00FF",
-    "黑色": "#000000", "黑": "#000000",
-    "白色": "#FFFFFF", "白": "#FFFFFF",
-    "灰色": "#808080", "灰": "#808080",
-    "浅灰": "#C0C0C0", "深灰": "#404040",
-    "棕色": "#8B4513", "棕": "#8B4513",
-    "金色": "#FFD700", "金": "#FFD700",
-    "银色": "#C0C0C0", "银": "#C0C0C0",
-    "米色": "#F5F5DC",
-    "淡金": "#F0E68C",
-    "深蓝灰": "#2F4F4F",
-    "灰蓝": "#778899",
+    "黑":"#000000","白":"#FFFFFF","红":"#FF0000","蓝":"#0000FF","绿":"#00FF00",
+    "黄":"#FFFF00","紫":"#8000FF","粉":"#FFC0CB","橙":"#FFA500","灰":"#808080",
+    "浅灰":"#C0C0C0","深灰":"#404040","金":"#FFD700","银":"#C0C0C0","棕":"#8B4513",
   };
 
   function colorNameToHex(name) {
@@ -1608,10 +1261,6 @@ ${recentSemantic}`;
     return COLOR_NAME_TO_HEX[n] || null;
   }
 
-  // 道具属性映射 — 中文属性名 → 处理方式
-  // vibrating archetype 用 VIB_INTENSITY_CN 映射
-  // typed archetype 用数字索引
-  // modular archetype 用模块 key + 数字索引
   const PROPERTY_MAP = {
     "强度": { type: "vibrator" },
     "震动": { type: "vibrator" },
@@ -1648,57 +1297,8 @@ ${recentSemantic}`;
     { name: "Edge",    mode: "Edge",    intensity: 0,  effect: ["Egged","Vibrating","Edged"], tr: 9 },
   ];
 
-  // 中文振动器档位 → VIBRATOR_OPTIONS 索引
-  const VIB_INTENSITY_CN = {
-    "关": 0, "关闭": 0, "低": 1, "弱": 1, "中": 2, "高": 3, "强": 3, "最大": 4, "极限": 4,
-    "随机": 5, "递增": 6, "挑逗": 7, "拒绝": 8, "边缘": 9
-  };
 
-  // 中文绑法/样式名 → BC 英文选项名映射
-  // 用 TypedItemSetOptionByName 调用，走 BC 正规 API
-  const STYLE_NAME_CN = {
-    // 麻绳/尼龙绳 ItemArms — BC 中文圈常用绑法名
-    "手腕绑": "WristTie", "基础": "WristTie", "普通": "WristTie", "手腕": "WristTie",
-    "后手缚": "BoxTie", "箱形绑": "BoxTie", "空手绑": "BoxTie", "龟甲缚": "BoxTie",
-    "交叉后手缚": "CrossedBoxtie", "交叉箱形": "CrossedBoxtie", "交叉绑": "CrossedBoxtie",
-    "绳铐": "RopeCuffs", "手腕绳铐": "RopeCuffs",
-    "并肘绑": "WristElbowTie", "手腕肘绑": "WristElbowTie", "手肘绑": "WristElbowTie",
-    "简单驷马缚": "SimpleHogtie", "简单猪绑": "SimpleHogtie", "猪绑": "SimpleHogtie",
-    "紧后手缚": "TightBoxtie", "紧箱形": "TightBoxtie", "紧绑": "TightBoxtie",
-    "驾驭绑": "WristElbowHarnessTie", "手腕肘驾驭绑": "WristElbowHarnessTie",
-    "跪姿驷马缚": "KneelingHogtie", "跪姿猪绑": "KneelingHogtie",
-    "驷马缚": "Hogtied", "猪绑缚": "Hogtied", "全猪绑": "Hogtied", "驷马": "Hogtied",
-    "四肢着地": "AllFours", "趴绑": "AllFours",
-    "床展鹰": "BedSpreadEagle", "展鹰": "BedSpreadEagle", "大字绑": "BedSpreadEagle",
-    "悬吊跪姿驷马": "SuspensionKneelingHogtie", "悬吊跪姿猪绑": "SuspensionKneelingHogtie",
-    "悬吊驷马缚": "SuspensionHogtied", "悬吊猪绑": "SuspensionHogtied", "悬吊驷马": "SuspensionHogtied",
-    "悬吊四肢着地": "SuspensionAllFours",
-    "倒吊驷马缚": "InvertedSuspensionHogtied", "倒吊猪绑": "InvertedSuspensionHogtied", "倒吊": "InvertedSuspensionHogtied",
-    "倒吊四肢着地": "InvertedSuspensionAllFours",
-    // 通用铐类
-    "链条": "Chain", "铐": "Cuffs", "环": "Rings", "桶": "Buckets", "锁": "Lock",
-    "无": "None", "关闭": "None", "闭合": "Closed", "链接": "Chained",
-    // 口塞类
-    "普通": "Normal", "紧": "Tight", "亮": "Shiny",
-    "小": "Small", "交叉": "Crossed", "全": "Full", "双层": "Double", "覆盖": "Cover",
-    "打开": "Open", "塞入": "Plug", "空": "Empty",
-    // 绳类 ItemLegs
-    "膝盖": "Knees", "大腿": "Thighs", "青蛙绑": "Frogtie", "交叉腿": "Crossed",
-    // 绳类 ItemFeet
-    "脚踝": "Ankles", "膝盖脚踝": "AnklesKnees",
-    // 道具设备
-    "关": "Opaque", "开": "Shadow", // 折叠屏风
-    //贞操带
-    "后开": "OpenBack", "后闭": "ClosedBack",
-    // 束腰
-    "吊带": "Garter", "无吊带": "Garterless",
-    // 乳胶衣/紧身衣
-    "乳胶衣": "Latex", "透视": "UnZip",
-  };
 
-  function isVibratorAsset(asset) {
-    return /Vibrating|Vibrator|Vibe|Egg|ButtPlug|CatButtPlug|ClitPiercing/i.test(asset?.Name || "");
-  }
 
   function readAllowedTypedProperties(asset) {
     const values = [];
@@ -1734,8 +1334,6 @@ ${recentSemantic}`;
     const dynamic = dynamicNames.find(n => n === valueName || String(n).toLowerCase() === valueLower);
     if (dynamic) return dynamic;
 
-    // 旧中文映射表保留作 fallback
-    if (STYLE_NAME_CN[valueName]) return STYLE_NAME_CN[valueName];
     return null;
   }
 
@@ -1748,8 +1346,6 @@ ${recentSemantic}`;
 
   function normalizeDirectPropertyValue(valueName, valueMap) {
     if (valueMap && Object.prototype.hasOwnProperty.call(valueMap, valueName)) return valueMap[valueName];
-    if (/^(true|on|open|yes|1|开|开启|打开)$/i.test(valueName)) return true;
-    if (/^(false|off|close|closed|no|0|关|关闭)$/i.test(valueName)) return false;
     const num = Number(valueName);
     if (!Number.isNaN(num) && String(valueName).trim() !== "") return num;
     return valueName;
@@ -1778,16 +1374,11 @@ ${recentSemantic}`;
       return { ok: true, msg: `已设置 ${item.Asset.Description} ${dynamicPropertyKey}=${item.Property[dynamicPropertyKey]}` };
     }
 
-    if (archetype === "vibrating" || isVibratorAsset(item.Asset)) {
+    if (archetype === "vibrating") {
       // 振动器：propName 应该是 "强度" 或 "震动" 或 "模式"
-      const idx = VIB_INTENSITY_CN[valueName];
-      if (idx === undefined) {
-        // 尝试直接按选项名匹配
-        const opt = VIBRATOR_OPTIONS.find(o => o.name.toLowerCase() === valueName.toLowerCase());
-        if (!opt) return { ok: false, msg: `未知振动档位: ${valueName}` };
-        return applyVibratorOption(char, item, opt);
-      }
-      return applyVibratorOption(char, item, VIBRATOR_OPTIONS[idx]);
+      const opt = VIBRATOR_OPTIONS.find(o => o.name.toLowerCase() === valueName.toLowerCase());
+      if (!opt) return { ok: false, msg: `未知振动档位: ${valueName}` };
+      return applyVibratorOption(char, item, opt);
     }
 
     if (archetype === "typed") {
@@ -2184,29 +1775,21 @@ ${recentSemantic}`;
       return false;
     }
 
-    // 把 BC 内部动作消息转成可读文字（含目标角色名）
+    // Activity/Emote 转可读文字
     let readableContent = content;
     if (data.Type === "Activity" || data.Type === "Emote") {
-      // 从 Dictionary 提取目标角色名
       let targetName = "";
-      if (data.Dictionary?.length) {
-        const targetChar = data.Dictionary.find(d => d.Tag === "TargetCharacter" || d.Tag === "DestinationCharacter");
-        if (targetChar?.Text) targetName = targetChar.Text;
-      }
-      // ChatOther-ItemNose-Pet → "摸了摸XX的鼻子"（含目标）
-      // ChatSelf-ItemMouth-MoanGag → "被口塞住发出呻吟"
+      const tc = data.Dictionary?.find(d => d.Tag === "TargetCharacter" || d.Tag === "DestinationCharacter");
+      if (tc?.Text) targetName = tc.Text;
+      const partMap = {Mouth:"嘴",Nose:"鼻子",Ears:"耳朵",Feet:"脚",Legs:"腿",Arms:"手臂",Hands:"手",Neck:"脖子",Torso:"身体",Breasts:"胸",Nipples:"乳头",Clit:"明蒂",Vulva:"下体",Penis:"阴茎",Butt:"屁股"};
+      const actionMap = {Pet:"摸了摸",Spank:"拍了拍",Slap:"打了一下",Tickle:"挠了挠",Rub:"揉了揉",Kiss:"亲了亲",Lick:"舔了舔",Bite:"咬了一口",Suck:"吸了吸",Pinch:"捏了捏",Grab:"抓住",MoanGag:"被口塞住呻吟",Orgasm:"高潮了"};
       readableContent = content
-        .replace(/^Chat(?:Other|Self)-Item([A-Za-z]+)-([A-Za-z]+)$/, (_, part, action) => {
-          const partMap = { Mouth:"嘴", Nose:"鼻子", Ears:"耳朵", Feet:"脚", Legs:"腿", Arms:"手臂", Hands:"手", Neck:"脖子", Torso:"身体", Breasts:"胸", Nipples:"乳头", Clit:"明蒂", Vulva:"下体", Penis:"阴茎", Butt:"屁股" };
-          const actionMap = { Pet:"摸了摸", Spank:"拍了拍", Slap:"打了一下", Tickle:"挠了挠", Rub:"揉了揉", Kiss:"亲了亲", Lick:"舔了舔", Bite:"咬了一口", Suck:"吸了吸", Pinch:"捏了捏", Grab:"抓住", SlapAss:"拍了屁股", MoanGag:"被口塞住呻吟", MoanGagGiggle:"被口塞住偷笑", Orgasm:"高潮了" };
-          const p = partMap[part] || part;
-          const a = actionMap[action] || action;
-          return targetName ? `${a}${targetName}的${p}` : `${a}${p}`;
+        .replace(/^Chat(?:Other|Self)-Item([A-Za-z]+)-([A-Za-z]+)$/, (_, p, a) => {
+          const action = actionMap[a] || a, part = partMap[p] || p;
+          return targetName ? `${action}${targetName}的${part}` : `${action}${part}`;
         })
         .replace(/^Orgasm(\d+)?$/, (_, n) => n ? `高潮了(${n})` : "高潮了")
-        .replace(/^OrgasmFailSurrender(\d+)?$/, () => "高潮失败了")
-        .replace(/^ChatSelf-/, "自己")
-        .replace(/^ChatOther-/, "对别人");
+        .replace(/^OrgasmFailSurrender(\d+)?$/, () => "高潮失败了");
     }
 
     const key = senderNum + ":" + content + ":" + data.Type;
@@ -2225,13 +1808,6 @@ ${recentSemantic}`;
     // 判断是否为垃圾消息
     const noise = isNoise(data.Type, content, senderName);
 
-    // roomlog（保留完整记录，标记 noise）
-    try {
-      let log = JSON.parse(localStorage.getItem("misaka_roomlog") || "[]");
-      log.push({ name: senderName, memberNum: senderNum, content: readableContent.slice(0, 200), type: data.Type, time: now, noise });
-      if (log.length > 500) log = log.slice(-500);
-      localStorage.setItem("misaka_roomlog", JSON.stringify(log));
-    } catch(e) {}
 
     // 垃圾消息：不进上下文、不推动 messageCount
     if (noise) return;
@@ -2243,43 +1819,21 @@ ${recentSemantic}`;
     state.messageCount++;
     try { localStorage.setItem("misaka_msg_count", String(state.messageCount)); } catch(e) {}
     
-    // 触发 context compaction（不阻塞回复）
-    if (state.messageCount % CONFIG.compactionInterval === 0 && !state.compactionPending) {
-      maybeCompactContext().catch(e => console.warn("[MisakaChat] compaction error:", e.message));
-    }
+
     // 触发长期记忆提炼
     if (state.messageCount % CONFIG.memoryRefineInterval === 0) {
       maybeRefineMemory().catch(e => console.warn("[MisakaChat] refine error:", e.message));
     }
 
-    // 欢迎开关检测（不占用回复名额，不需要 trigger）
-    const greetLower = readableContent.toLowerCase();
-    const greetOff = /(?:停止|关闭|不要|别|取消|关掉).{0,4}(自动)?欢迎|欢迎.{0,2}(关闭|停止|不要)|stop.*greet/i.test(greetLower);
-    const greetOn = /(?:开启|打开|恢复|继续|开始).{0,4}(自动)?欢迎|欢迎.{0,2}(开启|打开|开始)|start.*greet/i.test(greetLower);
-    if (greetOff && state.greetEnabled) {
-      state.greetEnabled = false;
-      try { localStorage.setItem("misaka_greet_enabled", "false"); } catch(e) {}
-      try {
-        setTimeout(() => {
-          if (typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom") {
-            ElementValue("InputChat", "好，不自动欢迎了~");
-            ChatRoomSendChat();
-          }
-        }, 1000);
-      } catch(e) {}
+    // 欢迎开关检测
+    if (/(?:停止|关闭|不要|取消|关掉).{0,4}欢迎|stop.*greet/i.test(readableContent) && state.greetEnabled) {
+      state.greetEnabled = false; localStorage.setItem("misaka_greet_enabled", "false");
+      setTimeout(() => { ElementValue("InputChat", "好，不自动欢迎了~"); ChatRoomSendChat(); }, 1000);
       return;
     }
-    if (greetOn && !state.greetEnabled) {
-      state.greetEnabled = true;
-      try { localStorage.setItem("misaka_greet_enabled", "true"); } catch(e) {}
-      try {
-        setTimeout(() => {
-          if (typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom") {
-            ElementValue("InputChat", "好，自动欢迎已开启~");
-            ChatRoomSendChat();
-          }
-        }, 1000);
-      } catch(e) {}
+    if (/(?:开启|打开|恢复|开始).{0,4}欢迎|start.*greet/i.test(readableContent) && !state.greetEnabled) {
+      state.greetEnabled = true; localStorage.setItem("misaka_greet_enabled", "true");
+      setTimeout(() => { ElementValue("InputChat", "好，自动欢迎已开启~"); ChatRoomSendChat(); }, 1000);
       return;
     }
 
@@ -2310,36 +1864,9 @@ ${recentSemantic}`;
   }
 
   // === BCE 查询（仅在被明确要求查档时触发） ===
-  function normalizeLookupText(value) {
-    return String(value || "").toLowerCase().replace(/[\s#＃,，、:：;；.!！?？「」【】（）()_\-]+/g, "");
-  }
 
-  function lookupAliases(value) {
-    const raw = String(value || "").trim();
-    const n = normalizeLookupText(raw);
-    const aliases = new Set([raw.toLowerCase(), n]);
-    const add = (...items) => items.forEach(item => { aliases.add(String(item||"").toLowerCase()); aliases.add(normalizeLookupText(item)); });
-    if (n === "伊水") add("yishui","Eshway","182401");
-    return [...aliases].filter(Boolean);
-  }
 
-  function scoreLookupCandidate(query, candidate) {
-    const q = String(query||"").toLowerCase().trim();
-    const qn = normalizeLookupText(q);
-    const c = String(candidate||"").toLowerCase().trim();
-    const cn = normalizeLookupText(c);
-    if (!q||!qn||!c||!cn) return 0;
-    if (c === q) return 900;
-    if (cn === qn) return 850;
-    if (c.startsWith(q)) return 700;
-    if (cn.startsWith(qn)) return 650;
-    if (qn.length >= 4 && (c.includes(q) || cn.includes(qn))) return 100;
-    return 0;
-  }
 
-  function bestLookupScore(query, candidate) {
-    return Math.max(...lookupAliases(query).map(a => scoreLookupCandidate(a, candidate)));
-  }
 
   async function queryProfile(nameOrId) {
     return new Promise((resolve) => {
@@ -2348,22 +1875,18 @@ ${recentSemantic}`;
         const db = e.target.result;
         if (!db.objectStoreNames.contains("profiles")) { resolve(null); return; }
         const tx = db.transaction("profiles","readonly");
-        const store = tx.objectStore("profiles");
-        const allReq = store.getAll();
+        const allReq = tx.objectStore("profiles").getAll();
         allReq.onsuccess = () => {
           const data = allReq.result || [];
-          const query = nameOrId.toLowerCase().trim();
+          const q = String(nameOrId||"").toLowerCase().trim();
           const matches = data.filter(d => {
             const mn = d.memberNumber ? d.memberNumber.toString() : "";
-            return bestLookupScore(query, d.name) > 0 || bestLookupScore(query, d.lastNick) > 0 || bestLookupScore(query, mn) > 0;
+            return (d.name && d.name.toLowerCase().includes(q)) ||
+                   (d.lastNick && d.lastNick.toLowerCase().includes(q)) ||
+                   mn === q;
           });
           if (matches.length === 0) { resolve(null); return; }
-          const score = (d) => {
-            const mn = d.memberNumber ? d.memberNumber.toString() : "";
-            if (lookupAliases(query).includes(normalizeLookupText(mn))) return 1000;
-            return Math.max(bestLookupScore(query,d.name), bestLookupScore(query,d.lastNick), bestLookupScore(query,mn));
-          };
-          matches.sort((a,b) => (score(b)-score(a)) || ((b.seen||0)-(a.seen||0)));
+          matches.sort((a,b) => ((b.seen||0)-(a.seen||0)));
           resolve(matches.slice(0,3).map(d => {
             const info = { name: d.name, lastNick: d.lastNick||"", memberNumber: d.memberNumber, seen: d.seen ? new Date(d.seen).toLocaleString("zh-CN") : "未知" };
             if (d.characterBundle) {
@@ -2396,12 +1919,9 @@ ${recentSemantic}`;
     if (!/(查询|查一下|查查|档案|資料|资料|上次.*在线|上次.*下线|上次.*发言|上次.*出现|profiles?)/i.test(text)) return null;
 
     const patterns = [
-      /(?:查询|查一下|查查|查)\s*[「「【]?(.+?)[」」】]?\s*(?:的)?(?:档案|資料|资料|信息|上次|在线|下线)?.*$/i,
-      /[「「【]?(.+?)[」」】]?\s*(?:的)?(?:档案|資料|资料|信息)(?:是什么|是什麼|呢|吗|嗎)?\s*$/i,
-      /(?:介绍一下|介绍|说说|讲讲)\s*[「「【]?(.+?)[」」】]?\s*$/i,
-      /[「「【]?(.+?)[」」】]?\s*(?:的)?(?:主人|owner|恋人|戀人|lover)(?:是谁|是誰|是|呢|吗|嗎)?\s*$/i,
-      /(?:认识|認識|知道|记得|記得)\s*[「「【]?(.+?)[」」】]?\s*(?:吗|嗎|么|嘛)?\s*$/i,
-      /[「「【]?(.+?)[」」】]?\s*(?:是誰|是谁|是哪位)\s*$/i,
+      /(?:查询|查一下|查查|查)\s*[「「【]?(.+?)[」」】]?.*$/i,
+      /[「「【]?(.+?)[」」】]?\s*(?:的)?(?:档案|資料|资料|信息|主人|恋人).*$/i,
+      /(?:介绍|说说|认识|知道|记得)\s*[「「【]?(.+?)[」」】]?.*$/i,
     ];
     for (const p of patterns) {
       const m = text.match(p);
@@ -2439,7 +1959,6 @@ function sanitizeReply(reply) {
     cleaned = lines.join('\n');
 
     const result = cleaned.slice(0, 120);
-    console.log("[MisakaChat] cleanReply result:", result);
     return result;
   }
 
@@ -2461,44 +1980,36 @@ function sanitizeReply(reply) {
       // 构建系统 prompt（含精简房间名单）
       const systemPrompt = getSystemPrompt();
 
-      let reply = "";
-      const colorPreferenceQuery = isColorPreferenceQuery(content);
-      if (colorPreferenceQuery) {
-        const color = findExplicitColorPreference(senderNum, senderName);
-        reply = color ? `${color}吧，我记得你明确说过。` : "我没记过，别让我猜。";
-      } else {
-        const fullPrompt = systemPrompt + preferenceMemoryGuard(content);
-        reply = await callLLM(fullPrompt, contextMessages);
-        if (reply) {
-          const firstPass = parseActionCommands(reply);
-          const memCommands = firstPass.commands.filter(c => c.type === "memsearch");
-          const bceCommands = firstPass.commands.filter(c => c.type === "bcequery");
-          if (memCommands.length > 0 || bceCommands.length > 0) {
-            let extraContext = "";
-            if (memCommands.length > 0) {
-              extraContext += await buildMemorySearchContext(memCommands);
-            }
-            if (bceCommands.length > 0) {
-              for (const cmd of bceCommands) {
-                const results = await queryProfile(cmd.target);
-                if (results) {
-                  extraContext += "\n\n【BCE档案查询结果：" + cmd.target + "】\n";
-                  extraContext += results.map(r => {
-                    let line = `${r.lastNick || r.name} (#${r.memberNumber}) - 档案查看: ${r.seen}`;
-                    if (r.owner && r.owner !== "无") line += ` | 主人: ${r.owner}`;
-                    if (r.lovers && r.lovers !== "无") line += ` | 恋人: ${r.lovers}`;
-                    if (r.itemCount !== undefined) line += ` | ${r.itemCount}件束缚, ${r.lockCount}把锁`;
-                    if (r.description) line += `\n描述: ${r.description}`;
-                    return line;
-                  }).join("\n");
-                  extraContext += "\n（档案时间是查看时间不是在线时间。直接用这些信息回答，不要说查不到。）";
-                } else {
-                  extraContext += `\n\n【BCE档案查询结果：${cmd.target}】\n没有找到这个人的档案。\n`;
-                }
+      let reply = await callLLM(systemPrompt, contextMessages);
+      if (reply) {
+        const firstPass = parseActionCommands(reply);
+        const memCommands = firstPass.commands.filter(c => c.type === "memsearch");
+        const bceCommands = firstPass.commands.filter(c => c.type === "bcequery");
+        if (memCommands.length > 0 || bceCommands.length > 0) {
+          let extraContext = "";
+          if (memCommands.length > 0) {
+            extraContext += await buildMemorySearchContext(memCommands);
+          }
+          if (bceCommands.length > 0) {
+            for (const cmd of bceCommands) {
+              const results = await queryProfile(cmd.target);
+              if (results) {
+                extraContext += "\n\n【BCE档案查询结果：" + cmd.target + "】\n";
+                extraContext += results.map(r => {
+                  let line = `${r.lastNick || r.name} (#${r.memberNumber}) - 档案查看: ${r.seen}`;
+                  if (r.owner && r.owner !== "无") line += ` | 主人: ${r.owner}`;
+                  if (r.lovers && r.lovers !== "无") line += ` | 恋人: ${r.lovers}`;
+                  if (r.itemCount !== undefined) line += ` | ${r.itemCount}件束缚, ${r.lockCount}把锁`;
+                  if (r.description) line += `\n描述: ${r.description}`;
+                  return line;
+                }).join("\n");
+                extraContext += "\n（档案时间是查看时间不是在线时间。直接用这些信息回答，不要说查不到。）";
+              } else {
+                extraContext += `\n\n【BCE档案查询结果：${cmd.target}】\n没有找到这个人的档案。\n`;
               }
             }
-            reply = await callLLM(fullPrompt + extraContext, contextMessages);
           }
+          reply = await callLLM(systemPrompt + extraContext, contextMessages);
         }
       }
       if (!reply) { console.warn("[MisakaChat] LLM 返回空，未回复"); return; }
@@ -2530,7 +2041,7 @@ function sanitizeReply(reply) {
       if (!finalReply) return;
 
       // 存语义记忆（有意义的对话才存）
-      if (finalReply.length > 3 && !colorPreferenceQuery) {
+      if (finalReply.length > 3) {
         const memText = `${senderName}: ${content} → 御坂: ${finalReply}`;
         storeSemanticMemory(memText, { sender: senderName, memberNum: senderNum }).catch(() => {});
       }
@@ -2598,10 +2109,6 @@ function sanitizeReply(reply) {
       state.refinedMemories = [];
       IDB.clearAll();
       sendLocal("🧹 记忆已清空（含 IndexedDB 语义记忆）");
-    }
-    else if (sub === "rembed") {
-      sendLocal("🔄 开始重新 embedding...");
-      rembedMemories().then(() => sendLocal("✅ Re-embedding 完成")).catch(e => sendLocal("❌ Re-embedding 失败: " + e.message));
     }
     else if (sub === "export") {
       IDB.exportAll().then(data => {
@@ -2690,35 +2197,6 @@ function sanitizeReply(reply) {
     startIdleTimer();
   }
 
-  // === Debug 接口 ===
-  window.__misakaGetState = function() {
-    return {
-      enabled: CONFIG.enabled, busy: state.busy, lastReplyTime: state.lastReplyTime,
-      greetEnabled: state.greetEnabled,
-      messageCount: state.messageCount, recentMsgs: state.recentMessages.slice(-5),
-      model: CONFIG.model, hasApiKey: !!(localStorage.getItem(storageKey("apikey"))||""),
-      hasPersona: typeof MisakaPersona !== "undefined"
-    };
-  };
-
-  window.__misakaDebugQuery = async function(target) {
-    return await queryProfile(target);
-  };
-
-  window.__misakaDebugRoster = function() {
-    if (typeof MisakaPersona === "undefined" || typeof ChatRoomCharacter === "undefined" || typeof Player === "undefined") return null;
-    return MisakaPersona.buildCompactRoster(ChatRoomCharacter, Player.MemberNumber);
-  };
-
-  window.__misakaDebugParseBCE = function(content) {
-    return parseBCEQueryRequest(content);
-  };
-
-  window.__misakaExport = async function() {
-    const data = await IDB.exportAll();
-    console.log(JSON.stringify(data));
-    return data;
-  };
 
   if (document.readyState === "complete" || document.readyState === "interactive") setTimeout(init, 2000);
   else window.addEventListener("load", () => setTimeout(init, 2000));
