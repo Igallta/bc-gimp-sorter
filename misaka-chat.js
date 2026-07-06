@@ -1565,7 +1565,7 @@ ${recentSemantic}`;
                 info.nickname = b.Nickname || "";
                 info.owner = b.Ownership?.Name ? `${b.Ownership.Name} (#${b.Ownership.MemberNumber})` : "无";
                 info.lovers = Array.isArray(b.Lovership) ? b.Lovership.map(l => `${l.Name}${l.Stage===2?"(正式)":""}`).join(", ") : "无";
-                info.description = (b.Description||"").slice(0,200);
+                info.description = (b.Description||"").slice(0,200); info.descNote = /[^\u0020-\u007e\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/.test(info.description) ? "（含特殊装饰符号，非乱码）" : "";
                 if (Array.isArray(b.Appearance)) {
                   let lc=0, ic=0;
                   for (const a of b.Appearance) { if (a.Asset?.Group?.Name?.startsWith("Item")) ic++; if (a.Property?.LockedBy) lc++; }
@@ -1603,7 +1603,7 @@ function sanitizeReply(reply) {
     }).filter(Boolean);
     cleaned = lines.join('\n');
 
-    const result = cleaned.slice(0, 120);
+    const result = unescapeHTML(cleaned.slice(0, 120));
     return result;
   }
 
@@ -1645,7 +1645,7 @@ function sanitizeReply(reply) {
                   if (r.owner && r.owner !== "无") line += ` | 主人: ${r.owner}`;
                   if (r.lovers && r.lovers !== "无") line += ` | 恋人: ${r.lovers}`;
                   if (r.itemCount !== undefined) line += ` | ${r.itemCount}件束缚, ${r.lockCount}把锁`;
-                  if (r.description) line += `\n描述: ${r.description}`;
+                  if (r.description) line += `\n描述: ${r.description}${r.descNote||""}`;
                   return line;
                 }).join("\n");
                 extraContext += "\n（档案时间是查看时间不是在线时间。直接用这些信息回答，不要说查不到。）";
