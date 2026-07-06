@@ -427,7 +427,6 @@ ${recentSemantic}`;
       const refined = await callLLM("你是记忆提炼助手。只提炼有明确证据的长期信息，禁止把操作请求推断成偏好。", [{role:"user", content: prompt}], {
         model: CONFIG.fallbackModel,
         fallbackModel: CONFIG.fallbackModel,
-        thinking: false,
       });
       if (refined) {
         const ts = Date.now();
@@ -470,7 +469,6 @@ ${recentSemantic}`;
         model: CONFIG.fallbackModel,
         fallbackModel: CONFIG.fallbackModel,
         maxTokens: 80,
-        thinking: false,
       });
       const cleaned = sanitizeReply(reply || "");
       if (!cleaned || cleaned.length < 2) return "";
