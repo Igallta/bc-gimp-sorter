@@ -1500,7 +1500,18 @@ ${recentSemantic}`;
     const idx = char.Appearance.findIndex(a => a.Asset?.Group?.Name === groupName);
     if (idx < 0) return false;
     const item = char.Appearance[idx];
-    const expectedLen = item.Color?.length || item.Asset?.ColorableLayerCount || 1;
+    const assetLayerCount = item.Asset?.ColorableLayerCount || item.Asset?.DefaultColor?.length || 1;
+    // BC 服务器可能只存储被修改过的 color slot，导致 Color 数组比实际 layer 数短
+    // 用 ColorableLayerCount 作为真正的长度，不足时用 DefaultColor 补齐
+    if (!Array.isArray(item.Color) || item.Color.length < assetLayerCount) {
+      const defaults = item.Asset?.DefaultColor || [];
+      const newColor = [];
+      for (let i = 0; i < assetLayerCount; i++) {
+        newColor[i] = (item.Color && item.Color[i] !== undefined) ? item.Color[i] : (defaults[i] || "Default");
+      }
+      item.Color = newColor;
+    }
+    const expectedLen = item.Color.length;
     const hex = Array.isArray(colorOverride) ? colorOverride[0] : colorOverride;
     const useDefault = (hex === "Default");
     const fillValue = useDefault ? "Default" : hex;
