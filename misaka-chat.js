@@ -591,14 +591,8 @@ ${recentSemantic}`;
       if (typeof CurrentScreen === "undefined" || CurrentScreen !== "ChatRoom") return;
       // 100% 打招呼
       // if (Math.random() > 0.85) return;
-      // GIMP 娃娃用专用池
       const isGimp = name.startsWith("GIMP ");
-      const profiles = JSON.parse(localStorage.getItem('misaka_memory') || '{}');
-      const isRegular = !isGimp && (profiles[name] || Object.values(profiles).some(p => p.name === name));
-      const pool = isGimp ? GREET_GIMP : (isRegular ? GREET_REGULAR : GREET_STRANGER);
-      let line = pool[Math.floor(Math.random() * pool.length)];
-      // 常客池带名字替换
-      if (isRegular) line = line.replace(/\{name\}/g, name);
+      let line = isGimp ? "又多了个娃娃~" : `${name}，来了呀~`;
       try {
         ElementValue("InputChat", line);
         ChatRoomSendChat();
