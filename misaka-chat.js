@@ -1389,28 +1389,18 @@ ${recentSemantic}`;
     }
   }
 
-  // Tool Policy: 检查指令是否安全执行
-  function isGimpDoll(memberNumber) {
-    const c = ChatRoomCharacter.find(ch => ch.MemberNumber === memberNumber);
-    return !!(c && (c.Nickname || c.Name || "").startsWith("GIMP "));
-  }
-
+  // Tool Policy: 检测危险操作，通知玩家但不拦截
   function checkToolPolicy(cmd) {
-    // MOVE 只对 GIMP 娃娃执行，不对真人
-    if (cmd.type === "move" || cmd.type === "moveTo" || cmd.type === "moveEdge") {
-      if (!isGimpDoll(cmd.memberNumber)) {
-        return { ok: false, reason: "move-target-not-gimp" };
-      }
+    // 对真人的道具操作和移动视为危险操作
+    const selfMn = Player?.MemberNumber;
+    if (cmd.memberNumber === selfMn) return { ok: true, dangerous: false };
+    // 检查目标是否为真人（不是 GIMP 娃娃）
+    const c = ChatRoomCharacter.find(ch => ch.MemberNumber === cmd.memberNumber);
+    const isGimp = !!(c && (c.Nickname || c.Name || "").startsWith("GIMP "));
+    if (!isGimp) {
+      return { ok: true, dangerous: true, target: c?.Nickname || c?.Name || ("#" + cmd.memberNumber) };
     }
-    // ITEMADD/ITEMDEL/ITEMDELALL/ITEMCOLOR/ITEMSET 对自己（御坂）允许
-    if (cmd.memberNumber === Player?.MemberNumber) return { ok: true };
-    // 对 GIMP 娃娃允许
-    if (isGimpDoll(cmd.memberNumber)) return { ok: true };
-    // 对真人不允许道具操作（除非是御坂自己）
-    if (["itemadd", "itemdel", "itemdelall", "itemcolor", "itemset"].includes(cmd.type)) {
-      return { ok: false, reason: "item-target-not-gimp" };
-    }
-    return { ok: true };
+    return { ok: true, dangerous: false };
   }
 
   async function executeCommands(commands) {
@@ -1444,11 +1434,11 @@ ${recentSemantic}`;
     for (const cmd of filtered) {
       if (cmd.type === "memsearch" || cmd.type === "bcequery") continue;
       const policy = checkToolPolicy(cmd);
-      if (!policy.ok) {
-        failures.push({ cmd, reason: policy.reason });
-        const who = displayNameByMemberNumber(cmd.memberNumber);
-        console.warn(`[MisakaChat] ToolPolicy 拦截: ${cmd.type} -> ${who} (${policy.reason})`);
-        continue;
+      if (policy.dangerous) {
+        const who = policy.target;
+        const actionDesc = { move:"移动", moveTo:"移动", moveEdge:"移动", itemadd:"添加道具", itemdel:"移除道具", itemdelall:"解除全部", itemcolor:"改色", itemset:"设置属性" }[cmd.type] || cmd.type;
+        sendLocal(`⚠️ 御坂即将对真人 ${who} 执行 ${actionDesc} 操作`);
+        console.warn(`[MisakaChat] 危险操作通知: ${cmd.type} -> ${who}`);
       }
       if (cmd.type === "move") {
         moveOk = record(cmd, executeMove(cmd.memberNumber, cmd.direction)) && moveOk;
@@ -1510,30 +1500,6 @@ ${recentSemantic}`;
       /^Orgasm\d*$/i,
       /^ActionActivateSafewordRelease$/i,
       /^ChatSelf-ItemMouth-MoanGag(Giggle)?$/i,
-      // BC 自动 Action 类噪音
-      /^ActionMasturbate/i,
-      /^ActionEdging/i,
-      /^ActionKneel/i,
-      /^ActionStand/i,
-      /^ActionSleep/i,
-      /^ActionStruggle/i,
-      /^ActionDance/i,
-      /^ActionBlink/i,
-      /^ActionBlush/i,
-      /^ActionShiver/i,
-      /^ActionTremble/i,
-      /^ActionPant/i,
-      /^ActionMoan/i,
-      /^ActionGasp/i,
-      /^ActionWhimper/i,
-      /^ActionSquirm/i,
-      /^ActionWrithe/i,
-      /^ActionShake/i,
-      /^ActionStruggleAg/i,
-      // 高潮相关
-      /^OrgasmEdge/i,
-      /^OrgasmStart/i,
-      /^OrgasmFail/i,
     ];
     function isNoise(type, rawContent, senderName) {
       // GIMP 娃娃只过滤自动消息类型（Activity/Emote/Action），保留 Chat/Talk/Whisper（可能是真人）
@@ -1541,8 +1507,6 @@ ${recentSemantic}`;
         return type === "Activity" || type === "Emote" || type === "Action" ||
                NOISE_PATTERNS.some(pat => pat.test(rawContent));
       }
-      // BC 系统 Action 消息全部过滤（高潮/触发词/自动状态等），只保留有意义的 Activity
-      if (type === "Action") return true;
       for (const pat of NOISE_PATTERNS) {
         if (pat.test(rawContent)) return true;
       }
