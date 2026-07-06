@@ -61,9 +61,9 @@
 
   try {
     const savedCompaction = JSON.parse(localStorage.getItem("misaka_compaction") || "[]");
-    if (Array.isArray(savedCompaction)) state.compactionSummaries = savedCompaction;
-    else state.compactionSummaries = [];
-  } catch(e) { state.compactionSummaries = []; }
+    if (Array.isArray(savedCompaction)) [] = savedCompaction;
+    else [] = [];
+  } catch(e) { [] = []; }
 
   // === IndexedDB 封装（embedding 数据量大，localStorage 存不下） ===
   const IDB = (() => {
@@ -452,7 +452,7 @@
       const mem = loadMemory();
       const profiles = Object.entries(mem.profiles || {}).map(([mn, info]) =>
         `#${mn} ${info.name}: ${info.notes || ""} (${info.chatCount || 0}次互动)`).join("\n");
-      const compactions = (state.compactionSummaries || []).join("\n");
+      const compactions = ([] || []).join("\n");
       const recentSemantic = (state.semanticMemories || []).slice(-20).map(m => m.text).join("\n");
       
       const prompt = `根据以下 BC 聊天记录片段，提炼出御坂应该长期记住的重要信息（人际关系、明确偏好、重要事件、约束关系），不超过100字，用中文。
@@ -573,34 +573,6 @@ ${recentSemantic}`;
   }
 
   // 有人进入时打招呼（延迟 2-5 秒，不抢话）
-  function maybeGreetNewcomer(name) {
-    if (!isCurrent() || !CONFIG.enabled || state.busy) return;
-    if (!state.greetEnabled) return;  // 自动欢迎已关闭
-    if (!name) return;
-    // 不跟自己打招呼
-    if (typeof Player !== "undefined" && name === (Player.Nickname || Player.Name)) return;
-    const now = Date.now();
-    // 30 秒内不给同一个人重复打招呼
-    if (now - (state._lastGreetTime || 0) < 30000) return;
-    state._lastGreetTime = now;
-    
-    const delay = 2000 + Math.random() * 3000;
-    setTimeout(() => {
-      if (!isCurrent() || !CONFIG.enabled || state.busy) return;
-      if (!state.greetEnabled) return;
-      if (typeof CurrentScreen === "undefined" || CurrentScreen !== "ChatRoom") return;
-      // 100% 打招呼
-      // if (Math.random() > 0.85) return;
-      const isGimp = name.startsWith("GIMP ");
-      let line = isGimp ? "又多了个娃娃~" : `${name}，来了呀~`;
-      try {
-        ElementValue("InputChat", line);
-        ChatRoomSendChat();
-        state.recentMessages.push({ senderName: "御搬", content: line, isSelf: true, time: Date.now() });
-        if (state.recentMessages.length > 50) state.recentMessages.shift();
-      } catch(e) { console.warn("[MisakaChat] greeting 发送失败:", e.message); }
-    }, delay);
-  }
 
 // 从 DeepSeek 响应提取回复（处理 thinking 模式 content 为空）
   function extractReply(msg) {
@@ -710,23 +682,7 @@ ${recentSemantic}`;
     }
     mem.roster = roster;
 
-    // 进出记录
-    let joinInfo = "";
-    if (state.roomJoinLog.length > 0) {
-      const lastJoin = [...state.roomJoinLog].reverse().find(e => e.action === "join");
-      if (lastJoin) {
-        const _t = new Date(lastJoin.time).toLocaleString("zh-CN", {hour:"2-digit",minute:"2-digit"});
-        joinInfo = "最后进入: " + lastJoin.name + " (" + _t + ")";
-      }
-      const recent = state.roomJoinLog.slice(-5);
-      joinInfo += "\n最近: " + recent.map(e => `${e.name}${e.action === "join" ? "进入" : "离开"}`).join(" → ");
-    }
-    mem.joinInfo = joinInfo || "暂无记录";
 
-    // Context compaction 摘要
-    if (state.compactionSummaries && state.compactionSummaries.length > 0) {
-      mem.compaction = state.compactionSummaries.slice(-CONFIG.maxCompactionSummaries);
-    }
     // 长期提炼记忆
     if (state.refinedMemories && state.refinedMemories.length > 0) {
       mem.refined = state.refinedMemories.slice(-CONFIG.maxRefinedMemories);
@@ -750,18 +706,6 @@ ${recentSemantic}`;
       })
       .replace(/\[BCEQUERY:([^\]]+)\]/gi, (m, target) => {
         commands.push({ type: "bcequery", target: target.trim() });
-        return "";
-      })
-      .replace(/\[SNAPSHOT:save:(\d+)\]/gi, (m, mn) => {
-        commands.push({ type: "snapshotSave", memberNumber: parseInt(mn) });
-        return "";
-      })
-      .replace(/\[SNAPSHOT:restore:(\d+)\]/gi, (m, mn) => {
-        commands.push({ type: "snapshotRestore", memberNumber: parseInt(mn) });
-        return "";
-      })
-      .replace(/\[COPY:(\d+):to:(\d+)\]/gi, (m, src, dst) => {
-        commands.push({ type: "copyBonds", srcNumber: parseInt(src), dstNumber: parseInt(dst) });
         return "";
       })
       .replace(/\[MOVE:(\d+):to:(\d+):(left|right)\]/gi, (m, mn, target, side) => {
@@ -916,24 +860,6 @@ ${recentSemantic}`;
 
   // 部位名 → BC Item group 列表（按优先级）
   const BODY_PART_GROUPS = {
-    "手臂": ["ItemArms"],
-    "手": ["ItemHands"],
-    "腿": ["ItemLegs"],
-    "脚": ["ItemFeet"],
-    "嘴": ["ItemMouth", "ItemMouth2", "ItemMouth3"],
-    "口": ["ItemMouth", "ItemMouth2", "ItemMouth3"],
-    "头": ["ItemHead", "ItemHood"],
-    "脖子": ["ItemNeck", "ItemNeckRestraints"],
-    "颈": ["ItemNeck", "ItemNeckRestraints"],
-    "身体": ["ItemTorso", "ItemTorso2"],
-    "躯": ["ItemTorso", "ItemTorso2"],
-    "腰": ["ItemPelvis"],
-    "胸": ["ItemBreast", "ItemNipples", "ItemNipplesPiercings"],
-    "眼": ["ItemHead"],
-    "耳": ["ItemEars"],
-    "下体": ["ItemVulva", "ItemVulvaPiercings", "ItemButt", "ItemClit"],
-    "道具": ["ItemDevices"],
-    // 英文别名
     "Arms": ["ItemArms"],
     "Hands": ["ItemHands"],
     "Legs": ["ItemLegs"],
@@ -1052,102 +978,11 @@ ${recentSemantic}`;
   }
 
   // 拘束快照系统 — 存储玩家当前道具状态，用于"绑回去"
-  function saveSnapshot(memberNumber) {
-    const char = ChatRoomCharacter.find(c => c.MemberNumber === memberNumber);
-    if (!char) return null;
-    const items = (char.Appearance || [])
-      .filter(a => a?.Asset?.Group?.Name?.startsWith("Item"))
-      .map(a => {
-        const prop = a.Property ? JSON.parse(JSON.stringify(a.Property)) : {};
-        return {
-          group: a.Asset.Group.Name,
-          asset: a.Asset.Name,
-          desc: a.Asset.Description || a.Asset.Name,
-          color: Array.isArray(a.Color) ? [...a.Color] : (a.Color || ["Default"]),
-          property: prop
-        };
-      });
-    const snapshot = { memberNumber, name: char.Nickname || char.Name, items, time: Date.now() };
-    try {
-      localStorage.setItem("misaka_snapshot_" + memberNumber, JSON.stringify(snapshot));
-    } catch(e) {}
-    return snapshot;
-  }
 
-  function loadSnapshot(memberNumber) {
-    try {
-      return JSON.parse(localStorage.getItem("misaka_snapshot_" + memberNumber) || "null");
-    } catch(e) { return null; }
-  }
 
   // 按 snapshot 恢复玩家道具
-  async function executeRestoreSnapshot(memberNumber) {
-    const snapshot = loadSnapshot(memberNumber);
-    if (!snapshot) return false;
-    const char = ChatRoomCharacter.find(c => c.MemberNumber === memberNumber);
-    if (!char) return false;
-    // 先清除当前所有未锁的 Item
-    for (const a of [...(char.Appearance || [])]) {
-      if (a?.Asset?.Group?.Name?.startsWith("Item") && !a.Property?.LockedBy) {
-        try {
-          directRemoveItem(char, a.Asset.Group.Name);
-        } catch(e) {}
-      }
-    }
-    // 逐个恢复，每件道具后都同步
-    let count = 0;
-    for (const item of snapshot.items) {
-      try {
-        const asset = AssetGet(char.AssetFamily, item.group, item.asset);
-        if (asset) {
-          directSetItem(char, item.group, asset, item.color, item.property);
-          count++;
-          await new Promise(r => setTimeout(r, 150));
-        }
-      } catch(e) { console.warn("[MisakaChat] 恢复道具失败:", item.desc, e.message); }
-    }
-    ChatRoomCharacterUpdate(char);
-    console.log(`[MisakaChat] 恢复快照 #${memberNumber}: ${count}/${snapshot.items.length} 件道具`);
-    return count > 0;
-  }
 
   // 复制 src 玩家的道具到 dst 玩家
-  async function executeCopyBonds(srcNumber, dstNumber) {
-    const srcChar = ChatRoomCharacter.find(c => c.MemberNumber === srcNumber);
-    const dstChar = ChatRoomCharacter.find(c => c.MemberNumber === dstNumber);
-    if (!srcChar || !dstChar) return false;
-    // 保存 src 的快照
-    const snapshot = saveSnapshot(srcNumber);
-    if (!snapshot) return false;
-    // 用快照恢复到 dst
-    // 先清除 dst 所有未锁的 Item
-    for (const a of [...(dstChar.Appearance || [])]) {
-      if (a?.Asset?.Group?.Name?.startsWith("Item") && !a.Property?.LockedBy) {
-        try { directRemoveItem(dstChar, a.Asset.Group.Name); } catch(e) {}
-      }
-    }
-    // 逐个添加 src 的道具到 dst，每件后同步
-    let count = 0;
-    let failed = [];
-    for (const item of snapshot.items) {
-      try {
-        const asset = AssetGet(dstChar.AssetFamily, item.group, item.asset);
-        if (asset) {
-          directSetItem(dstChar, item.group, asset, item.color, item.property);
-          count++;
-          await new Promise(r => setTimeout(r, 150));
-        } else {
-          failed.push(item.desc || item.asset);
-        }
-      } catch(e) { 
-        failed.push(item.desc || item.asset);
-        console.warn("[MisakaChat] 复制道具失败:", item.desc, e.message); 
-      }
-    }
-    ChatRoomCharacterUpdate(dstChar);
-    console.log(`[MisakaChat] 复制束缚 #${srcNumber} → #${dstNumber}: ${count}/${snapshot.items.length} 件, 失败: ${failed.join(",")}`);
-    return { ok: count > 0, count, total: snapshot.items.length, failed };
-  }
 
   // 直接修改 Appearance 数组（绕过 CharacterAppearanceSetItem 的权限检查）
   function directSetItem(char, groupName, asset, colorOverride, propertyOverride) {
@@ -1248,27 +1083,16 @@ ${recentSemantic}`;
   function colorNameToHex(name) {
     if (!name) return null;
     const n = name.trim();
-    const hexMatch = n.match(/#[0-9A-Fa-f]{6}/);
-    if (hexMatch) return hexMatch[0].toUpperCase();
-    // "默认"/"Default" → 返回特殊标记，由 directSetColor 处理
-    if (/默认|Default|原色|恢复默认|复原/.test(n)) return "Default";
-    return COLOR_NAME_TO_HEX[n] || null;
+    if (/^#[0-9A-Fa-f]{6}$/.test(n)) return n.toUpperCase();
+    if (/默认|Default|原色/.test(n)) return "Default";
+    return null;
   }
 
   const PROPERTY_MAP = {
-    "强度": { type: "vibrator" },
-    "震动": { type: "vibrator" },
-    "模式": { type: "vibrator" },
-    "开关": { type: "direct", key: "SetState", values: { "开": true, "关": false, "开启": true, "关闭": false } },
-    "绑法": { type: "typed" },
-    "类型": { type: "typed" },
-    "样式": { type: "typed" },
-    "透明度": { type: "direct", key: "Opacity", values: null },
-    // 英文别名
     "Intensity": { type: "vibrator" },
     "Vibration": { type: "vibrator" },
     "Mode": { type: "vibrator" },
-    "Switch": { type: "direct", key: "SetState", values: { "On": true, "Off": false, "开": true, "关": false, "开启": true, "关闭": false } },
+    "Switch": { type: "direct", key: "SetState", values: { "On": true, "Off": false } },
     "Type": { type: "typed" },
     "Style": { type: "typed" },
     "Opacity": { type: "direct", key: "Opacity", values: null },
@@ -1294,26 +1118,10 @@ ${recentSemantic}`;
 
 
 
-  function readAllowedTypedProperties(asset) {
-    const values = [];
-    const add = (entry) => {
-      if (!entry) return;
-      if (typeof entry === "string") values.push(entry);
-      else if (entry.Name) values.push(entry.Name);
-      else if (entry.Property) values.push(entry.Property);
-      else if (entry.Option) values.push(entry.Option);
-      else if (entry.Type) values.push(entry.Type);
-    };
-    if (Array.isArray(asset?.AllowTypedProperties)) {
-      for (const entry of asset.AllowTypedProperties) add(entry);
-    }
-    return [...new Set(values)].filter(Boolean);
-  }
 
   // 在 setExtendedItemProperty 的 typed 分支里用动态 BC 选项，中文表只作 fallback
   // 返回 BC 选项名（英文），而非索引
   function findTypedOptionName(item, valueName) {
-    // 先尝试直接作为英文选项名，运行时用 TypedItemDataLookup 验证
     try {
       const key = item.Asset.Group.Name + item.Asset.Name;
       const data = TypedItemDataLookup[key];
@@ -1322,28 +1130,13 @@ ${recentSemantic}`;
         if (opt) return opt.Name;
       }
     } catch(e) {}
-
-    const valueLower = String(valueName || "").toLowerCase();
-    const dynamicNames = readAllowedTypedProperties(item.Asset);
-    const dynamic = dynamicNames.find(n => n === valueName || String(n).toLowerCase() === valueLower);
-    if (dynamic) return dynamic;
-
     return null;
   }
 
   function findDynamicPropertyKey(asset, propName) {
-    const keys = readAllowedTypedProperties(asset);
-    const raw = String(propName || "");
-    const lower = raw.toLowerCase();
-    return keys.find(k => k === raw || String(k).toLowerCase() === lower) || null;
+    return null;
   }
 
-  function normalizeDirectPropertyValue(valueName, valueMap) {
-    if (valueMap && Object.prototype.hasOwnProperty.call(valueMap, valueName)) return valueMap[valueName];
-    const num = Number(valueName);
-    if (!Number.isNaN(num) && String(valueName).trim() !== "") return num;
-    return valueName;
-  }
 
   // 通用：设置 Extended 道具属性
   function setExtendedItemProperty(char, item, propName, valueName) {
@@ -1743,7 +1536,6 @@ ${recentSemantic}`;
       try { localStorage.setItem("misaka_joinlog", JSON.stringify(state.roomJoinLog)); } catch(e) {}
       // 有人进入时打招呼
       if (data.Content === "ServerEnter" && who) {
-        maybeGreetNewcomer(who);
       }
       return; // 进出消息处理完毕，不再进入后续的上下文/计数逻辑
     }
@@ -1907,31 +1699,6 @@ ${recentSemantic}`;
   }
 
   // 检测明确的档案查询请求（只在很明确的场景触发 BCE 查询）
-  function parseBCEQueryRequest(content) {
-    const text = String(content || "");
-    // 只在明确"查询""档案""上次在线""资料"等词出现时才查 BCE
-    if (!/(查询|查一下|查查|档案|資料|资料|上次.*在线|上次.*下线|上次.*发言|上次.*出现|profiles?)/i.test(text)) return null;
-
-    const patterns = [
-      /(?:查询|查一下|查查|查)\s*[「「【]?(.+?)[」」】]?.*$/i,
-      /[「「【]?(.+?)[」」】]?\s*(?:的)?(?:档案|資料|资料|信息|主人|恋人).*$/i,
-      /(?:介绍|说说|认识|知道|记得)\s*[「「【]?(.+?)[」」】]?.*$/i,
-    ];
-    for (const p of patterns) {
-      const m = text.match(p);
-      if (m && m[1]) {
-        let q = m[1].trim()
-          .replace(/^(御坂|御搬|misaka)[,，、\s]*/i, "")
-          .replace(/^(你知道|你認識|你认识|知道|認識|认识)\s*/i, "")
-          .replace(/^(玩家|角色|成员|id|ID|#|编号)\s*/i, "")
-          .replace(/[,，、]\s*(不是|并不是|而不是).+$/i, "")
-          .replace(/[？?。.!！,，、：:；;]+$/g, "")
-          .trim();
-        if (q) return q;
-      }
-    }
-    return null;
-  }
 
 function sanitizeReply(reply) {
     let cleaned = String(reply || "").replace(/^["""''''']+|["""''''']+$/g, "").trim();
@@ -2096,7 +1863,7 @@ function sanitizeReply(reply) {
       const mem = loadMemory();
       const apiKeySet = localStorage.getItem(storageKey("apikey")) ? "✅" : "❌";
       const model = localStorage.getItem(storageKey("model")) || CONFIG.model;
-      sendLocal(`状态: ${CONFIG.enabled?"开启":"关闭"} | Key: ${apiKeySet} | 模型: ${model} | 认识 ${Object.keys(mem.profiles||{}).length} 人 | 摘要 ${(mem.summaries||[]).length} 条 | 语义记忆 ${state.semanticMemories.length} 条 | 提炼 ${state.refinedMemories.length} 条`);
+      sendLocal(`状态: ${CONFIG.enabled?"开启":"关闭"} | Key: ${apiKeySet} | 模型: ${model} | 认识 ${Object.keys(mem.profiles||{}).length} 人 | 语义记忆 ${state.semanticMemories.length} 条 | 提炼 ${state.refinedMemories.length} 条`);
     } else if (sub === "forget") {
       localStorage.setItem(storageKey("memory"), "{}");
       state.semanticMemories = [];
@@ -2106,20 +1873,17 @@ function sanitizeReply(reply) {
     }
     else if (sub === "export") {
       IDB.exportAll().then(data => {
-        const blob = JSON.stringify(data);
-        // 存到 localStorage 作为备份（可能太大，try-catch）
-        try { localStorage.setItem("misaka_idb_backup", blob); sendLocal(`📦 已导出 ${data.semantic.length} 语义 + ${data.refined.length} 提炼到 localStorage(misaka_idb_backup)`); }
-        catch(e) { // localStorage 太大，截取前 200 字符预览
-          sendLocal(`📦 导出 ${data.semantic.length} 条，localStorage 存不下。请从控制台复制：window.__misakaExport()`); }
-        window.__misakaExportData = blob;
+        window.__misakaExportData = JSON.stringify(data);
+        console.log("[MisakaChat] 导出数据已存入 window.__misakaExportData");
+        sendLocal(`📦 已导出 ${data.semantic.length} 语义 + ${data.refined.length} 提炼到控制台`);
       });
     }
     else if (sub === "import") {
-      const backup = localStorage.getItem("misaka_idb_backup");
-      if (!backup) { sendLocal("❌ 没有找到备份"); }
+      const blob = window.__misakaExportData;
+      if (!blob) { sendLocal("❌ 没有找到导出数据（先 export）"); }
       else {
         try {
-          const data = JSON.parse(backup);
+          const data = JSON.parse(blob);
           IDB.importAll(data).then(() => {
             state.semanticMemories = data.semantic || [];
             state.refinedMemories = data.refined || [];
@@ -2137,7 +1901,7 @@ function sanitizeReply(reply) {
       localStorage.setItem(storageKey("persona_extra"), parts.slice(1).join(" "));
       sendLocal("📝 人设附加备注已更新");
     } else {
-      sendLocal("用法: /misaka on|off|key <key>|model <name>|status|forget|memory|persona <text>|rembed|export|import");
+      sendLocal("用法: /misaka on|off|key <key>|model <name>|status|forget|memory|persona <text>|export|import");
     }
     return true;
   }
