@@ -1914,7 +1914,23 @@ function sanitizeReply(reply) {
 
     window.__misakaOnMessage = onChatRoomMessage;
 
-    // Rebind on every injection
+    // 用 bcModSdk hook ChatRoomMessage，比直接替换 window.ChatRoomMessage 更可靠
+    // 每次 injection 重新注册一个新 mod 名字，避免 existingMod 冲突
+    let hookMod;
+    try {
+      const modName = "MisakaChat" + Date.now();
+      hookMod = bcModSdk.registerMod({ name: modName, fullName: "Misaka Auto Chat v2", version: "2.0.0", repository: "https://github.com/Igallta/bc-gimp-sorter" });
+      hookMod.hookFunction("ChatRoomMessage", 0, (args, next) => {
+        try { if (args?.[0]?.Content && window.__misakaOnMessage) window.__misakaOnMessage(args[0]); }
+        catch(e) { console.error("[MisakaChat] hook error:", e.message); }
+        return next(args);
+      });
+      console.log("[MisakaChat] ChatRoomMessage hook 已注册 via bcModSdk");
+    } catch(e) {
+      console.warn("[MisakaChat] bcModSdk hook 失败，fallback 到 wrapper:", e.message);
+    }
+
+    // Fallback: 也保留 window wrapper
     if (isCurrent()) {
       const orig = window.__misakaOrigChatRoomMessage || window.ChatRoomMessage;
       window.__misakaOrigChatRoomMessage = orig;
