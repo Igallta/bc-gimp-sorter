@@ -48,9 +48,7 @@ window.MisakaPersona = {
 
   assetCnName(asset) {
     if (!asset) return "";
-    const translated = this.translateAssetText(asset.Description || asset.Name || "");
-    if (translated && translated !== asset.Name) return translated;
-    return asset.Description || asset.Name || "";
+    return asset.Name || "";
   },
 
   layerCnName(layer) {
@@ -59,11 +57,8 @@ window.MisakaPersona = {
     return translated && translated !== layer.Name ? translated : "";
   },
 
-  groupLabel(groupName, groupDesc) {
-    const desc = (groupDesc || "").replace(/^🍔/, "").replace(/\(覆盖\)/, "").trim();
-    const cn = this.translateAssetText(desc || groupName);
-    if (cn && cn !== groupName && cn !== desc) return `${groupName}(${cn})`;
-    return desc && desc !== groupName ? `${groupName}(${desc})` : groupName;
+  groupLabel(groupName) {
+    return groupName;
   },
 
   getColorLayers(asset) {
@@ -71,8 +66,7 @@ window.MisakaPersona = {
     const layers = [];
     for (const layer of asset.Layer) {
       if (layer.AllowColorize === true && typeof layer.ColorIndex === "number" && layer.Name) {
-        const cn = this.layerCnName(layer);
-        layers.push(cn ? `${layer.Name}(${cn})` : layer.Name);
+        layers.push(layer.Name);
       }
     }
     return [...new Set(layers)];
