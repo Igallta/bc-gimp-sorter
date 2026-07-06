@@ -1214,21 +1214,6 @@ ${recentSemantic}`;
     "耳": ["ItemEars"],
     "下体": ["ItemVulva", "ItemVulvaPiercings", "ItemButt", "ItemClit"],
     "道具": ["ItemDevices"],
-    // 英文别名
-    "Arms": ["ItemArms"],
-    "Hands": ["ItemHands"],
-    "Legs": ["ItemLegs"],
-    "Feet": ["ItemFeet"],
-    "Mouth": ["ItemMouth", "ItemMouth2", "ItemMouth3"],
-    "Head": ["ItemHead", "ItemHood"],
-    "Neck": ["ItemNeck", "ItemNeckRestraints"],
-    "Torso": ["ItemTorso", "ItemTorso2"],
-    "Pelvis": ["ItemPelvis"],
-    "Breast": ["ItemBreast", "ItemNipples", "ItemNipplesPiercings"],
-    "Eyes": ["ItemHead"],
-    "Ears": ["ItemEars"],
-    "Vulva": ["ItemVulva", "ItemVulvaPiercings", "ItemButt", "ItemClit"],
-    "Devices": ["ItemDevices"],
   };
 
   function findItemByPart(char, itemName, part) {
@@ -1610,14 +1595,6 @@ ${recentSemantic}`;
     "类型": { type: "typed" },
     "样式": { type: "typed" },
     "透明度": { type: "direct", key: "Opacity", values: null },
-    // 英文别名
-    "Intensity": { type: "vibrator" },
-    "Vibration": { type: "vibrator" },
-    "Mode": { type: "vibrator" },
-    "Switch": { type: "direct", key: "SetState", values: { "On": true, "Off": false, "开": true, "关": false, "开启": true, "关闭": false } },
-    "Type": { type: "typed" },
-    "Style": { type: "typed" },
-    "Opacity": { type: "direct", key: "Opacity", values: null },
   };
 
   // 通用：通过 archetype 正规设置道具属性
