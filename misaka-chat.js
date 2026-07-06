@@ -758,7 +758,6 @@ ${recentSemantic}`;
         model: CONFIG.model,
         fallbackModel: CONFIG.fallbackModel,
         maxTokens: 80,
-        temperature: 0.9,
       });
       const cleaned = sanitizeReply(reply || "");
       if (!cleaned || cleaned.length < 2) return "";
@@ -852,19 +851,12 @@ ${recentSemantic}`;
     }, delay);
   }
 
-  // 从 DeepSeek 响应提取回复（处理 thinking 模式 content 为空）
+// 从 DeepSeek 响应提取回复（处理 thinking 模式 content 为空）
   function extractReply(msg) {
     if (!msg) return null;
-    let content = (msg.content || "").trim();
-    if (content) return content;
-    let reasoning = (msg.reasoning_content || "").trim();
-    if (!reasoning) return null;
-    const lines = reasoning.split("\n").filter(l => l.trim());
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const line = lines[i].trim();
-      if (line.length > 2 && line.length < 100) return line;
-    }
-    return reasoning.slice(-80) || null;
+    // thinking 模式下：reasoning_content 是思考过程，content 是最终回复
+    // 只取 content，永不回退到 reasoning_content
+    return (msg.content || "").trim() || null;
   }
 
   // === API 调用 ===
@@ -893,11 +885,12 @@ ${recentSemantic}`;
     const primaryModel = options.model || CONFIG.model;
     const fallbackModel = options.fallbackModel || CONFIG.fallbackModel;
     const maxTokens = options.maxTokens || CONFIG.maxTokens;
-    const temperature = options.temperature ?? CONFIG.temperature;
 
     return new Promise((resolve) => {
       const doRequest = (url, model, isFallback) => {
-        const reqBody = JSON.stringify({ model, messages, max_tokens: maxTokens, temperature });
+        // thinking 模式：思考进 reasoning_content，回复进 content
+        // thinking 模式下 temperature 无效（设了不报错但不生效）
+        const reqBody = JSON.stringify({ model, messages, max_tokens: maxTokens, thinking: { type: "enabled" } });
         const useGM = typeof window.__GM_xmlhttpRequest !== "undefined";
 
         if (useGM) {
@@ -2395,29 +2388,9 @@ ${recentSemantic}`;
 function sanitizeReply(reply) {
     let cleaned = String(reply || "").replace(/^["""''''']+|["""''''']+$/g, "").trim();
 
-    // === 元指令/思考过程泄漏过滤 ===
-    const metaPatterns = [
-      /^[^*]{0,5}(可选|参考之前|超过\d+字|观察当前|想到[：:])/,
-      /^[^*]{0,5}(可以简单描述|可以看看|可以用[：:]|比如[：:])/,
-      /^[^*]{0,5}(根据当前.*状态|延续这个氛围|顺着.*说下去)/,
-      /^[^*]{0,5}(注意不要提|不要提AI|不要输出操作)/,
-      /[（(]嗯[，,].*就.*说下去.*[）)\]）]/,
-    ];
-    for (const pat of metaPatterns) {
-      if (pat.test(cleaned)) {
-        console.warn("[MisakaChat] 检测到元指令泄漏，丢弃:", cleaned.slice(0, 80));
-        return "";
-      }
-    }
-
-    // === thinking/推理段落过滤 ===
-    // 兜底：过滤以分析性词开头的行（prompt 已禁止，这只是保险）
-    const thinkLinePattern = /^(等一下|从上下文来看|这里可能有误|也许是|我理解了|让我想想|分析一下|分析[：:]|根据上下文|这意味着|我推测|可能是指|我需要|让我考虑|根据用户)/;
-
+    // thinking 模式下思考过程在 reasoning_content 里，content 是干净的回复
+    // 这里只做格式处理：按行分割、兼容旧 | 格式、清理孤立 *
     let lines = cleaned.split(/\n+/).map(l => l.trim().replace(/^(御[搬坂]|Misaka|misaka)\s*[:：]\s*/i, "").trim()).filter(Boolean);
-    // 只过滤以分析性词开头的行（不影响行中间的正常对话）
-    lines = lines.filter(l => !thinkLinePattern.test(l));
-    if (lines.length === 0) return "";
     // 最多取前两行（动作 + 说话）
     lines = lines.slice(0, 2);
     // 兼容旧 | 格式：如果单行包含 |，拆成多行
