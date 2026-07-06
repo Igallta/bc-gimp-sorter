@@ -1389,6 +1389,30 @@ ${recentSemantic}`;
     }
   }
 
+  // Tool Policy: 检查指令是否安全执行
+  function isGimpDoll(memberNumber) {
+    const c = ChatRoomCharacter.find(ch => ch.MemberNumber === memberNumber);
+    return !!(c && (c.Nickname || c.Name || "").startsWith("GIMP "));
+  }
+
+  function checkToolPolicy(cmd) {
+    // MOVE 只对 GIMP 娃娃执行，不对真人
+    if (cmd.type === "move" || cmd.type === "moveTo" || cmd.type === "moveEdge") {
+      if (!isGimpDoll(cmd.memberNumber)) {
+        return { ok: false, reason: "move-target-not-gimp" };
+      }
+    }
+    // ITEMADD/ITEMDEL/ITEMDELALL/ITEMCOLOR/ITEMSET 对自己（御坂）允许
+    if (cmd.memberNumber === Player?.MemberNumber) return { ok: true };
+    // 对 GIMP 娃娃允许
+    if (isGimpDoll(cmd.memberNumber)) return { ok: true };
+    // 对真人不允许道具操作（除非是御坂自己）
+    if (["itemadd", "itemdel", "itemdelall", "itemcolor", "itemset"].includes(cmd.type)) {
+      return { ok: false, reason: "item-target-not-gimp" };
+    }
+    return { ok: true };
+  }
+
   async function executeCommands(commands) {
     let moveOk = true, itemOk = true;
     const failures = [];
@@ -1418,6 +1442,14 @@ ${recentSemantic}`;
     };
     
     for (const cmd of filtered) {
+      if (cmd.type === "memsearch" || cmd.type === "bcequery") continue;
+      const policy = checkToolPolicy(cmd);
+      if (!policy.ok) {
+        failures.push({ cmd, reason: policy.reason });
+        const who = displayNameByMemberNumber(cmd.memberNumber);
+        console.warn(`[MisakaChat] ToolPolicy 拦截: ${cmd.type} -> ${who} (${policy.reason})`);
+        continue;
+      }
       if (cmd.type === "move") {
         moveOk = record(cmd, executeMove(cmd.memberNumber, cmd.direction)) && moveOk;
       } else if (cmd.type === "moveTo") {
@@ -1478,6 +1510,30 @@ ${recentSemantic}`;
       /^Orgasm\d*$/i,
       /^ActionActivateSafewordRelease$/i,
       /^ChatSelf-ItemMouth-MoanGag(Giggle)?$/i,
+      // BC 自动 Action 类噪音
+      /^ActionMasturbate/i,
+      /^ActionEdging/i,
+      /^ActionKneel/i,
+      /^ActionStand/i,
+      /^ActionSleep/i,
+      /^ActionStruggle/i,
+      /^ActionDance/i,
+      /^ActionBlink/i,
+      /^ActionBlush/i,
+      /^ActionShiver/i,
+      /^ActionTremble/i,
+      /^ActionPant/i,
+      /^ActionMoan/i,
+      /^ActionGasp/i,
+      /^ActionWhimper/i,
+      /^ActionSquirm/i,
+      /^ActionWrithe/i,
+      /^ActionShake/i,
+      /^ActionStruggleAg/i,
+      // 高潮相关
+      /^OrgasmEdge/i,
+      /^OrgasmStart/i,
+      /^OrgasmFail/i,
     ];
     function isNoise(type, rawContent, senderName) {
       // GIMP 娃娃只过滤自动消息类型（Activity/Emote/Action），保留 Chat/Talk/Whisper（可能是真人）
@@ -1485,6 +1541,8 @@ ${recentSemantic}`;
         return type === "Activity" || type === "Emote" || type === "Action" ||
                NOISE_PATTERNS.some(pat => pat.test(rawContent));
       }
+      // BC 系统 Action 消息全部过滤（高潮/触发词/自动状态等），只保留有意义的 Activity
+      if (type === "Action") return true;
       for (const pat of NOISE_PATTERNS) {
         if (pat.test(rawContent)) return true;
       }
@@ -1699,6 +1757,50 @@ function sanitizeReply(reply) {
       const { commands, cleaned } = parseActionCommands(reply);
       const executableCommands = commands.filter(c => c.type !== "memsearch" && c.type !== "bcequery");
       let finalReply = sanitizeReply(cleaned);
+
+      // 检测“应该有指令但没有”：如果用户明确要求操作道具/移动，但 LLM 没输出指令，给第二次机会
+      const actionKeywords = /调|开|关|绑|解|穿|脱|戴|摘|加|移|换|颜色|改色|跳蛋|振动|绳|口球|束缚|移动|挪|左边|右边|强度|档|绑法/;
+      if (executableCommands.length === 0 && actionKeywords.test(content)) {
+        const retryPrompt = systemPrompt + "\n\n【重要提醒】用户刚才要求了操作，但你的回复没有包含操作指令。请重新回复，这次必须在第一行输出对应的操作指令（如 [ITEMSET:...] / [ITEMADD:...] / [ITEMDEL:...] / [ITEMCOLOR:...] / [MOVE:...]）。不要只用文字描述，必须输出指令。";
+        const retryReply = await callLLM(retryPrompt, contextMessages);
+        if (retryReply) {
+          const retryParsed = parseActionCommands(retryReply);
+          const retryCmds = retryParsed.commands.filter(c => c.type !== "memsearch" && c.type !== "bcequery");
+          if (retryCmds.length > 0) {
+            reply = retryReply;
+            const retryResult = await executeCommands(retryCmds);
+            console.log("[MisakaChat] 二次指令检测成功:", retryCmds, retryResult);
+            finalReply = sanitizeReply(retryParsed.cleaned);
+            // 跳过下面的原始指令执行
+            commandResult = retryResult;
+            if (finalReply && finalReply.length > 3) {
+              const memText = `${senderName}: ${content} → 御坂: ${finalReply}`;
+              storeSemanticMemory(memText, { sender: senderName, memberNum: senderNum }).catch(() => {});
+            }
+            // 发送去重
+            const sentKey = finalReply;
+            if (window.__misakaLastSentReply === sentKey && Date.now() - (window.__misakaLastSentReplyTime || 0) < 5000) {
+              console.warn("[MisakaChat] 跳过重复发送:", finalReply);
+              return;
+            }
+            window.__misakaLastSentReply = sentKey;
+            window.__misakaLastSentReplyTime = Date.now();
+            // 发送
+            if (typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom") {
+              let parts = finalReply.split(/\n/).map(p => p.trim()).filter(Boolean);
+              if (parts.length === 1 && parts[0].includes("|")) parts = parts[0].split(/\|/).map(p => p.trim()).filter(Boolean);
+              if (parts.length >= 2) {
+                let delay = 0;
+                for (const p of parts) { if (!p) continue; setTimeout(() => { ElementValue("InputChat", p); ChatRoomSendChat(); }, delay); delay += 600; }
+              } else {
+                ElementValue("InputChat", parts[0] || finalReply); ChatRoomSendChat();
+              }
+              if (state.recentMessages.length > CONFIG.maxContext) state.recentMessages.shift();
+            }
+            return;
+          }
+        }
+      }
 
       // 执行操作
       let commandResult = null;
