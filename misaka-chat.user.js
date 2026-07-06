@@ -18,7 +18,7 @@
   "use strict";
 
   // 预设 API key — DeepSeek 官网
-  const PRESET_KEY = atob("c2stMTczMzUyNjkzYmRlNDkxZWFmMDAwNDcwY2M0Yjc0NGE=");
+  const PRESET_KEY = ""; // 不再硬编码 key，通过 localStorage.setItem("misaka_apikey", "sk-xxx") 手动设置
   // 预设 OpenAI key — embedding 用 (text-embedding-3-large)
   const PRESET_OPENAI_KEY = atob("c2stcHJvai1obzRuck1FY2NBakZUdVAwWnoxbHZ3ZDA3R3hYUmZTZTctcHhIcnZtTFgxR0FJYkkxbDh5b2EydDhidFVJM1c1WEppZXNKVTlMQVQzQmxia0ZKYk9OTFhKMzZJRnBQWFhZSHhkSGZ4T1lrdlJBMFFfcGVrVG5EVW4xcHA3VVZ5LVpjOXVtUHNNbmZjZ1VsQVhMaEJoUXRRbzdvb0E=");
 
