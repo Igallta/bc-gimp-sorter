@@ -1912,36 +1912,37 @@ function sanitizeReply(reply) {
       mod = bcModSdk.registerMod({ name: "MisakaChat", fullName: "Misaka Auto Chat v2", version: "2.0.0", repository: "https://github.com/Igallta/bc-gimp-sorter" });
     }
 
-    window.__misakaOnMessage = onChatRoomMessage;
+   window.__misakaOnMessage = onChatRoomMessage;
 
-    // 用 bcModSdk hook ChatRoomMessage，比直接替换 window.ChatRoomMessage 更可靠
-    // 每次 injection 重新注册一个新 mod 名字，避免 existingMod 冲突
-    let hookMod;
-    try {
-      const modName = "MisakaChat" + Date.now();
-      hookMod = bcModSdk.registerMod({ name: modName, fullName: "Misaka Auto Chat v2", version: "2.0.0", repository: "https://github.com/Igallta/bc-gimp-sorter" });
-      hookMod.hookFunction("ChatRoomMessage", 0, (args, next) => {
-        try { if (args?.[0]?.Content && window.__misakaOnMessage) window.__misakaOnMessage(args[0]); }
-        catch(e) { console.error("[MisakaChat] hook error:", e.message); }
-        return next(args);
-      });
-      console.log("[MisakaChat] ChatRoomMessage hook 已注册 via bcModSdk");
-    } catch(e) {
-      console.warn("[MisakaChat] bcModSdk hook 失败，fallback 到 wrapper:", e.message);
-    }
+   // 方案 1: hook ServerSocket.onevent — 在 socket 事件层拦截，最可靠
+   if (isCurrent() && typeof ServerSocket !== "undefined" && ServerSocket.onevent) {
+     if (!window.__misakaSocketHooked) {
+       const origOnevent = ServerSocket.onevent;
+       ServerSocket.onevent = function(packet) {
+         try {
+           const d = packet?.data;
+           if (Array.isArray(d) && d[0] === "ChatRoomMessage" && d[1] && window.__misakaOnMessage) {
+             window.__misakaOnMessage(d[1]);
+           }
+         } catch(e) { console.error("[MisakaChat] socket hook error:", e.message); }
+         return origOnevent.apply(this, arguments);
+       };
+       window.__misakaSocketHooked = true;
+       console.log("[MisakaChat] ServerSocket.onevent hook 已设置");
+     }
+   }
 
-    // Fallback: 也保留 window wrapper
-    if (isCurrent()) {
-      const orig = window.__misakaOrigChatRoomMessage || window.ChatRoomMessage;
-      window.__misakaOrigChatRoomMessage = orig;
-      window.__misakaWrapped = true;
-      window.ChatRoomMessage = function(data) {
-        try { if (data?.Content && window.__misakaOnMessage) window.__misakaOnMessage(data); }
-        catch(e) { console.error("[MisakaChat] wrapper error:", e.message); }
-        return orig.apply(this, arguments);
-      };
-      console.log("[MisakaChat] ChatRoomMessage wrapper 已设置/刷新 v2.0");
-    }
+   // 方案 2 (fallback): window.ChatRoomMessage wrapper
+   if (isCurrent()) {
+     const orig = window.__misakaOrigChatRoomMessage || window.ChatRoomMessage;
+     window.__misakaOrigChatRoomMessage = orig;
+     window.ChatRoomMessage = function(data) {
+       try { if (data?.Content && window.__misakaOnMessage) window.__misakaOnMessage(data); }
+       catch(e) { console.error("[MisakaChat] wrapper error:", e.message); }
+       return orig.apply(this, arguments);
+     };
+     console.log("[MisakaChat] ChatRoomMessage wrapper 已设置/刷新 v2.0");
+   }
 
     mod.hookFunction("ChatRoomSendChat", 10, (args, next) => {
       const msg = args[0];
