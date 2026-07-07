@@ -463,8 +463,8 @@ ${recentSemantic}`;
         const t = new Date(m.time || Date.now());
         const hh = String(t.getHours()).padStart(2, '0');
         const mm = String(t.getMinutes()).padStart(2, '0');
-        const speaker = m.isSelf ? m.senderName : `${m.senderName}#${m.senderMemberNumber || "?"}`;
-        return `[${hh}:${mm}] ${speaker}: ${m.content}`;
+        if (m.isSelf) return `[${hh}:${mm}] 御坂: ${m.content}`;
+        return `[${hh}:${mm}] ${m.senderName}#${m.senderMemberNumber || "?"}: ${m.content}`;
       }).join("\n");
       // 检测最近是否全是自己（深夜无人说话场景）
       const lastNonSelf = state.recentMessages.slice(-15).filter(m => !m.isSelf);
@@ -1741,12 +1741,13 @@ function unescapeHTML(s) {
         const t = new Date(m.time || Date.now());
         const hh = String(t.getHours()).padStart(2, '0');
         const mm = String(t.getMinutes()).padStart(2, '0');
-        const speaker = m.isSelf
-          ? m.senderName
-          : `${m.senderName}#${m.senderMemberNumber || "?"}`;
+        if (m.isSelf) {
+          // 御坂自己的消息不加时间戳和名字前缀，避免 LLM 模仿
+          return { role: "assistant", content: m.content };
+        }
         return {
-          role: m.isSelf ? "assistant" : "user",
-          content: `[${hh}:${mm}] ${speaker}: ${m.content}`
+          role: "user",
+          content: `[${hh}:${mm}] ${m.senderName}#${m.senderMemberNumber || "?"}: ${m.content}`
         };
       });
       contextMessages = trimContextByTokenBudget(contextMessages, CONFIG.maxContextTokens);
