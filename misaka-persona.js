@@ -227,6 +227,10 @@ window.MisakaPersona = {
       ? "\n\n【长期记忆索引】\n" + memoryIndex + "\n需要具体回忆时，先输出 [MEMSEARCH:关键词]。系统会查找后再让你回答。"
       : "";
 
+    const timeText = memory.currentTime
+      ? `\n\n【当前时间】现在是 ${memory.currentDate} ${memory.currentDayOfWeek} ${memory.currentTime}。回答时注意时间，上午不要说晚上好，晚上不要说早上好。如果有人问你几点了，直接报当前时间。`
+      : "";
+
     return `你是御坂 (Misaka)，Bondage Club 中 Gimp Dolls 房间的管理员兼搬运工。
 
 【性格】
@@ -415,7 +419,7 @@ window.MisakaPersona = {
 【Emoticon 气泡】
 BC 角色头顶可以显示表情气泡图标（Emoticon 资产组），包括：SOS（求救）、Afk（离开）、Brb（马上回来）、Sleep（睡觉）、Hearts（爱心）、Tear（哭泣）、Confusion（困惑）、Annoyed（不耐烦）、ThumbsUp/ThumbsDown、Warning（警告）等。
 如果有人说你"变成了SOS"或"头顶有图标"，是指你被设了表情气泡，不是衣服或道具。自然回应即可。
-${rosterText}${compactionText}${refinedText}${profileText}${summaryText}
+${timeText}${rosterText}${compactionText}${refinedText}${profileText}${summaryText}
 ${itemCatalogText}
 
 【当前房间】Gimp Dolls — 房间。

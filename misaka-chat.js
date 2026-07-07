@@ -458,7 +458,12 @@ ${recentSemantic}`;
       // 用完整 systemPrompt（包含 persona 规则 + "不要输出思考过程"）
       const systemPrompt = getSystemPrompt() +
         "\n\n【当前任务】房间安静了。自然地说一句闲聊或做一个小动作。只输出最终回复本身，不要分析、不要描述你在做什么、不要输出思考过程。直接给出那句话。";
-      const recent = state.recentMessages.slice(-5).map(m => `${m.senderName}: ${m.content}`).join("\n");
+      const recent = state.recentMessages.slice(-5).map(m => {
+        const t = new Date(m.time || Date.now());
+        const hh = String(t.getHours()).padStart(2, '0');
+        const mm = String(t.getMinutes()).padStart(2, '0');
+        return `[${hh}:${mm}] ${m.senderName}: ${m.content}`;
+      }).join("\n");
       const idleGuard = recentIdle.length
         ? `\n最近你已经说过:\n${recentIdle.join("\n")}\n不要重复类似内容。`
         : "";
@@ -506,7 +511,27 @@ ${recentSemantic}`;
         state.busy = true;
         try {
           const generated = await generateIdleLine();
-          const line = generated || "*百无聊赖地翻看记录本*";
+          // fallback 也带变化，不要每次都同一条
+          const fallbacks = [
+            "*百无聊赖地翻看记录本*",
+            "*无聊地玩弄手边的道具*",
+            "*靠在墙边发呆*",
+            "*无聊地数着天花板的纹路*",
+            "*打了个哈欠，揉揉眼睛*",
+            "*无聊地翻看房间里的束缚道具*",
+            "*百无聊赖地望着房间发呆*",
+            "*无聊地拨弄着头发*",
+          ];
+          // 避开最近用过的 fallback
+          let line = generated;
+          if (!line) {
+            const recentSet = new Set((state.recentIdleLines || []).concat(state.recentFallbacks || []));
+            const avail = fallbacks.filter(f => !recentSet.has(f));
+            line = avail.length > 0 ? avail[Math.floor(Math.random() * avail.length)] : fallbacks[Math.floor(Math.random() * fallbacks.length)];
+            if (!state.recentFallbacks) state.recentFallbacks = [];
+            state.recentFallbacks.push(line);
+            if (state.recentFallbacks.length > 4) state.recentFallbacks.shift();
+          }
           state.lastNonSelfMsgTime = Date.now();  // 重置防再次触发
           if (typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom") {
             ElementValue("InputChat", line);
@@ -667,6 +692,12 @@ ${recentSemantic}`;
     if (state.refinedMemories && state.refinedMemories.length > 0) {
       mem.refined = state.refinedMemories.slice(-CONFIG.maxRefinedMemories);
     }
+
+    // 注入当前时间，让御坂知道几点
+    mem.currentTime = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+    mem.currentDate = new Date().toLocaleDateString('zh-CN');
+    const dayOfWeek = ['日','一','二','三','四','五','六'][new Date().getDay()];
+    mem.currentDayOfWeek = `星期${dayOfWeek}`;
 
     return MisakaPersona.build(mem);
   }
@@ -1676,10 +1707,16 @@ function unescapeHTML(s) {
       await new Promise(r => setTimeout(r, CONFIG.replyDelayMs));
 
       // 构建上下文（先按条数截，再按 token 预算截）
-      let contextMessages = state.recentMessages.slice(-CONFIG.maxContext).map(m => ({
-        role: m.isSelf ? "assistant" : "user",
-        content: `${m.senderName}: ${m.content}`
-      }));
+      // 构建上下文（带时间戳，帮 LLM 理解对话时间线）
+      let contextMessages = state.recentMessages.slice(-CONFIG.maxContext).map(m => {
+        const t = new Date(m.time || Date.now());
+        const hh = String(t.getHours()).padStart(2, '0');
+        const mm = String(t.getMinutes()).padStart(2, '0');
+        return {
+          role: m.isSelf ? "assistant" : "user",
+          content: `[${hh}:${mm}] ${m.senderName}: ${m.content}`
+        };
+      });
       contextMessages = trimContextByTokenBudget(contextMessages, CONFIG.maxContextTokens);
 
       // 构建系统 prompt（含精简房间名单）
