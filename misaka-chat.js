@@ -591,7 +591,7 @@ ${recentSemantic}`;
   function trimContextByTokenBudget(messages, budget) {
     if (!messages || messages.length === 0) return messages;
     let total = 0;
-    let cutIdx = messages.length;
+    let cutIdx = 0; // 不 break 时保留全部
     for (let i = messages.length - 1; i >= 0; i--) {
       const t = estimateTokens(messages[i].content || "");
       if (total + t > budget) { cutIdx = i + 1; break; }
@@ -615,8 +615,6 @@ ${recentSemantic}`;
     if (!apiKey) { console.warn("[MisakaChat] 未设置 API key"); return null; }
     rateLimiter.record();
     const messages = [{ role: "system", content: systemPrompt }, ...contextMessages];
-    window.__misakaDebugLLM = (window.__misakaDebugLLM || []);
-    window.__misakaDebugLLM.push({ contextLen: contextMessages?.length, totalMsgs: messages.length, roles: messages.map(m => m.role), caller: new Error().stack?.split("\n")[2]?.trim()?.substring(0, 60) });
     const primaryModel = options.model || CONFIG.model;
     const fallbackModel = options.fallbackModel || CONFIG.fallbackModel;
     const maxTokens = options.maxTokens || CONFIG.maxTokens;
@@ -1751,9 +1749,7 @@ function unescapeHTML(s) {
           content: `[${hh}:${mm}] ${speaker}: ${m.content}`
         };
       });
-      window.__misakaDebug = { recentLen: state.recentMessages.length, ctxLen: contextMessages.length, ctxContent: contextMessages.map(m => ({role: m.role, preview: m.content?.substring(0, 100)})) };
       contextMessages = trimContextByTokenBudget(contextMessages, CONFIG.maxContextTokens);
-      window.__misakaDebugAfterTrim = { ctxLen: contextMessages.length, budget: CONFIG.maxContextTokens, ctxContent: contextMessages.map(m => ({role: m.role, preview: m.content?.substring(0, 100)})) };
 
       // 构建系统 prompt（按需注入道具清单）
       const needCatalog = needsItemCatalog(content, state.recentMessages.slice(-5));
