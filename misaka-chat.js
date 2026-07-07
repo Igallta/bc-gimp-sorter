@@ -1681,15 +1681,14 @@ ${recentSemantic}`;
                 info.nickname = b.Nickname || "";
                 info.owner = b.Ownership?.Name ? `${b.Ownership.Name} (#${b.Ownership.MemberNumber})` : "无";
                 info.lovers = Array.isArray(b.Lovership) ? b.Lovership.map(l => `${l.Name}${l.Stage===2?"(正式)":""}`).join(", ") : "无";
-                // 描述处理：过滤 BCE 缓存损坏导致的乱码
+                // 描述处理：BCE 缓存中未见过的玩家描述会是乱码，这是正常的
                 const rawDesc = (b.Description || "").slice(0, 200);
+                info.description = rawDesc;
                 const normalChars = (rawDesc.match(/[\u0020-\u007e\u4e00-\u9fff\u3000-\u303f\uff00-\uffef\n\r\t]/g) || []).length;
                 if (rawDesc.length > 0 && normalChars / rawDesc.length < 0.7) {
-                  info.description = "";
-                  info.descNote = "（描述含乱码，已省略）";
+                  info.descNote = "（描述是乱码，因为没见过这个玩家，BCE 缓存里只有损坏的数据，这是正常的）";
                 } else {
-                  info.description = rawDesc;
-                  info.descNote = /[^ -~一-鿿　-〿＀-￯\n\r\t]/.test(rawDesc) ? "（含特殊装饰符号，非乱码）" : "";
+                  info.descNote = "";
                 }
                 if (Array.isArray(b.Appearance)) {
                   let lc=0, ic=0;
