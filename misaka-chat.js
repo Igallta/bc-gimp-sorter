@@ -1739,12 +1739,10 @@ function unescapeHTML(s) {
       await new Promise(r => setTimeout(r, CONFIG.replyDelayMs));
 
       // 构建上下文（带时间戳 + 身份标识，帮 LLM 理解对话时间线和说话者）
-      window.__misakaDebug = { recentLen: state.recentMessages.length, recentPreview: state.recentMessages.slice(-5).map(m => `${m.senderName}:${(m.content||"").substring(0,40)}`) };
       let contextMessages = state.recentMessages.slice(-CONFIG.maxContext).map(m => {
         const t = new Date(m.time || Date.now());
         const hh = String(t.getHours()).padStart(2, '0');
         const mm = String(t.getMinutes()).padStart(2, '0');
-        // 御坂自己不加编号；其他玩家加 MemberNumber 方便 LLM 关联 roster
         const speaker = m.isSelf
           ? m.senderName
           : `${m.senderName}#${m.senderMemberNumber || "?"}`;
@@ -1753,6 +1751,7 @@ function unescapeHTML(s) {
           content: `[${hh}:${mm}] ${speaker}: ${m.content}`
         };
       });
+      window.__misakaDebug = { recentLen: state.recentMessages.length, ctxLen: contextMessages.length, ctxContent: contextMessages.map(m => ({role: m.role, preview: m.content?.substring(0, 100)})) };
       contextMessages = trimContextByTokenBudget(contextMessages, CONFIG.maxContextTokens);
 
       // 构建系统 prompt（按需注入道具清单）
