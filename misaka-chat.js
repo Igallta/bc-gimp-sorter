@@ -22,7 +22,7 @@
   const CONFIG = {
     enabled: true,
     apiBase: "https://api.deepseek.com/chat/completions",
-    model: "deepseek-v4-pro",
+    model: "deepseek-v4-flash",
     fallbackModel: "deepseek-v4-flash",
     maxTokens: 8192,
     temperature: 0.8,
