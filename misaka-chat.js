@@ -1753,6 +1753,7 @@ function unescapeHTML(s) {
       });
       window.__misakaDebug = { recentLen: state.recentMessages.length, ctxLen: contextMessages.length, ctxContent: contextMessages.map(m => ({role: m.role, preview: m.content?.substring(0, 100)})) };
       contextMessages = trimContextByTokenBudget(contextMessages, CONFIG.maxContextTokens);
+      window.__misakaDebugAfterTrim = { ctxLen: contextMessages.length, budget: CONFIG.maxContextTokens, ctxContent: contextMessages.map(m => ({role: m.role, preview: m.content?.substring(0, 100)})) };
 
       // 构建系统 prompt（按需注入道具清单）
       const needCatalog = needsItemCatalog(content, state.recentMessages.slice(-5));
