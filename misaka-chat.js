@@ -25,7 +25,6 @@
     model: "deepseek-v4-flash",
     fallbackModel: "deepseek-v4-flash",
     maxTokens: 8192,
-    temperature: 0.8,
     maxContext: 50,
     maxContextTokens: 20000, // context messages 的 token 预算上限（system prompt 不算）
     cooldownMs: 3000,
@@ -33,7 +32,7 @@
     apiKeyTimeout: 45000,
     replyDelayMs: 800,
     maxProfileEntries: 20,
-    moveCooldownMs: 5000,  // 移动操作冷却
+    moveCooldownMs: 500,  // 移动操作冷却
     idleTimeoutMs: 600000,  // 10 分钟无人说话触发 idle
     idleCheckMs: 60000,  // 每分钟检查一次 idle
     embeddingBase: "https://api.openai.com/v1/embeddings",
@@ -56,10 +55,6 @@
     roomLog: [],          // 进出记录
     snapshots: {},        // 束缚快照 { memberNumber: { items, time } }
   };
-
-  // 从 localStorage 加载 state
-  try {
-  } catch(e) {}
 
   // 恢复 messageCount（避免刷新后归零导致 refine 不触发）
   try {
@@ -123,6 +118,7 @@
       getRefined: () => getAll(STORE_REFINED),
       putSemanticOne: (item) => transact(STORE_SEMANTIC, "readwrite", os => os.put(item)),
       putRefinedOne: (item) => transact(STORE_REFINED, "readwrite", os => os.put(item)),
+      clearSemantic: () => transact(STORE_SEMANTIC, "readwrite", os => os.clear()),
       clearRefined: () => transact(STORE_REFINED, "readwrite", os => os.clear()),
       clearAll: () => Promise.all([
         transact(STORE_SEMANTIC, "readwrite", os => os.clear()),
@@ -172,7 +168,7 @@
 
   function loadMemory() {
     try { return JSON.parse(localStorage.getItem(storageKey("memory")) || "{}"); }
-    catch (e) { return { profiles: {}, summaries: [] }; }
+    catch (e) { return { profiles: {} }; }
   }
 
   function saveMemory(mem) {
@@ -293,8 +289,8 @@
     for (const idx of toDrop) {
       state.semanticMemories.splice(idx, 1);
     }
-    // 全量同步 IDB（超限淘汰是稀有事件，全量写可接受）
-    IDB.clearAll().then(() => Promise.all(state.semanticMemories.map(m => IDB.putSemanticOne(m))));
+    // 全量同步 semantic store（超限淘汰是稀有事件，全量写可接受）
+    IDB.clearSemantic().then(() => Promise.all(state.semanticMemories.map(m => IDB.putSemanticOne(m))));
     console.log(`[MisakaChat] 智能遗忘: 淘汰 ${toDrop.length} 条低价值记忆`);
   }
 
@@ -625,7 +621,6 @@ ${recentSemantic}`;
     return new Promise((resolve) => {
       const doRequest = (url, model, isFallback) => {
         // thinking 模式：思考进 reasoning_content，回复进 content
-        // thinking 模式下 temperature 无效（设了不报错但不生效）
         const bodyObj = { model, messages, max_tokens: maxTokens };
         if (useThinking) bodyObj.thinking = { type: "enabled" };
         const reqBody = JSON.stringify(bodyObj);
@@ -699,7 +694,7 @@ ${recentSemantic}`;
     return itemKeywords.test(recent);
   }
 
-  function getSystemPrompt(includeCatalog, triggerContent) {
+  function getSystemPrompt(includeCatalog) {
     const mem = loadMemory();
     if (typeof MisakaPersona === "undefined") {
       return `你是御坂 (Misaka)，Bondage Club 中 Gimp Dolls 房间的管理员。安静、简短、偶尔傲娇。中文为主，回复不超过50字。不提及AI或现实信息。`;
@@ -718,6 +713,7 @@ ${recentSemantic}`;
       }
     }
     mem.roster = roster;
+    if (includeCatalog !== false) mem.itemCatalog = getItemCatalog();
 
 
     // 长期提炼记忆
@@ -735,6 +731,9 @@ ${recentSemantic}`;
     if (state.roomLog && state.roomLog.length > 0) {
       mem.roomLog = state.roomLog.slice(-10).map(e => e.text).join("\n");
     }
+
+    const personaExtra = localStorage.getItem(storageKey("persona_extra")) || "";
+    if (personaExtra) mem.personaExtra = personaExtra.slice(0, 1000);
 
     return MisakaPersona.build(mem, includeCatalog !== false);
   }
@@ -825,7 +824,7 @@ ${recentSemantic}`;
 
   function executeMove(memberNumber, direction) {
     try {
-      if (Date.now() - state.lastMoveTime < 500) {
+      if (Date.now() - state.lastMoveTime < CONFIG.moveCooldownMs) {
         console.log("[MisakaChat] 移动冷却中");
         return false;
       }
@@ -1468,11 +1467,11 @@ ${recentSemantic}`;
   }
 
   // === SNAPSHOT / COPY ===
-  // 提取角色身上所有 Item 类道具的深拷贝
+  // 提取角色身上所有未锁 Item 类道具的深拷贝
   function extractItems(char) {
     if (!char || !Array.isArray(char.Appearance)) return [];
     return char.Appearance
-      .filter(a => a?.Asset?.Group?.Name?.startsWith("Item"))
+      .filter(a => a?.Asset?.Group?.Name?.startsWith("Item") && !a.Property?.LockedBy)
       .map(a => JSON.parse(JSON.stringify(a)));
   }
 
@@ -1484,7 +1483,7 @@ ${recentSemantic}`;
     let count = 0;
     for (const item of items) {
       try {
-        char.Appearance.push(item);
+        char.Appearance.push(JSON.parse(JSON.stringify(item)));
         count++;
       } catch(e) { console.error("[MisakaChat] applyItems push 失败:", e.message); }
     }
@@ -1497,6 +1496,7 @@ ${recentSemantic}`;
       const char = (memberNumber === Player.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === memberNumber);
       if (!char) return { ok: false, reason: "找不到玩家" };
       const items = extractItems(char);
+      if (items.length === 0) return { ok: false, reason: "没有可保存的未锁道具" };
       state.snapshots[memberNumber] = { items, time: Date.now() };
       console.log(`[MisakaChat] 快照已保存: #${memberNumber} ${items.length}件道具`);
       return { ok: true, msg: `保存了 ${items.length} 件道具` };
@@ -1528,6 +1528,7 @@ ${recentSemantic}`;
       if (!src) return { ok: false, reason: "找不到源玩家" };
       if (!dst) return { ok: false, reason: "找不到目标玩家" };
       const items = extractItems(src);
+      if (items.length === 0) return { ok: false, reason: "没有可复制的未锁道具" };
       const count = applyItems(dst, items);
       console.log(`[MisakaChat] 束缚已复制: #${sourceNumber} -> #${targetNumber} ${count}/${items.length}件`);
       return { ok: true, msg: `复制了 ${count}/${items.length} 件道具` };
@@ -1661,6 +1662,7 @@ ${recentSemantic}`;
         const ne = data.Dictionary.find(d => d.Tag === "SourceCharacter");
         if (ne) { who = ne.Text || ""; whoNum = ne.MemberNumber || 0; }
       }
+      if (!who) return;
       const action = data.Content === "ServerEnter" ? "进入" : "离开";
       const t = new Date();
       const hh = String(t.getHours()).padStart(2, '0');
@@ -1719,6 +1721,7 @@ ${recentSemantic}`;
 
     if (senderNum === Player.MemberNumber) {
       state.recentMessages.push({ senderName: "御搬", content: readableContent, isSelf: true, time: now });
+      if (state.recentMessages.length > CONFIG.maxContext) state.recentMessages.shift();
       return;
     }
 
@@ -1731,6 +1734,7 @@ ${recentSemantic}`;
     // 垃圾消息：不进上下文、不推动 messageCount
     if (noise) return;
 
+    updateProfile(senderNum, senderName, readableContent);
     state.recentMessages.push({ senderName: senderName, content: readableContent, senderMemberNumber: senderNum, isSelf: false, time: now });
     if (state.recentMessages.length > CONFIG.maxContext) state.recentMessages.shift();
     state.lastNonSelfMsgTime = now;
@@ -1884,7 +1888,7 @@ function unescapeHTML(s) {
 
       // 构建系统 prompt（按需注入道具清单）
       const needCatalog = needsItemCatalog(content, state.recentMessages.slice(-5));
-      let systemPrompt = getSystemPrompt(needCatalog, content);
+      let systemPrompt = getSystemPrompt(needCatalog);
       if (!needCatalog) console.log("[MisakaChat] 跳过道具清单（日常闲聊）");
       else console.log("[MisakaChat] 加载道具清单（涉及道具/操作）");
 
@@ -1939,7 +1943,7 @@ function unescapeHTML(s) {
       const actionKeywords = /调|开|关|绑|解|穿|脱|戴|摘|加|移|换|颜色|改色|跳蛋|振动|绳|口球|束缚|移动|挪|左边|右边|强度|档|绑法/;
       if (executableCommands.length === 0 && actionKeywords.test(content)) {
         // 重试时必须加载道具清单（用户要求了操作）
-        const retrySystemPrompt = needCatalog ? systemPrompt : getSystemPrompt(true, content);
+        const retrySystemPrompt = needCatalog ? systemPrompt : getSystemPrompt(true);
         const retryPrompt = retrySystemPrompt + "\n\n【重要提醒】用户刚才要求了操作，但你的回复没有包含操作指令。请重新回复，这次必须在第一行输出对应的操作指令（如 [ITEMSET:...] / [ITEMADD:...] / [ITEMDEL:...] / [ITEMCOLOR:...] / [MOVE:...]）。不要只用文字描述，必须输出指令。";
         const retryReply = await callLLM(retryPrompt, contextMessages);
         if (retryReply) {
@@ -1992,6 +1996,13 @@ function unescapeHTML(s) {
         if (missing?.cmd) {
           const who = displayNameByMemberNumber(missing.cmd.memberNumber);
           finalReply = `${who}身上没有${missing.cmd.item}，没法改。`;
+        }
+        const failed = (commandResult.failures || [])[0];
+        if (!missing && failed) {
+          const reason = failed.reason || "操作失败";
+          if (reason === "没有找到快照") finalReply = "我没存过这个快照，绑不回去。";
+          else if (/未锁道具/.test(reason)) finalReply = "没有可处理的未锁道具。";
+          else if (/找不到/.test(reason)) finalReply = "没找到目标，做不了。";
         }
       }
 

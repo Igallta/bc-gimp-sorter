@@ -15,19 +15,6 @@ window.MisakaPersona = {
     "Random", "Escalate", "Tease", "Deny", "Edge"
   ],
 
-  REFUSAL_TEMPLATES: [
-    "...不知道你在说什么。",
-    "这个嘛...不太懂呢。",
-    "你说的是什么？听不懂。",
-    "嗯？没听说过。",
-    "...无关的事别问我。",
-    "不懂，下一个话题。",
-  ],
-
-  getRefusal() {
-    return this.REFUSAL_TEMPLATES[Math.floor(Math.random() * this.REFUSAL_TEMPLATES.length)];
-  },
-
   translateAssetText(text) {
     if (!text) return "";
     try {
@@ -201,9 +188,9 @@ window.MisakaPersona = {
     }).join("\n");
   },
 
-  build(memory = { profiles: {}, summaries: [], roster: "" }, includeCatalog = true) {
+  build(memory = { profiles: {}, roster: "" }, includeCatalog = true) {
     const itemCatalogText = includeCatalog
-      ? "\n\n【可操作道具清单】\n" + this.buildItemCatalog()
+      ? "\n\n【可操作道具清单】\n" + (memory.itemCatalog || this.buildItemCatalog())
       : "\n\n【道具操作提示】需要操作道具时，用户会明确要求。日常闲聊不需要输出道具指令。如果用户要求操作道具但你不确定道具英文名，可以说“让我看看”或“等一下”。";
     const profileLines = [];
     for (const [mn, info] of Object.entries(memory.profiles || {})) {
@@ -215,14 +202,8 @@ window.MisakaPersona = {
     const profileText = profileLines.length > 0
       ? "\n\n【你认识的人】\n" + profileLines.join("\n")
       : "";
-    const summaryText = (memory.summaries || []).length > 0
-      ? "\n\n【近期回忆】\n" + memory.summaries.slice(-10).join("\n")
-      : "";
     const rosterText = memory.roster
       ? "\n\n【当前房间角色名单】\n" + memory.roster
-      : "";
-    const compactionText = (memory.compaction && memory.compaction.length > 0)
-      ? "\n\n【之前对话摘要】\n" + memory.compaction.join("\n")
       : "";
     const memoryIndex = this.buildMemoryIndex(memory.refined || []);
     const refinedText = memoryIndex
@@ -234,6 +215,9 @@ window.MisakaPersona = {
       : "";
     const roomLogText = memory.roomLog
       ? `\n\n【进出记录】\n${memory.roomLog}`
+      : "";
+    const personaExtraText = memory.personaExtra
+      ? `\n\n【临时人设备注】\n${memory.personaExtra}`
       : "";
 
     return `你是御坂 (Misaka)，Bondage Club 中 Gimp Dolls 房间的管理员兼搬运工。
@@ -277,9 +261,6 @@ window.MisakaPersona = {
 
 瞎编不存在的人的信息是最严重的错误，比说"不知道"糟糕一百倍。不确定就说不知道。
 如果有人问"XX穿什么""XX长什么样""XX的发色""XX的描述"，直接从名单里读，大大方方回答。
-
-【关于自动欢迎】
-你有自动欢迎的开关功能。如果有人说"别欢迎了""停止欢迎""关掉欢迎"，你要回复"好，不自动欢迎了~"（系统会自动关闭开关）。如果有人说"恢复欢迎""开启欢迎""打开欢迎"，你要回复"好，自动欢迎已开启~"（系统会自动开启开关）。
 
 【关于查询】
 - 被问到"谁最后进来""谁刚走"时，看【进出记录】回答
@@ -347,7 +328,7 @@ window.MisakaPersona = {
 设置道具属性: [ITEMSET:成员编号:道具名:属性:值] 或 [ITEMSET:成员编号:道具名:部位:属性:值]
 保存束缚快照: [SNAPSHOT:save:成员编号] — 记住该玩家当前的束缚状态
 恢复束缚快照: [SNAPSHOT:restore:成员编号] — 恢复之前保存的束缚状态（"绑回去"）
-复制束缚: [COPY:源编号:to:目标编号] — 把源玩家的束缚复制到目标玩家（"按XX的样子绑YY"），会完整复制道具名、颜色和状态
+复制束缚: [COPY:源编号:to:目标编号] — 把源玩家未锁的束缚复制到目标玩家（"按XX的样子绑YY"），会复制道具名、颜色和可用状态
 部位列表: Arms/Hands/Legs/Feet/Mouth/Head/Neck/Torso/Pelvis/Breast/Eyes/Ears/Vulva
 道具选择: 从【可操作道具清单】里选道具，指令里使用英文 Name，例如 [ITEMADD:194331:BallGag]。用户说中文名时，你自己在清单里找到对应英文名。清单没有的道具不要编造。
 颜色参数: 除"默认/原色"外必须输出 #RRGGBB。你要根据用户描述自己判断好看的 hex，不要输出自然语言颜色名。BC 不同道具同一 hex 会有色差，改色后可以提醒一句。
@@ -397,7 +378,7 @@ window.MisakaPersona = {
 - 可以对自己使用 ITEMSET（如调整自己身上道具的强度/开关）
 - "脱掉X的口球" = [ITEMDEL:X编号:BallGag]
 - "记住X现在的束缚" = [SNAPSHOT:save:X编号]
-- "把X绑回去" = [SNAPSHOT:restore:X编号]（如果之前没存过快照，先 [SNAPSHOT:save:X编号]）
+- "把X绑回去" = [SNAPSHOT:restore:X编号]（如果之前没存过快照，就说没记过，不要现存现恢复）
 - "按X的样子绑Y" = [COPY:X编号:to:Y编号]
 - "保存X现在的束缚状态，然后把X的束缚全部复制给Y" =
   [SNAPSHOT:save:X编号]
@@ -407,8 +388,8 @@ window.MisakaPersona = {
 - "紧紧捆住"/"绑结实"可以多加几件不同位置的道具（如麻绳绑手臂+麻绳绑腿+口球等，注意同一位置只能绑一件，用不同道具名）
 - 复合请求必须输出所有指令：如"绑手绑脚加口球"需要输出3条指令，不能漏掉任何一条
 - 每条指令单独一行，全部输出后再写回复文字
-- 被锁的道具无法移除，也无法复制（会跳过并告知）
-- 复制束缚时如果部分道具加不上，如实说哪些没成功，不要说"已经一模一样了"
+- 被锁的道具无法移除，也不会被 SNAPSHOT/COPY 复制；目标身上原本锁住的道具会保留。
+- 复制束缚只复制未锁的 Item 道具。如果没有可复制的未锁道具，如实说做不到。
 - 从名单里找编号。指令单独一行，回复文字在下一行。
 - 只有用户明确要求移动时才输出 MOVE 指令，不要自作主张移动玩家
 - 日常聊天不输出操作指令
@@ -421,7 +402,7 @@ window.MisakaPersona = {
 好了，已经移过去了~
 
 【重要 — 记忆诚实规则】
-- 被问到"你还记得X吗""谁跟你做过Y"时，只根据【近期回忆】【之前对话摘要】【长期记忆搜索结果】里明确记载的内容回答
+- 被问到"你还记得X吗""谁跟你做过Y"时，只根据当前对话上下文和【长期记忆搜索结果】里明确记载的内容回答
 - 如果只看到【长期记忆索引】而没有具体内容，先输出 [MEMSEARCH:关键词]，不要凭索引细节回答
 - 如果记忆里没有记载，直接说"不记得了""没记过这个"，绝对不要编造、推测或附和
 - 不要因为对方坚持就改口说"哦对，确实有过"——没记过就是没记过
@@ -443,7 +424,7 @@ window.MisakaPersona = {
 【Emoticon 气泡】
 BC 角色头顶可以显示表情气泡图标（Emoticon 资产组），包括：SOS（求救）、Afk（离开）、Brb（马上回来）、Sleep（睡觉）、Hearts（爱心）、Tear（哭泣）、Confusion（困惑）、Annoyed（不耐烦）、ThumbsUp/ThumbsDown、Warning（警告）等。
 如果有人说你"变成了SOS"或"头顶有图标"，是指你被设了表情气泡，不是衣服或道具。自然回应即可。
-${timeText}${roomLogText}${rosterText}${compactionText}${refinedText}${profileText}${summaryText}
+${timeText}${roomLogText}${rosterText}${refinedText}${profileText}${personaExtraText}
 ${itemCatalogText}
 
 【当前房间】Gimp Dolls — 房间。
@@ -552,6 +533,13 @@ ${itemCatalogText}
         lovers = c.Lovership.map(l => l.Name + (l.Stage === 2 ? "(正式)" : "")).join(",");
       }
 
+      let description = "";
+      if (c.Description) {
+        const rawDesc = String(c.Description).replace(/\s+/g, " ").trim().slice(0, 220);
+        const normalChars = (rawDesc.match(/[\u0020-\u007e\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/g) || []).length;
+        description = rawDesc && normalChars / rawDesc.length >= 0.7 ? rawDesc : "乱码/损坏";
+      }
+
       // 道具统计 + 关键穿着
       let items = 0, locks = 0;
       const clothes = [];
@@ -601,6 +589,7 @@ ${itemCatalogText}
       let line = `${tag} ${name}${aliasText}#${c.MemberNumber}`;
       if (owner) line += ` 主人:${owner}`;
       if (lovers) line += ` 恋人:${lovers}`;
+      if (description) line += ` 描述:${description}`;
       if (hair) line += ` 发:${hair}`;
       if (clothes.length > 0) line += ` 穿:${clothes.join(",")}`;
       if (itemList.length > 0) line += ` 道具:${itemList.join(",")}`;
@@ -608,82 +597,5 @@ ${itemCatalogText}
       lines.push(line);
     }
     return lines.join("\n");
-  },
-
-  extractProfile(char) {
-    if (!char) return null;
-    const desc = char.Description || "";
-    const dsMatch = desc.match(/D%(\d+)\/S%(\d+)/);
-    const langMatch = desc.match(/(EN|CN|JP|中文|英文|日文)/gi);
-    let ownerInfo = "";
-    if (char.Ownership && char.Ownership.Name) {
-      ownerInfo = `主人: ${char.Ownership.Name}`;
-      if (char.Ownership.MemberNumber) ownerInfo += ` (#${char.Ownership.MemberNumber})`;
-    }
-    let loverInfo = "";
-    if (Array.isArray(char.Lovership) && char.Lovership.length > 0) {
-      loverInfo = `恋人: ` + char.Lovership.map(l => {
-        let s = l.Name;
-        if (l.MemberNumber) s += ` (#${l.MemberNumber})`;
-        if (l.Stage === 2) s += "(正式)";
-        return s;
-      }).join(", ");
-    } else if (char.Lovership && char.Lovership.Name) {
-      loverInfo = `恋人: ${char.Lovership.Name}`;
-      if (char.Lovership.MemberNumber) loverInfo += ` (#${char.Lovership.MemberNumber})`;
-    }
-    let appearance = "";
-    let lockCount = 0;
-    let itemCount = 0;
-    if (char.Appearance && Array.isArray(char.Appearance)) {
-      const overrideDescs = new Set();
-      for (const a of char.Appearance) {
-        if (a.Asset?.Group?.Description && /覆盖/.test(a.Asset.Group.Description)) {
-          overrideDescs.add(a.Asset.Group.Description.replace(/^🍔/, "").replace(/\(覆盖\)/, "").trim());
-        }
-      }
-      for (const a of char.Appearance) {
-        if (!a.Asset || !a.Asset.Name) continue;
-        const gName = a.Asset.Group.Name;
-        const gDesc = a.Asset.Group.Description || "";
-        if (gName.startsWith("Item")) itemCount++;
-        if (!/覆盖/.test(gDesc) && overrideDescs.has(gDesc)) continue;
-        let label = gName;
-        if (gDesc) label = gDesc.replace(/^🍔/, "").replace(/\(覆盖\)/, "").trim();
-        let item = `${label}/${a.Asset.Description || a.Asset.Name}`;
-        if (a.Color) {
-          const colorSlots = Array.isArray(a.Color) ? a.Color : [a.Color];
-          const colors = [...new Set(colorSlots.map(c => this.colorName(c)).filter(Boolean))];
-          item += `(${colors.join("/")})`;
-        }
-        if (a.Property && a.Property.LockedBy) { item += `[锁:${a.Property.LockedBy}]`; lockCount++; }
-        appearance += item + ", ";
-      }
-      appearance = appearance.slice(0, 1500);
-    }
-    return {
-      name: char.Nickname || char.Name,
-      memberNumber: char.MemberNumber,
-      ds: dsMatch ? `D${dsMatch[1]}/S${dsMatch[2]}` : null,
-      languages: langMatch ? [...new Set(langMatch)] : null,
-      description: desc.slice(0, 500),
-      owner: ownerInfo || null,
-      lover: loverInfo || null,
-      appearance: appearance || null,
-      lockCount, itemCount
-    };
-  },
-
-  triggers: ["misaka", "御搬", "御坂", "misaki的", "搬运工"],
-  isTriggered(content) {
-    const lower = (content || "").toLowerCase();
-    return this.triggers.some(t => lower.includes(t.toLowerCase()));
-  },
-  buildContext(recentMessages, maxContext = 50) {
-    const msgs = recentMessages.slice(-maxContext);
-    return msgs.map(m => ({
-      role: m.isSelf ? "assistant" : "user",
-      content: `${m.senderName}: ${m.content}`
-    }));
   }
 };
