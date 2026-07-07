@@ -599,7 +599,7 @@ ${itemCatalogText}
       if (owner) line += ` 主人:${owner}`;
       if (lovers) line += ` 恋人:${lovers}`;
       if (hair) line += ` 发:${hair}`;
-      if (clothes.length > 0) line += ` 穿:${clothes.slice(0, isSelf ? 12 : 6).join(",")}`;
+      if (clothes.length > 0) line += ` 穿:${clothes.join(",")}`;
       if (itemList.length > 0) line += ` 道具:${itemList.join(",")}`;
       else if (items || locks) line += ` ${items}件${locks}锁`;
       lines.push(line);
