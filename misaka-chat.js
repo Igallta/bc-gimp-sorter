@@ -53,6 +53,8 @@
     busy: false,
     lastMoveTime: 0,  // 移动操作冷却
     lastNonSelfMsgTime: 0,  // 上次非自己消息时间（idle 检测用）
+    roomLog: [],          // 进出记录
+    snapshots: {},        // 束缚快照 { memberNumber: { items, time } }
   };
 
   // 从 localStorage 加载 state
@@ -729,6 +731,11 @@ ${recentSemantic}`;
     const dayOfWeek = ['日','一','二','三','四','五','六'][new Date().getDay()];
     mem.currentDayOfWeek = `星期${dayOfWeek}`;
 
+    // 注入进出记录
+    if (state.roomLog && state.roomLog.length > 0) {
+      mem.roomLog = state.roomLog.slice(-10).map(e => e.text).join("\n");
+    }
+
     return MisakaPersona.build(mem, includeCatalog !== false);
   }
 
@@ -798,6 +805,18 @@ ${recentSemantic}`;
       })
       .replace(/\[ITEMDEL:(\d+):([^\]]+)\]/gi, (m, mn, item) => {
         commands.push({ type: "itemdel", memberNumber: parseInt(mn), item: item.trim() });
+        return "";
+      })
+      .replace(/\[SNAPSHOT:save:(\d+)\]/gi, (m, mn) => {
+        commands.push({ type: "snapshotSave", memberNumber: parseInt(mn) });
+        return "";
+      })
+      .replace(/\[SNAPSHOT:restore:(\d+)\]/gi, (m, mn) => {
+        commands.push({ type: "snapshotRestore", memberNumber: parseInt(mn) });
+        return "";
+      })
+      .replace(/\[COPY:(\d+):to:(\d+)\]/gi, (m, src, dst) => {
+        commands.push({ type: "copyRestraint", sourceNumber: parseInt(src), targetNumber: parseInt(dst) });
         return "";
       })
 ;
@@ -1448,6 +1467,76 @@ ${recentSemantic}`;
     }
   }
 
+  // === SNAPSHOT / COPY ===
+  // 提取角色身上所有 Item 类道具的深拷贝
+  function extractItems(char) {
+    if (!char || !Array.isArray(char.Appearance)) return [];
+    return char.Appearance
+      .filter(a => a?.Asset?.Group?.Name?.startsWith("Item"))
+      .map(a => JSON.parse(JSON.stringify(a)));
+  }
+
+  // 将道具列表直接写入角色 Appearance 并同步
+  function applyItems(char, items) {
+    if (!char || !Array.isArray(char.Appearance)) return 0;
+    // 先移除现有未锁 Item
+    char.Appearance = char.Appearance.filter(a => !a?.Asset?.Group?.Name?.startsWith("Item") || a.Property?.LockedBy);
+    let count = 0;
+    for (const item of items) {
+      try {
+        char.Appearance.push(item);
+        count++;
+      } catch(e) { console.error("[MisakaChat] applyItems push 失败:", e.message); }
+    }
+    ChatRoomCharacterUpdate(char);
+    return count;
+  }
+
+  function executeSnapshotSave(memberNumber) {
+    try {
+      const char = (memberNumber === Player.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === memberNumber);
+      if (!char) return { ok: false, reason: "找不到玩家" };
+      const items = extractItems(char);
+      state.snapshots[memberNumber] = { items, time: Date.now() };
+      console.log(`[MisakaChat] 快照已保存: #${memberNumber} ${items.length}件道具`);
+      return { ok: true, msg: `保存了 ${items.length} 件道具` };
+    } catch(e) {
+      console.error("[MisakaChat] 快照保存失败:", e.message);
+      return { ok: false, reason: e.message };
+    }
+  }
+
+  function executeSnapshotRestore(memberNumber) {
+    try {
+      const snap = state.snapshots[memberNumber];
+      if (!snap) return { ok: false, reason: "没有找到快照" };
+      const char = (memberNumber === Player.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === memberNumber);
+      if (!char) return { ok: false, reason: "找不到玩家" };
+      const count = applyItems(char, snap.items);
+      console.log(`[MisakaChat] 快照已恢复: #${memberNumber} ${count}/${snap.items.length}件道具`);
+      return { ok: true, msg: `恢复了 ${count}/${snap.items.length} 件道具` };
+    } catch(e) {
+      console.error("[MisakaChat] 快照恢复失败:", e.message);
+      return { ok: false, reason: e.message };
+    }
+  }
+
+  function executeCopyRestraint(sourceNumber, targetNumber) {
+    try {
+      const src = ChatRoomCharacter.find(c => c.MemberNumber === sourceNumber);
+      const dst = (targetNumber === Player.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === targetNumber);
+      if (!src) return { ok: false, reason: "找不到源玩家" };
+      if (!dst) return { ok: false, reason: "找不到目标玩家" };
+      const items = extractItems(src);
+      const count = applyItems(dst, items);
+      console.log(`[MisakaChat] 束缚已复制: #${sourceNumber} -> #${targetNumber} ${count}/${items.length}件`);
+      return { ok: true, msg: `复制了 ${count}/${items.length} 件道具` };
+    } catch(e) {
+      console.error("[MisakaChat] 束缚复制失败:", e.message);
+      return { ok: false, reason: e.message };
+    }
+  }
+
   // Tool Policy: 检测危险操作，通知玩家但不拦截
   function checkToolPolicy(cmd) {
     // 对真人的道具操作和移动视为危险操作
@@ -1495,7 +1584,7 @@ ${recentSemantic}`;
       const policy = checkToolPolicy(cmd);
       if (policy.dangerous) {
         const who = policy.target;
-        const actionDesc = { move:"移动", moveTo:"移动", moveEdge:"移动", itemadd:"添加道具", itemdel:"移除道具", itemdelall:"解除全部", itemcolor:"改色", itemset:"设置属性" }[cmd.type] || cmd.type;
+        const actionDesc = { move:"移动", moveTo:"移动", moveEdge:"移动", itemadd:"添加道具", itemdel:"移除道具", itemdelall:"解除全部", itemcolor:"改色", itemset:"设置属性", snapshotSave:"保存快照", snapshotRestore:"恢复快照", copyRestraint:"复制束缚" }[cmd.type] || cmd.type;
         sendLocal(`⚠️ 御坂即将对真人 ${who} 执行 ${actionDesc} 操作`);
         console.warn(`[MisakaChat] 危险操作通知: ${cmd.type} -> ${who}`);
       }
@@ -1517,6 +1606,15 @@ ${recentSemantic}`;
       } else if (cmd.type === "itemdelall") {
         console.log(`[MisakaChat] CMD itemdelall #${cmd.memberNumber}`);
         itemOk = record(cmd, executeItemDelAll(cmd.memberNumber)) && itemOk;
+      } else if (cmd.type === "snapshotSave") {
+        console.log(`[MisakaChat] CMD snapshotSave #${cmd.memberNumber}`);
+        itemOk = record(cmd, executeSnapshotSave(cmd.memberNumber)) && itemOk;
+      } else if (cmd.type === "snapshotRestore") {
+        console.log(`[MisakaChat] CMD snapshotRestore #${cmd.memberNumber}`);
+        itemOk = record(cmd, executeSnapshotRestore(cmd.memberNumber)) && itemOk;
+      } else if (cmd.type === "copyRestraint") {
+        console.log(`[MisakaChat] CMD copy #${cmd.sourceNumber} -> #${cmd.targetNumber}`);
+        itemOk = record(cmd, executeCopyRestraint(cmd.sourceNumber, cmd.targetNumber)) && itemOk;
       }
     }
     return { moveOk, itemOk, failures };
@@ -1538,14 +1636,18 @@ ${recentSemantic}`;
     // 进出检测（在 validTypes 之前）
     if (data.Type === "Action" && ["ServerEnter","ServerDisconnect","ServerLeave"].includes(data.Content)) {
       let who = "";
+      let whoNum = 0;
       if (data.Dictionary?.length) {
         const ne = data.Dictionary.find(d => d.Tag === "SourceCharacter");
-        if (ne) who = ne.Text || "";
+        if (ne) { who = ne.Text || ""; whoNum = ne.MemberNumber || 0; }
       }
-      // 有人进入时打招呼
-      if (data.Content === "ServerEnter" && who) {
-      }
-      return; // 进出消息处理完毕，不再进入后续的上下文/计数逻辑
+      const action = data.Content === "ServerEnter" ? "进入" : "离开";
+      const t = new Date();
+      const hh = String(t.getHours()).padStart(2, '0');
+      const mm = String(t.getMinutes()).padStart(2, '0');
+      state.roomLog.push({ time: Date.now(), text: `${hh}:${mm} ${who}${whoNum ? `#${whoNum}` : ""} ${action}` });
+      if (state.roomLog.length > 30) state.roomLog.shift();
+      return;
     }
 
     const validTypes = ["Chat","Talk","Emote","Whisper","Activity","Action"];
