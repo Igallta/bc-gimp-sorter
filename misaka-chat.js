@@ -1,6 +1,15 @@
-// MisakaChat v2.0 — BC 御坂自动回复系统
-// 精简名单驱动：LLM 自主判断查询，正则最小化
-// 新增：道具操作 + 玩家移动指令
+// MisakaChat v2.3.1 — BC 御坂自动回复系统
+// 模块分区：
+//   [Config]      L15-55   配置 + 状态
+//   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
+//   [Idle]        L441-527 闲聊 / Heartbeat
+//   [API]         L528-633 callLLM / 速率限制 / Token 预算
+//   [Persona]     L634-664 人设 + 房间名单缓存
+//   [Actions]     L665-1459 指令解析 / 道具操作 / 移动 / ToolPolicy
+//   [Chat]        L1460-1830 消息处理 / 噪音过滤 / handleReply / sanitize
+//   [BCE]         L1582-1641 BCE 查询
+//   [Commands]    L1831-1892 /misaka 命令系统
+//   [Init]        L1893-end 初始化 / hook 安装
 
 (function() {
   "use strict";
@@ -46,24 +55,17 @@
     lastNonSelfMsgTime: 0,  // 上次非自己消息时间（idle 检测用）
   };
 
-  // 从 localStorage 加载 compaction 摘要
-  // 从 localStorage 加载欢迎开关状态
+  // 从 localStorage 加载 state
   try {
   } catch(e) {}
 
-  // 恢复 messageCount（避免刷新后归零导致 compaction/refined 不触发）
+  // 恢复 messageCount（避免刷新后归零导致 refine 不触发）
   try {
     const saved = parseInt(localStorage.getItem("misaka_msg_count") || "0", 10);
     if (saved > 0) state.messageCount = saved;
   } catch(e) {}
 
-  try {
-    const savedCompaction = JSON.parse(localStorage.getItem("misaka_compaction") || "[]");
-    if (Array.isArray(savedCompaction)) [] = savedCompaction;
-    else [] = [];
-  } catch(e) { [] = []; }
-
-  // === IndexedDB 封装（embedding 数据量大，localStorage 存不下） ===
+  // === [Memory] IndexedDB 封装 ===
   const IDB = (() => {
     const DB_NAME = "misaka_chat";
     const STORE_SEMANTIC = "semantic_mem";
@@ -203,15 +205,11 @@
     saveMemory(mem);
   }
 
-  // === Context Compaction ===
-  // 每 compactionInterval 条消息，用 LLM 生成一段摘要，塞入 system prompt
-  // 这样即使 recentMessages 超过 50 条被截断，御坂仍然记得之前发生了什么
-
-  // === Embedding cache (LRU) ===
+  // === [Memory] Embedding cache (LRU) ===
   const embeddingCache = new Map();
   const EMBEDDING_CACHE_MAX = 20;
 
-  // === Semantic Memory (Embedding-based) ===
+  // === [Memory] Semantic Memory (Embedding-based) ===
   // 调用 OpenAI embedding API (text-embedding-3-large)
   function getEmbeddingKey() {
     // 优先从 GM_getValue 读（Tampermonkey 存储，BC 脚本读不到）
@@ -398,8 +396,8 @@
 
 
 
-  // === Long-term Memory Refinement ===
-  // 每 memoryRefineInterval 条消息，用 LLM 从 profiles + compaction + semanticMemories 提炼一份长期记忆摘要
+  // === [Memory] Long-term Memory Refinement ===
+  // 每 memoryRefineInterval 条消息，用 LLM 从 profiles + semanticMemories 提炼长期记忆
   async function maybeRefineMemory() {
     if (state.messageCount % CONFIG.memoryRefineInterval !== 0) return;
     if (state.messageCount === 0) return;
@@ -449,7 +447,7 @@ ${recentSemantic}`;
     }
   }
 
-  // === Idle / Heartbeat ===
+  // === [Idle] Idle / Heartbeat ===
   let idleTimer = null;
 
   async function generateIdleLine() {
@@ -536,8 +534,8 @@ ${recentSemantic}`;
     return (msg.content || "").trim() || null;
   }
 
-  // === API 调用 ===
-  // === LLM 速率限制 ===
+  // === [API] callLLM ===
+  // === [API] LLM 速率限制 ===
   const rateLimiter = {
     window: 60000, maxCalls: 30, calls: [], // 御坂有 3s 全局冷却 + 5s 单用户冷却，30 次/分钟足够
     canCall() { const now = Date.now(); this.calls = this.calls.filter(t => now - t < this.window); return this.calls.length < this.maxCalls; },
@@ -642,7 +640,7 @@ ${recentSemantic}`;
     });
   }
 
-  // === 人设 + 房间名单（带缓存） ===
+  // === [Persona] 人设 + 房间名单缓存 ===
   let _rosterCache = { snapshot: "", roster: "", time: 0 };
   function getSystemPrompt() {
     const mem = loadMemory();
@@ -673,7 +671,7 @@ ${recentSemantic}`;
     return MisakaPersona.build(mem);
   }
 
-  // === 操作指令解析 ===
+  // === [Actions] 操作指令解析 ===
   // 支持3种MOVE格式：
   //   [MOVE:166706:left]           — 往左移一步
   //   [MOVE:166706:right]          — 往右移一步
@@ -1468,7 +1466,7 @@ ${recentSemantic}`;
     return (char?.Nickname || char?.Name || ("#" + memberNumber));
   }
 
-  // === 消息处理 ===
+  // === [Chat] 消息处理 ===
   function onChatRoomMessage(data) {
     if (!isCurrent() || !CONFIG.enabled) return;
     if (typeof Player === "undefined" || !Player) return;
@@ -1492,7 +1490,7 @@ ${recentSemantic}`;
     const validTypes = ["Chat","Talk","Emote","Whisper","Activity","Action"];
     if (!validTypes.includes(data.Type)) return;
 
-    // === 垃圾消息过滤 ===
+    // === [Chat] 垃圾消息过滤 ===
     const NOISE_PATTERNS = [
       /^TriggerShock[12]$/i,
       /^Beep$/i,
@@ -1590,7 +1588,7 @@ ${recentSemantic}`;
     handleReply(senderNum, senderName, readableContent).finally(() => clearTimeout(replyTimeout));
   }
 
-  // === BCE 查询（仅在被明确要求查档时触发） ===
+  // === [BCE] 玩家档案查询 ===
 
 
 
@@ -1839,7 +1837,7 @@ function unescapeHTML(s) {
     }
   }
 
-  // === 命令系统 ===
+  // === [Commands] /misaka 命令系统 ===
   function handleCommand(msg) {
     if (!msg || !msg.startsWith("/misaka")) return false;
     const cmd = msg.slice("/misaka".length).trim();
@@ -1901,7 +1899,7 @@ function unescapeHTML(s) {
     } catch (e) {}
   }
 
-  // === 初始化 ===
+  // === [Init] 初始化 ===
   function init() {
     if (typeof Player === "undefined" || !Player) { setTimeout(init, 1000); return; }
     if (Player.MemberNumber !== 194331) { console.log("[MisakaChat] 非御坂账号，跳过"); return; }
