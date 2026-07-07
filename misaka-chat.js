@@ -1737,6 +1737,7 @@ function unescapeHTML(s) {
       await new Promise(r => setTimeout(r, CONFIG.replyDelayMs));
 
       // 构建上下文（带时间戳 + 身份标识，帮 LLM 理解对话时间线和说话者）
+      window.__misakaDebug = { recentLen: state.recentMessages.length, recentPreview: state.recentMessages.slice(-5).map(m => `${m.senderName}:${(m.content||"").substring(0,40)}`) };
       let contextMessages = state.recentMessages.slice(-CONFIG.maxContext).map(m => {
         const t = new Date(m.time || Date.now());
         const hh = String(t.getHours()).padStart(2, '0');
