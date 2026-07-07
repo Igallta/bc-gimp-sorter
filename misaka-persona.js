@@ -201,8 +201,10 @@ window.MisakaPersona = {
     }).join("\n");
   },
 
-  build(memory = { profiles: {}, summaries: [], roster: "" }) {
-    const itemCatalogText = "\n\n【可操作道具清单】\n" + this.buildItemCatalog();
+  build(memory = { profiles: {}, summaries: [], roster: "" }, includeCatalog = true) {
+    const itemCatalogText = includeCatalog
+      ? "\n\n【可操作道具清单】\n" + this.buildItemCatalog()
+      : "\n\n【道具操作提示】需要操作道具时，用户会明确要求。日常闲聊不需要输出道具指令。如果用户要求操作道具但你不确定道具英文名，可以说“让我看看”或“等一下”。";
     const profileLines = [];
     for (const [mn, info] of Object.entries(memory.profiles || {})) {
       let line = `- ${info.name} (#${mn}): ${info.notes || "常客"}`;

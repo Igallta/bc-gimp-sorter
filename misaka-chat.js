@@ -27,7 +27,7 @@
     maxTokens: 8192,
     temperature: 0.8,
     maxContext: 50,
-    maxContextTokens: 6000, // context messages 的 token 预算上限（system prompt 不算）
+    maxContextTokens: 20000, // context messages 的 token 预算上限（system prompt 不算）
     cooldownMs: 3000,
     perUserCooldownMs: 5000,
     apiKeyTimeout: 45000,
@@ -455,19 +455,27 @@ ${recentSemantic}`;
       // idle 去重：记录最近发过的 idle 内容
       if (!state.recentIdleLines) state.recentIdleLines = [];
       const recentIdle = state.recentIdleLines.slice(-3);
-      // 用完整 systemPrompt（包含 persona 规则 + "不要输出思考过程"）
-      const systemPrompt = getSystemPrompt() +
+      // idle 不需要道具清单，用精简 prompt
+      const systemPrompt = getSystemPrompt(false) +
         "\n\n【当前任务】房间安静了。自然地说一句闲聊或做一个小动作。只输出最终回复本身，不要分析、不要描述你在做什么、不要输出思考过程。直接给出那句话。";
-      const recent = state.recentMessages.slice(-5).map(m => {
+      // 扩大到最近 15 条，让 LLM 看到更完整的时间线
+      const recent = state.recentMessages.slice(-15).map(m => {
         const t = new Date(m.time || Date.now());
         const hh = String(t.getHours()).padStart(2, '0');
         const mm = String(t.getMinutes()).padStart(2, '0');
-        return `[${hh}:${mm}] ${m.senderName}: ${m.content}`;
+        const speaker = m.isSelf ? m.senderName : `${m.senderName}#${m.senderMemberNumber || "?"}`;
+        return `[${hh}:${mm}] ${speaker}: ${m.content}`;
       }).join("\n");
+      // 检测最近是否全是自己（深夜无人说话场景）
+      const lastNonSelf = state.recentMessages.slice(-15).filter(m => !m.isSelf);
+      const allSelf = lastNonSelf.length === 0 && state.recentMessages.length > 0;
+      const idleHint = allSelf
+        ? "\n（注意：最近没有任何玩家说话，房间非常安静。你可以做个无聊的小动作或者说一句自言自语。不要重复之前的动作。）"
+        : "";
       const idleGuard = recentIdle.length
         ? `\n最近你已经说过:\n${recentIdle.join("\n")}\n不要重复类似内容。`
         : "";
-      const userPrompt = `最近消息:\n${recent || "暂无消息"}${idleGuard}\n\n直接输出一句自然的闲聊（不超过40字），不要分析，不要解释。`;
+      const userPrompt = `最近消息:\n${recent || "暂无消息"}${idleGuard}${idleHint}\n\n直接输出一句自然的闲聊（不超过40字），不要分析，不要解释。`;
       const reply = await callLLM(systemPrompt, [{ role: "user", content: userPrompt }], {
         model: CONFIG.fallbackModel,
         fallbackModel: CONFIG.fallbackModel,
@@ -667,7 +675,29 @@ ${recentSemantic}`;
 
   // === [Persona] 人设 + 房间名单缓存 ===
   let _rosterCache = { snapshot: "", roster: "", time: 0 };
-  function getSystemPrompt() {
+  let _itemCatalogCache = { text: "", time: 0 };
+
+  // 道具清单按需注入：只在涉及道具/穿着/操作时才加载完整清单
+  function getItemCatalog() {
+    if (typeof MisakaPersona === "undefined") return "";
+    const now = Date.now();
+    // 缓存 5 分钟，避免每次道具相关对话都重建
+    if (_itemCatalogCache.text && now - _itemCatalogCache.time < 300000) return _itemCatalogCache.text;
+    const text = MisakaPersona.buildItemCatalog();
+    _itemCatalogCache = { text, time: now };
+    return text;
+  }
+
+  // 检测是否需要道具清单
+  function needsItemCatalog(content, recentContext) {
+    const itemKeywords = /道具|绑|穿|脱|戴|摘|加|移|换|颜色|改色|跳蛋|振动|绳|口球|束缚|锁|项圈|手铐|脚镣|chain|rope|gag|cuff|collar|blindfold|ITEMADD|ITEMDEL|ITEMSET|ITEMCOLOR|MOVE|SNAPSHOT|COPY/i;
+    // 检查触发消息和最近 3 条上下文
+    if (itemKeywords.test(content)) return true;
+    const recent = recentContext.slice(-3).map(m => m.content || "").join(" ");
+    return itemKeywords.test(recent);
+  }
+
+  function getSystemPrompt(includeCatalog, triggerContent) {
     const mem = loadMemory();
     if (typeof MisakaPersona === "undefined") {
       return `你是御坂 (Misaka)，Bondage Club 中 Gimp Dolls 房间的管理员。安静、简短、偶尔傲娇。中文为主，回复不超过50字。不提及AI或现实信息。`;
@@ -699,7 +729,7 @@ ${recentSemantic}`;
     const dayOfWeek = ['日','一','二','三','四','五','六'][new Date().getDay()];
     mem.currentDayOfWeek = `星期${dayOfWeek}`;
 
-    return MisakaPersona.build(mem);
+    return MisakaPersona.build(mem, includeCatalog !== false);
   }
 
   // === [Actions] 操作指令解析 ===
@@ -1706,21 +1736,27 @@ function unescapeHTML(s) {
     try {
       await new Promise(r => setTimeout(r, CONFIG.replyDelayMs));
 
-      // 构建上下文（先按条数截，再按 token 预算截）
-      // 构建上下文（带时间戳，帮 LLM 理解对话时间线）
+      // 构建上下文（带时间戳 + 身份标识，帮 LLM 理解对话时间线和说话者）
       let contextMessages = state.recentMessages.slice(-CONFIG.maxContext).map(m => {
         const t = new Date(m.time || Date.now());
         const hh = String(t.getHours()).padStart(2, '0');
         const mm = String(t.getMinutes()).padStart(2, '0');
+        // 御坂自己不加编号；其他玩家加 MemberNumber 方便 LLM 关联 roster
+        const speaker = m.isSelf
+          ? m.senderName
+          : `${m.senderName}#${m.senderMemberNumber || "?"}`;
         return {
           role: m.isSelf ? "assistant" : "user",
-          content: `[${hh}:${mm}] ${m.senderName}: ${m.content}`
+          content: `[${hh}:${mm}] ${speaker}: ${m.content}`
         };
       });
       contextMessages = trimContextByTokenBudget(contextMessages, CONFIG.maxContextTokens);
 
-      // 构建系统 prompt（含精简房间名单）
-      const systemPrompt = getSystemPrompt();
+      // 构建系统 prompt（按需注入道具清单）
+      const needCatalog = needsItemCatalog(content, state.recentMessages.slice(-5));
+      let systemPrompt = getSystemPrompt(needCatalog, content);
+      if (!needCatalog) console.log("[MisakaChat] 跳过道具清单（日常闲聊）");
+      else console.log("[MisakaChat] 加载道具清单（涉及道具/操作）");
 
       let reply = await callLLM(systemPrompt, contextMessages);
       if (reply) {
@@ -1764,7 +1800,9 @@ function unescapeHTML(s) {
       // 检测“应该有指令但没有”：如果用户明确要求操作道具/移动，但 LLM 没输出指令，给第二次机会
       const actionKeywords = /调|开|关|绑|解|穿|脱|戴|摘|加|移|换|颜色|改色|跳蛋|振动|绳|口球|束缚|移动|挪|左边|右边|强度|档|绑法/;
       if (executableCommands.length === 0 && actionKeywords.test(content)) {
-        const retryPrompt = systemPrompt + "\n\n【重要提醒】用户刚才要求了操作，但你的回复没有包含操作指令。请重新回复，这次必须在第一行输出对应的操作指令（如 [ITEMSET:...] / [ITEMADD:...] / [ITEMDEL:...] / [ITEMCOLOR:...] / [MOVE:...]）。不要只用文字描述，必须输出指令。";
+        // 重试时必须加载道具清单（用户要求了操作）
+        const retrySystemPrompt = needCatalog ? systemPrompt : getSystemPrompt(true, content);
+        const retryPrompt = retrySystemPrompt + "\n\n【重要提醒】用户刚才要求了操作，但你的回复没有包含操作指令。请重新回复，这次必须在第一行输出对应的操作指令（如 [ITEMSET:...] / [ITEMADD:...] / [ITEMDEL:...] / [ITEMCOLOR:...] / [MOVE:...]）。不要只用文字描述，必须输出指令。";
         const retryReply = await callLLM(retryPrompt, contextMessages);
         if (retryReply) {
           const retryParsed = parseActionCommands(retryReply);
