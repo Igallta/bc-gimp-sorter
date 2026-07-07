@@ -1541,6 +1541,26 @@ ${recentSemantic}`;
   function checkToolPolicy(cmd) {
     // 对真人的道具操作和移动视为危险操作
     const selfMn = Player?.MemberNumber;
+    // COPY: 检查源和目标
+    if (cmd.type === "copyRestraint") {
+      const targets = [];
+      for (const mn of [cmd.sourceNumber, cmd.targetNumber]) {
+        if (mn === selfMn) continue;
+        const c = ChatRoomCharacter.find(ch => ch.MemberNumber === mn);
+        const isGimp = !!(c && (c.Nickname || c.Name || "").startsWith("GIMP "));
+        if (!isGimp) targets.push(c?.Nickname || c?.Name || ("#" + mn));
+      }
+      if (targets.length > 0) return { ok: true, dangerous: true, target: targets.join(" → ") };
+      return { ok: true, dangerous: false };
+    }
+    // SNAPSHOT: 检查目标
+    if (cmd.type === "snapshotSave" || cmd.type === "snapshotRestore") {
+      if (cmd.memberNumber === selfMn) return { ok: true, dangerous: false };
+      const c = ChatRoomCharacter.find(ch => ch.MemberNumber === cmd.memberNumber);
+      const isGimp = !!(c && (c.Nickname || c.Name || "").startsWith("GIMP "));
+      if (!isGimp) return { ok: true, dangerous: true, target: c?.Nickname || c?.Name || ("#" + cmd.memberNumber) };
+      return { ok: true, dangerous: false };
+    }
     if (cmd.memberNumber === selfMn) return { ok: true, dangerous: false };
     // 检查目标是否为真人（不是 GIMP 娃娃）
     const c = ChatRoomCharacter.find(ch => ch.MemberNumber === cmd.memberNumber);
