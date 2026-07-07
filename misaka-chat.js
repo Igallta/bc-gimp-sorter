@@ -1191,9 +1191,7 @@ ${recentSemantic}`;
     return null;
   }
 
-  function findModularOptionIndex(asset, moduleKey, valueName) {
-    const numeric = parseInt(valueName, 10);
-    if (!Number.isNaN(numeric)) return numeric;
+  function findModularOption(asset, moduleKey, valueName) {
     try {
       const key = asset.Group.Name + asset.Name;
       const data = typeof ModularItemDataLookup !== "undefined" && ModularItemDataLookup[key];
@@ -1205,13 +1203,15 @@ ${recentSemantic}`;
           })
         : null;
       const options = mod?.Options || mod?.options || [];
+      const numeric = parseInt(valueName, 10);
+      if (!Number.isNaN(numeric) && options[numeric]) return { index: numeric, option: options[numeric] };
       const idx = options.findIndex(o => {
         const name = typeof o === "string" ? o : (o?.Name || o?.Property || o?.Option || o?.Type || "");
         return name === valueName || String(name).toLowerCase() === String(valueName).toLowerCase();
       });
-      return idx >= 0 ? idx : NaN;
+      return idx >= 0 ? { index: idx, option: options[idx] } : null;
     } catch(e) {
-      return NaN;
+      return null;
     }
   }
 
@@ -1257,11 +1257,18 @@ ${recentSemantic}`;
       // modular 道具：TypeRecord 有多个 key
       // propName 格式：模块key（如 g/h/c/b/e），valueName：选项名或索引
       const trKey = propName;
-      const typeIdx = findModularOptionIndex(item.Asset, trKey, valueName);
-      if (isNaN(typeIdx)) return { ok: false, msg: `modular 模块 ${trKey} 无法识别选项: ${valueName}` };
-      item.Property.TypeRecord[trKey] = typeIdx;
+      const match = findModularOption(item.Asset, trKey, valueName);
+      if (!match) return { ok: false, msg: `modular 模块 ${trKey} 无法识别选项: ${valueName}` };
+      const optionProperty = (match.option && typeof match.option === "object" && match.option.Property) ? match.option.Property : null;
+      if (optionProperty) {
+        const previousTypeRecord = { ...(item.Property.TypeRecord || {}) };
+        Object.assign(item.Property, JSON.parse(JSON.stringify(optionProperty)));
+        item.Property.TypeRecord = { ...previousTypeRecord, ...(item.Property.TypeRecord || {}), [trKey]: match.index };
+      } else {
+        item.Property.TypeRecord[trKey] = match.index;
+      }
       ChatRoomCharacterUpdate(char);
-      return { ok: true, msg: `已设置 ${item.Asset.Description} 模块 ${trKey}=${typeIdx}` };
+      return { ok: true, msg: `已设置 ${item.Asset.Description} 模块 ${trKey}=${match.index}` };
     }
 
     // 非 Extended 道具 — 直接设 Property
