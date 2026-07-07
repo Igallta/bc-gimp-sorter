@@ -1191,6 +1191,30 @@ ${recentSemantic}`;
     return null;
   }
 
+  function findModularOptionIndex(asset, moduleKey, valueName) {
+    const numeric = parseInt(valueName, 10);
+    if (!Number.isNaN(numeric)) return numeric;
+    try {
+      const key = asset.Group.Name + asset.Name;
+      const data = typeof ModularItemDataLookup !== "undefined" && ModularItemDataLookup[key];
+      const modules = data?.modules || data?.Modules || [];
+      const mod = Array.isArray(modules)
+        ? modules.find(m => {
+            const names = [m.Key, m.Name, m.Property].filter(Boolean).map(String);
+            return names.some(n => n === moduleKey || n.toLowerCase() === String(moduleKey).toLowerCase());
+          })
+        : null;
+      const options = mod?.Options || mod?.options || [];
+      const idx = options.findIndex(o => {
+        const name = typeof o === "string" ? o : (o?.Name || o?.Property || o?.Option || o?.Type || "");
+        return name === valueName || String(name).toLowerCase() === String(valueName).toLowerCase();
+      });
+      return idx >= 0 ? idx : NaN;
+    } catch(e) {
+      return NaN;
+    }
+  }
+
 
   // 通用：设置 Extended 道具属性
   function setExtendedItemProperty(char, item, propName, valueName) {
@@ -1231,10 +1255,10 @@ ${recentSemantic}`;
 
     if (archetype === "modular") {
       // modular 道具：TypeRecord 有多个 key
-      // propName 格式：模块key（如 g/h/c/b/e），valueName：索引
+      // propName 格式：模块key（如 g/h/c/b/e），valueName：选项名或索引
       const trKey = propName;
-      let typeIdx = parseInt(valueName);
-      if (isNaN(typeIdx)) return { ok: false, msg: `modular 模块 ${trKey} 需要数字索引: ${valueName}` };
+      const typeIdx = findModularOptionIndex(item.Asset, trKey, valueName);
+      if (isNaN(typeIdx)) return { ok: false, msg: `modular 模块 ${trKey} 无法识别选项: ${valueName}` };
       item.Property.TypeRecord[trKey] = typeIdx;
       ChatRoomCharacterUpdate(char);
       return { ok: true, msg: `已设置 ${item.Asset.Description} 模块 ${trKey}=${typeIdx}` };
@@ -1323,8 +1347,8 @@ ${recentSemantic}`;
 
   function executeItemSet(memberNumber, itemName, part, propName, valueName) {
     try {
-      const char = (memberNumber === Player.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === memberNumber); if (!char) { console.log("[MisakaChat] 找不到玩家 #" + memberNumber); return false; }
-      if (!char) return false;
+      const char = (memberNumber === Player.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === memberNumber); if (!char) { console.log("[MisakaChat] 找不到玩家 #" + memberNumber); return { ok: false, reason: "missing-character" }; }
+      if (!char) return { ok: false, reason: "missing-character" };
 
       let target = findItemByPart(char, itemName, part);
       if (!target) {
@@ -1336,7 +1360,7 @@ ${recentSemantic}`;
           }
         }
       }
-      if (!target) { console.log("[MisakaChat] ITEMSET 找不到道具:", itemName); return false; }
+      if (!target) { console.log("[MisakaChat] ITEMSET 找不到道具:", itemName); return { ok: false, reason: "missing-item", memberNumber, item: itemName }; }
 
       const result = setExtendedItemProperty(char, target, propName, valueName);
       if (result.ok) {
@@ -1344,10 +1368,10 @@ ${recentSemantic}`;
       } else {
         console.log(`[MisakaChat] ITEMSET 失败: #${memberNumber} ${result.msg}`);
       }
-      return result.ok;
+      return result.ok ? { ok: true } : { ok: false, reason: result.msg || "itemset-failed" };
     } catch(e) {
       console.error("[MisakaChat] 设置道具属性失败:", e.message);
-      return false;
+      return { ok: false, reason: e.message };
     }
   }
 
@@ -1366,9 +1390,9 @@ ${recentSemantic}`;
   function executeItemAdd(memberNumber, itemName, part, color) {
     try {
       const mapping = findItemAsset(itemName);
-      if (!mapping) { console.log("[MisakaChat] 未知道具:", itemName); return false; }
+      if (!mapping) { console.log("[MisakaChat] 未知道具:", itemName); return { ok: false, reason: "unknown-item", memberNumber, item: itemName }; }
       const char = (memberNumber === Player.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === memberNumber);
-      if (!char) { console.log("[MisakaChat] 找不到玩家 #" + memberNumber); return false; }
+      if (!char) { console.log("[MisakaChat] 找不到玩家 #" + memberNumber); return { ok: false, reason: "missing-character" }; }
 
       // 找目标 group
       const candidateGroups = part ? (BODY_PART_GROUPS[part] || []) : [];
@@ -1386,24 +1410,24 @@ ${recentSemantic}`;
         if (hex) {
           const cs = targetAsset?.ColorSchema;
           colorOverride = Array.isArray(cs) ? cs.map(() => hex) : [hex];
-        }
+        } else return { ok: false, reason: "unknown-color", memberNumber, item: itemName };
       }
       const existingItem = char.Appearance.find(a => a.Asset?.Group?.Name === targetGroup);
       if (existingItem && colorOverride) directSetColor(char, targetGroup, colorOverride);
       else directSetItem(char, targetGroup, targetAsset, colorOverride);
       ChatRoomCharacterUpdate(char);
       console.log(`[MisakaChat] 已给 #${memberNumber} 添加 ${itemName} (group: ${targetGroup})`);
-      return true;
+      return { ok: true };
     } catch(e) {
       console.error("[MisakaChat] 添加道具失败:", e.message);
-      return false;
+      return { ok: false, reason: e.message };
     }
   }
 
   function executeItemDel(memberNumber, itemName, part) {
     try {
-      const char = (memberNumber === Player.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === memberNumber); if (!char) { console.log("[MisakaChat] 找不到玩家 #" + memberNumber); return false; }
-      if (!char) return false;
+      const char = (memberNumber === Player.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === memberNumber); if (!char) { console.log("[MisakaChat] 找不到玩家 #" + memberNumber); return { ok: false, reason: "missing-character" }; }
+      if (!char) return { ok: false, reason: "missing-character" };
       
       console.log(`[MisakaChat] executeItemDel #${memberNumber} item="${itemName}" part="${part||""}"`);
       
@@ -1423,20 +1447,20 @@ ${recentSemantic}`;
           }
         }
       }
-      if (!target) { console.log("[MisakaChat] 找不到道具:", itemName, part ? "(部位:" + part + ")" : ""); return false; }
+      if (!target) { console.log("[MisakaChat] 找不到道具:", itemName, part ? "(部位:" + part + ")" : ""); return { ok: false, reason: "missing-item", memberNumber, item: itemName }; }
       if (target?.Property?.LockedBy) {
         console.log(`[MisakaChat] 道具被锁: ${target.Property.LockedBy}`);
-        return false;
+        return { ok: false, reason: "locked-item", memberNumber, item: itemName };
       }
       const groupName = target.Asset.Group.Name;
       console.log(`[MisakaChat] 准备移除 #${memberNumber} group=${groupName} desc=${target.Asset.Description}`);
       directRemoveItem(char, groupName);
       ChatRoomCharacterUpdate(char);
       console.log(`[MisakaChat] 已移除 #${memberNumber} 的 ${itemName} (group: ${target.Asset.Group.Name})`);
-      return true;
+      return { ok: true };
     } catch(e) {
       console.error("[MisakaChat] 移除道具失败:", e.message);
-      return false;
+      return { ok: false, reason: e.message };
     }
   }
 
@@ -1916,14 +1940,14 @@ function unescapeHTML(s) {
               if (results) {
                 extraContext += "\n\n【BCE档案查询结果：" + cmd.target + "】\n";
                 extraContext += results.map(r => {
-                  let line = `${r.lastNick || r.name} (#${r.memberNumber}) - 档案查看: ${r.seen}`;
+                  let line = `${r.lastNick || r.name} (#${r.memberNumber}) - 上次在线/出现: ${r.seen}`;
                   if (r.owner && r.owner !== "无") line += ` | 主人: ${r.owner}`;
                   if (r.lovers && r.lovers !== "无") line += ` | 恋人: ${r.lovers}`;
                   if (r.itemCount !== undefined) line += ` | ${r.itemCount}件束缚, ${r.lockCount}把锁`;
                   if (r.description) line += `\n描述: ${r.description}${r.descNote||""}`;
                   return line;
                 }).join("\n");
-                extraContext += "\n（档案时间是查看时间不是在线时间。直接用这些信息回答，不要说查不到。）";
+                extraContext += "\n（直接用这些 BCE 档案信息回答；时间可作为 BCE 记录到的上次在线/出现时间。）";
               } else {
                 extraContext += `\n\n【BCE档案查询结果：${cmd.target}】\n没有找到这个人的档案。\n`;
               }
@@ -1940,11 +1964,11 @@ function unescapeHTML(s) {
       let finalReply = sanitizeReply(cleaned);
 
       // 检测“应该有指令但没有”：如果用户明确要求操作道具/移动，但 LLM 没输出指令，给第二次机会
-      const actionKeywords = /调|开|关|绑|解|穿|脱|戴|摘|加|移|换|颜色|改色|跳蛋|振动|绳|口球|束缚|移动|挪|左边|右边|强度|档|绑法/;
+      const actionKeywords = /调|开|关|绑|解|穿|脱|戴|摘|加|移|换|颜色|改色|跳蛋|振动|绳|口球|束缚|移动|挪|左边|右边|强度|档|绑法|记住|快照|恢复|复制|按.*样子/;
       if (executableCommands.length === 0 && actionKeywords.test(content)) {
         // 重试时必须加载道具清单（用户要求了操作）
         const retrySystemPrompt = needCatalog ? systemPrompt : getSystemPrompt(true);
-        const retryPrompt = retrySystemPrompt + "\n\n【重要提醒】用户刚才要求了操作，但你的回复没有包含操作指令。请重新回复，这次必须在第一行输出对应的操作指令（如 [ITEMSET:...] / [ITEMADD:...] / [ITEMDEL:...] / [ITEMCOLOR:...] / [MOVE:...]）。不要只用文字描述，必须输出指令。";
+        const retryPrompt = retrySystemPrompt + "\n\n【重要提醒】用户刚才要求了操作，但你的回复没有包含操作指令。请重新回复，这次必须在第一行输出对应的操作指令（如 [ITEMSET:...] / [ITEMADD:...] / [ITEMDEL:...] / [ITEMCOLOR:...] / [MOVE:...] / [SNAPSHOT:...] / [COPY:...]）。不要只用文字描述，必须输出指令。";
         const retryReply = await callLLM(retryPrompt, contextMessages);
         if (retryReply) {
           const retryParsed = parseActionCommands(retryReply);
@@ -2002,6 +2026,11 @@ function unescapeHTML(s) {
           const reason = failed.reason || "操作失败";
           if (reason === "没有找到快照") finalReply = "我没存过这个快照，绑不回去。";
           else if (/未锁道具/.test(reason)) finalReply = "没有可处理的未锁道具。";
+          else if (reason === "locked-item" || /道具被锁/.test(reason)) finalReply = "这个道具锁着呢，我动不了。";
+          else if (reason === "missing-character") finalReply = "没找到这个人，做不了。";
+          else if (reason === "unknown-item") finalReply = "没找到这个道具，不能乱加。";
+          else if (reason === "unknown-color") finalReply = "这个颜色我识别不了，给我个 #RRGGBB 吧。";
+          else if (reason === "set-color-failed") finalReply = "颜色没改成，可能这个部件不能上色。";
           else if (/找不到/.test(reason)) finalReply = "没找到目标，做不了。";
         }
       }

@@ -136,7 +136,7 @@ window.MisakaPersona = {
     }
     const modules = this.getModuleOptionNames(asset);
     if (asset?.AllowModule || asset?.Archetype === "modular" || modules.length > 0) {
-      hints.push(`模块: ${modules.length ? modules.join("; ") : "模块名:选项索引"}`);
+      hints.push(`模块: ${modules.length ? modules.join("; ") : "模块名:选项名或索引"}`);
     }
     return hints;
   },
@@ -257,7 +257,7 @@ window.MisakaPersona = {
 - 名单里没有的人，绝对不能瞎编！不要猜主人是谁、恋人是谁、长什么样。直接说"房间里没这个人啊"或"没看到TA在"。
 - 想查不在房间里的人，输出 [BCEQUERY:名字或编号] 指令查询。系统会查询并把结果给你，你再根据结果回答。
 - 不要推断名单里没有的信息，不要脑补材质（如"乳胶""皮革"），只描述名单写明的物品名和颜色。
-- 如果系统提供了【BCE档案查询结果】，直接用档案信息回答。档案时间不是在线时间，是查看时间。
+- 如果系统提供了【BCE档案查询结果】，直接用档案信息回答。结果里的时间可以当作 BCE 记录到的上次在线/出现时间。
 
 瞎编不存在的人的信息是最严重的错误，比说"不知道"糟糕一百倍。不确定就说不知道。
 如果有人问"XX穿什么""XX长什么样""XX的发色""XX的描述"，直接从名单里读，大大方方回答。
