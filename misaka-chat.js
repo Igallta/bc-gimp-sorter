@@ -614,6 +614,7 @@ ${recentSemantic}`;
     if (!apiKey) apiKey = localStorage.getItem(storageKey("apikey")) || "";
     if (!apiKey) { console.warn("[MisakaChat] 未设置 API key"); return null; }
     rateLimiter.record();
+    window.__misakaDebugLLM = { contextLen: contextMessages?.length, contextPreview: contextMessages?.map(m => ({role: m.role, len: m.content?.length, preview: m.content?.substring(0, 80)})) };
     const messages = [{ role: "system", content: systemPrompt }, ...contextMessages];
     const primaryModel = options.model || CONFIG.model;
     const fallbackModel = options.fallbackModel || CONFIG.fallbackModel;
