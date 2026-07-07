@@ -1763,6 +1763,14 @@ function unescapeHTML(s) {
         const firstPass = parseActionCommands(reply);
         const memCommands = firstPass.commands.filter(c => c.type === "memsearch");
         const bceCommands = firstPass.commands.filter(c => c.type === "bcequery");
+        // 兜底：用户说"查一下XXX"但 LLM 没输出 BCEQUERY 时，自动提取查询目标
+        const queryPattern = /(?:查(?:一查|一下|查)?|搜(?:一搜|一下)?|找(?:一找|一下)?)\s*([\u4e00-\u9fff\w]{2,20})/i;
+        const queryMatch = content.match(queryPattern);
+        if (bceCommands.length === 0 && queryMatch && queryMatch[1] && !/房间|名单|记录|道具|窝窝|颜色|几点|时间|状态/.test(queryMatch[1])) {
+          const queryTarget = queryMatch[1].trim();
+          console.log(`[MisakaChat] 自动触发 BCEQUERY 兜底: ${queryTarget}`);
+          bceCommands.push({ type: "bcequery", target: queryTarget });
+        }
         if (memCommands.length > 0 || bceCommands.length > 0) {
           let extraContext = "";
           if (memCommands.length > 0) {
