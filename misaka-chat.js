@@ -1681,7 +1681,16 @@ ${recentSemantic}`;
                 info.nickname = b.Nickname || "";
                 info.owner = b.Ownership?.Name ? `${b.Ownership.Name} (#${b.Ownership.MemberNumber})` : "无";
                 info.lovers = Array.isArray(b.Lovership) ? b.Lovership.map(l => `${l.Name}${l.Stage===2?"(正式)":""}`).join(", ") : "无";
-                info.description = (b.Description||"").slice(0,200); info.descNote = /[^\u0020-\u007e\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/.test(info.description) ? "（含特殊装饰符号，非乱码）" : "";
+                // 描述处理：过滤 BCE 缓存损坏导致的乱码
+                const rawDesc = (b.Description || "").slice(0, 200);
+                const normalChars = (rawDesc.match(/[\u0020-\u007e\u4e00-\u9fff\u3000-\u303f\uff00-\uffef\n\r\t]/g) || []).length;
+                if (rawDesc.length > 0 && normalChars / rawDesc.length < 0.7) {
+                  info.description = "";
+                  info.descNote = "（描述含乱码，已省略）";
+                } else {
+                  info.description = rawDesc;
+                  info.descNote = /[^ -~一-鿿　-〿＀-￯\n\r\t]/.test(rawDesc) ? "（含特殊装饰符号，非乱码）" : "";
+                }
                 if (Array.isArray(b.Appearance)) {
                   let lc=0, ic=0;
                   for (const a of b.Appearance) { if (a.Asset?.Group?.Name?.startsWith("Item")) ic++; if (a.Property?.LockedBy) lc++; }
