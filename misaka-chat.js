@@ -633,7 +633,7 @@ ${recentSemantic}`;
           window.__GM_xmlhttpRequest({
             method: "POST", url, headers: {
               "Content-Type": "application/json",
-              "Authorization": "***" + apiKey
+              "Authorization": "Bearer " + apiKey
             }, data: reqBody, timeout: CONFIG.apiKeyTimeout,
             onload: (resp) => {
               try {
