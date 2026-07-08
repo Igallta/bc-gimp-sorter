@@ -1022,14 +1022,23 @@ ${recentSemantic}`;
     const rawName = String(itemName).trim();
     if (!rawName) return null;
 
-    // 精确匹配英文名
-    const exact = Asset.find(a => a?.Group?.Name?.startsWith("Item") && a.Name === rawName);
-    if (exact) return { group: exact.Group.Name, asset: exact.Name };
+    // 精确匹配英文名（可能有多个同名 asset 在不同 group，优先选玩家身上的）
+    const candidates = Asset.filter(a => a?.Group?.Name?.startsWith("Item") && a.Name === rawName);
+    if (candidates.length > 0) {
+      // 优先选玩家身上穿着的
+      const worn = candidates.find(a => Player.Appearance.some(ap => ap.Asset?.Name === a.Name && ap.Asset?.Group?.Name === a.Group?.Name));
+      const exact = worn || candidates[0];
+      return { group: exact.Group.Name, asset: exact.Name };
+    }
 
     // 去空格模糊匹配（LLM 可能输出 "Ribbon Corset" 但 BC 里是 "RibbonCorset"）
     const noSpace = rawName.replace(/\s+/g, "");
-    const fuzzy = Asset.find(a => a?.Group?.Name?.startsWith("Item") && (a.Name === noSpace || a.Name.replace(/\s+/g, "") === noSpace));
-    if (fuzzy) return { group: fuzzy.Group.Name, asset: fuzzy.Name };
+    const fuzzyCandidates = Asset.filter(a => a?.Group?.Name?.startsWith("Item") && (a.Name === noSpace || a.Name.replace(/\s+/g, "") === noSpace));
+    if (fuzzyCandidates.length > 0) {
+      const worn = fuzzyCandidates.find(a => Player.Appearance.some(ap => ap.Asset?.Name === a.Name && ap.Asset?.Group?.Name === a.Group?.Name));
+      const fuzzy = worn || fuzzyCandidates[0];
+      return { group: fuzzy.Group.Name, asset: fuzzy.Name };
+    }
 
     // 中文/描述匹配(按优先级分组)
     const priorityGroups = [
