@@ -1091,8 +1091,13 @@ ${recentSemantic}`;
     const fillValue = useDefault ? "Default" : hex;
     if (layerIndex !== undefined && layerIndex >= 0 && layerIndex < expectedLen) {
       item.Color[layerIndex] = fillValue;
-    } else {
+    } else if (layerIndex === undefined) {
+      // 没指定 layer → 改全部（保留原行为）
       item.Color = Array(expectedLen).fill(fillValue);
+    } else {
+      // layerIndex 无效 → 不改，避免误操作
+      console.warn(`[MisakaChat] layerIndex ${layerIndex} 超出范围(0-${expectedLen-1}),跳过改色`);
+      return false;
     }
     if (typeof CharacterRefresh === "function") CharacterRefresh(char);
     return true;
@@ -1122,12 +1127,34 @@ ${recentSemantic}`;
     return layers;
   }
 
+  // 中文 → 英文 layer 名反查表（LAYER_CN_FALLBACK 的反向）
+  const CN_TO_EN_LAYER = {};
+  if (typeof MisakaPersona !== "undefined" && MisakaPersona.LAYER_CN_FALLBACK) {
+    for (const [en, cn] of Object.entries(MisakaPersona.LAYER_CN_FALLBACK)) {
+      CN_TO_EN_LAYER[cn] = en;
+    }
+  }
+
   function findLayerIndex(asset, layerName) {
     if (!layerName) return undefined;
     const layers = getItemColorLayers(asset);
     const raw = String(layerName).trim();
     const lower = raw.toLowerCase();
-    return layers.find(l => l.name === raw || l.name?.toLowerCase() === lower)?.index;
+    // 1. 精确匹配英文名
+    let found = layers.find(l => l.name === raw || l.name?.toLowerCase() === lower);
+    // 2. 中文 → 英文反查
+    if (!found) {
+      const enName = CN_TO_EN_LAYER[raw];
+      if (enName) found = layers.find(l => l.name === enName || l.name?.toLowerCase() === enName.toLowerCase());
+    }
+    // 3. 模糊匹配：layer 的中文名（通过 layerCnName）等于输入
+    if (!found) {
+      found = layers.find(l => {
+        const cn = MisakaPersona?.layerCnName?.(l) || "";
+        return cn === raw || cn.toLowerCase() === lower;
+      });
+    }
+    return found?.index;
   }
 
   function directRemoveItem(char, groupName) {
