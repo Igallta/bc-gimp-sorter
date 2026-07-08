@@ -339,10 +339,9 @@
     const now = Date.now();
     const results = [];
 
-    // 统一语义搜索(semantic_mem + refined_mem)
+    // 只搜语义记忆(refined_mem 已在 system prompt 全量注入)
     const sources = [
       { list: state.semanticMemories, source: "semantic" },
-      { list: state.refinedMemories, source: "refined" },
     ];
     for (const { list, source } of sources) {
       if (!Array.isArray(list)) continue;

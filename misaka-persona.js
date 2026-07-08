@@ -172,21 +172,6 @@ window.MisakaPersona = {
     return lines.join("\n") || "未发现可操作道具。";
   },
 
-  buildMemoryIndex(refined) {
-    const list = Array.isArray(refined) ? refined : [];
-    if (list.length === 0) return "";
-    return list.map((entry, idx) => {
-      // 兼容旧格式(string)和新格式({text, embedding})
-      const raw = typeof entry === "string" ? entry : (entry?.text || "");
-      const clean = String(raw)
-        .replace(/^\[[^\]]+\]\s*/, "")
-        .replace(/[，。！？、；：,.!?;:（）()【】\[\]"]/g, " ")
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(0, 20);
-      return `- M${idx + 1}: ${clean || "记忆"}`;
-    }).join("\n");
-  },
 
   build(memory = { profiles: {}, roster: "" }, includeCatalog = true) {
     const itemCatalogText = includeCatalog
@@ -205,9 +190,11 @@ window.MisakaPersona = {
     const rosterText = memory.roster
       ? "\n\n【当前房间角色名单】\n" + memory.roster
       : "";
-    const memoryIndex = this.buildMemoryIndex(memory.refined || []);
-    const refinedText = memoryIndex
-      ? "\n\n【长期记忆索引】\n" + memoryIndex + "\n需要具体回忆时，先输出 [MEMSEARCH:关键词]。系统会查找后再让你回答。"
+    const refinedText = (memory.refined && memory.refined.length > 0)
+      ? "\n\n【概括记忆】\n" + memory.refined.map(e => {
+          const raw = typeof e === "string" ? e : (e?.text || "");
+          return `- ${raw}`;
+        }).join("\n")
       : "";
 
     const timeText = memory.currentTime
@@ -419,8 +406,8 @@ window.MisakaPersona = {
 好了，已经移过去了~
 
 【重要 — 记忆诚实规则】
-- 被问到"你还记得X吗""谁跟你做过Y"时，只根据当前对话上下文和【长期记忆搜索结果】里明确记载的内容回答
-- 如果只看到【长期记忆索引】而没有具体内容，先输出 [MEMSEARCH:关键词]，不要凭索引细节回答
+- 【概括记忆】是你确实知道的长期信息，可以直接用来回答
+- 需要具体对话细节时，输出 [MEMSEARCH:关键词]，系统会从语义记忆中查找
 - 如果记忆里没有记载，直接说"不记得了""没记过这个"，绝对不要编造、推测或附和
 - 不要因为对方坚持就改口说"哦对，确实有过"——没记过就是没记过
 - 不要把"可能发生过"当成"确实发生过"
