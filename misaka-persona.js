@@ -342,7 +342,10 @@ window.MisakaPersona = {
 保存束缚快照: [SNAPSHOT:save:成员编号] — 记住该玩家当前的束缚状态
 恢复束缚快照: [SNAPSHOT:restore:成员编号] — 恢复之前保存的束缚状态（"绑回去"）
 复制束缚: [COPY:源编号:to:目标编号] — 把源玩家未锁的束缚复制到目标玩家（"按XX的样子绑YY"），会复制道具名、颜色和可用状态
-设置表情气泡: [EMOTE:成员编号:表情名] — 可用表情: SOS/Afk/Brb/Sleep/Hearts/Tear/Confusion/Annoyed/ThumbsUp/ThumbsDown/Warning 等。"把你的状态气泡改成SOS" → [EMOTE:194331:SOS]
+设置表情气泡: [EMOTE:成员编号:表情名]
+可用表情: Afk(离开) Brb(马上回来) SOS(求救) Sleep(睡觉) Hearts(爱心) Tear(哭泣) Confusion(困惑) Annoyed(不耐烦) ThumbsUp(点赞) ThumbsDown(踩) Warning(警告) BrokenHeart(心碎) Lightbulb(好主意) Coffee(咖啡) Music(音乐) Gaming(游戏) Read(阅读) Drawing(画画) Coding(编程) TV(看电视) Bathing(洗澡) Shopping(购物) Cooking(下厨) Work(工作) Call(通话) Car(开车) Hanger(衣架) Spectator(旁观) RaisedHand(举手) Whisper(耳语) Exclamation(感叹) Hearing(听力) LoveRope(爱绳缚) LoveGag(爱口塞) LoveLock(爱锁) Wardrobe(衣柜) Fork(用餐)
+例如"把你的状态气泡改成SOS" → [EMOTE:194331:SOS]
+例如"给我设个爱心" → [EMOTE:166706:Hearts]
 部位列表: Arms/Hands/Legs/Feet/Mouth/Head/Neck/Torso/Pelvis/Breast/Eyes/Ears/Vulva
 道具选择: 从【可操作道具清单】里选道具，指令里使用英文 Name，例如 [ITEMADD:194331:BallGag]。用户说中文名时，你自己在清单里找到对应英文名。清单没有的道具不要编造。
 颜色参数: 除"默认/原色"外必须输出 #RRGGBB。你要根据用户描述自己判断好看的 hex，不要输出自然语言颜色名。BC 不同道具同一 hex 会有色差，改色后可以提醒一句。
