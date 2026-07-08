@@ -798,6 +798,18 @@ ${recentSemantic}`;
       .replace(/\[ITEMSET:(\d+):([^\]]+)\]/gi, (m, mn, rest) => {
         // [ITEMSET:编号:道具名:属性:值] 或 [ITEMSET:编号:道具名:部位:属性:值]
         const parts = rest.split(":").map(s => s.trim());
+        // 如果值是 hex 颜色格式,LLM 用错了指令,自动转成 ITEMCOLOR
+        const lastVal = parts[parts.length - 1];
+        if (/^#[0-9A-Fa-f]{6}$/.test(lastVal) || /^(默认|Default|原色)$/.test(lastVal)) {
+          if (parts.length >= 4 && BODY_PART_GROUPS[parts[1]]) {
+            // [ITEMSET:编号:道具名:部位:属性:#RRGGBB] → ITEMCOLOR 部位=属性名
+            commands.push({ type: "itemcolor", memberNumber: parseInt(mn), item: parts[0], part: parts[2], color: lastVal });
+          } else if (parts.length >= 3) {
+            // [ITEMSET:编号:道具名:属性:#RRGGBB] → ITEMCOLOR 部位=属性名
+            commands.push({ type: "itemcolor", memberNumber: parseInt(mn), item: parts[0], part: parts[1], color: lastVal });
+          }
+          return "";
+        }
         if (parts.length >= 4 && BODY_PART_GROUPS[parts[1]]) {
           commands.push({ type: "itemset", memberNumber: parseInt(mn), item: parts[0], part: parts[1], property: parts[2], value: parts.slice(3).join(":") });
         } else if (parts.length >= 3) {

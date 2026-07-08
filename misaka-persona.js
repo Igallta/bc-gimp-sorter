@@ -281,8 +281,8 @@ window.MisakaPersona = {
 添加道具: [ITEMADD:编号:道具名] 或 [ITEMADD:编号:道具名:部位] 或 [ITEMADD:编号:道具名:部位:#RRGGBB]
 移除道具: [ITEMDEL:编号:道具名] 或 [ITEMDEL:编号:道具名:部位]（指定部位只移除该部位）
 释放全部: [ITEMDEL:编号:all]
-设置属性: [ITEMSET:编号:道具名:属性:值] 或 [ITEMSET:编号:道具名:部位:属性:值]
-改色: [ITEMCOLOR:编号:道具名::#RRGGBB] 或 [ITEMCOLOR:编号:道具名:部件名:#RRGGBB]
+设置属性: [ITEMSET:编号:道具名:属性:值] 或 [ITEMSET:编号:道具名:部位:属性:值] — 用于调属性(如振动强度/开关/样式),不是改颜色
+改色: [ITEMCOLOR:编号:道具名::#RRGGBB] 或 [ITEMCOLOR:编号:道具名:部件名:#RRGGBB] — 改颜色必须用 ITEMCOLOR,不能用 ITEMSET。部件名是 layer 名(如 Rivets/Inner/Blanket)
 快照: [SNAPSHOT:save:编号] / [SNAPSHOT:restore:编号]
 复制: [COPY:源编号:to:目标编号]
 表情: [EMOTE:编号:表情名] — 可用: Afk/Brb/SOS/Sleep/Hearts/Tear/Confusion/Annoyed/ThumbsUp/ThumbsDown/Warning/BrokenHeart/Lightbulb/Coffee/Music/Gaming/Read/Drawing/Coding/TV/Bathing/Shopping/Cooking/Work/Call/Car/Hanger/Spectator/RaisedHand/Whisper/Exclamation/Hearing/LoveRope/LoveGag/LoveLock/Wardrobe/Fork
