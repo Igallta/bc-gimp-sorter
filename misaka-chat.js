@@ -1792,6 +1792,10 @@ ${recentSemantic}`;
     if (senderNum === Player.MemberNumber) {
       state.recentMessages.push({ senderName: "御搬", content: readableContent, isSelf: true, time: now });
       if (state.recentMessages.length > CONFIG.maxContext) state.recentMessages.shift();
+      // 御坂自己的消息也存语义记忆
+      if (readableContent.length >= 15) {
+        storeSemanticMemory(`御搬: ${readableContent}`, { sender: "御搬", memberNum: Player.MemberNumber, isSelf: true }).catch(() => {});
+      }
       return;
     }
 
@@ -1808,6 +1812,11 @@ ${recentSemantic}`;
     state.recentMessages.push({ senderName: senderName, content: readableContent, senderMemberNumber: senderNum, isSelf: false, time: now });
     if (state.recentMessages.length > CONFIG.maxContext) state.recentMessages.shift();
     state.lastNonSelfMsgTime = now;
+
+    // 所有非噪音消息都存语义记忆(不只是触发回复的)
+    if (readableContent.length >= 15) {
+      storeSemanticMemory(`${senderName}: ${readableContent}`, { sender: senderName, memberNum: senderNum }).catch(() => {});
+    }
 
     state.messageCount++;
     try { localStorage.setItem("misaka_msg_count", String(state.messageCount)); } catch(e) {}
