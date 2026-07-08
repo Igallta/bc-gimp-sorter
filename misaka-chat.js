@@ -1994,7 +1994,24 @@ function unescapeHTML(s) {
           reply = await callLLM(systemPrompt + extraContext, contextMessages);
         }
       }
-      if (!reply) { console.warn("[MisakaChat] LLM 返回空,未回复"); return; }
+      if (!reply) { console.warn("[MisakaChat] LLM 返回空,未回复");
+        // LLM 空回复也尝试 EMOTE 兜底
+        try {
+          const emoteMatch = content.match(/(?:气泡|表情|状态气泡|emoticon|EMOTE)/i);
+          if (emoteMatch) {
+            const exprMap = {'SOS':'SOS','afk':'Afk','brb':'Brb','sleep':'Sleep','hearts':'Hearts','heart':'Hearts','爱心':'Hearts','tear':'Tear','哭':'Tear','confusion':'Confusion','困惑':'Confusion','annoyed':'Annoyed','不耐烦':'Annoyed','thumbsup':'ThumbsUp','点赞':'ThumbsUp','thumbsdown':'ThumbsDown','踩':'ThumbsDown','warning':'Warning','警告':'Warning','brokenheart':'BrokenHeart','心碎':'BrokenHeart','lightbulb':'Lightbulb','主意':'Lightbulb','coffee':'Coffee','咖啡':'Coffee','music':'Music','音乐':'Music','gaming':'Gaming','游戏':'Gaming','read':'Read','阅读':'Read','drawing':'Drawing','画画':'Drawing','coding':'Coding','编程':'Coding','tv':'TV','电视':'TV','bathing':'Bathing','洗澡':'Bathing','shopping':'Shopping','购物':'Shopping','work':'Work','工作':'Work','call':'Call','通话':'Call','car':'Car','开车':'Car','spectator':'Spectator','旁观':'Spectator','raisedhand':'RaisedHand','举手':'RaisedHand','whisper':'Whisper','耳语':'Whisper','exclamation':'Exclamation','感叹':'Exclamation','hearing':'Hearing','loverope':'LoveRope','爱绳':'LoveRope','lovegag':'LoveGag','爱口塞':'LoveGag','lovelock':'LoveLock','爱锁':'LoveLock','wardrobe':'Wardrobe','衣柜':'Wardrobe','fork':'Fork','用餐':'Fork'};
+            let targetExpr = null;
+            for (const [k, v] of Object.entries(exprMap)) { if (new RegExp(k, 'i').test(content)) { targetExpr = v; break; } }
+            if (targetExpr) {
+              const isSelf = /你的|自己/.test(content) && !/我的|给我/.test(content);
+              const target = isSelf ? Player.MemberNumber : senderNum;
+              const emoteResult = executeEmote(target, targetExpr);
+              sendLocal(emoteResult.ok ? `表情气泡已设置: #${target} → ${targetExpr}` : `EMOTE 兜底失败: ${emoteResult.reason}`);
+            }
+          }
+        } catch(e) { console.error('[MisakaChat] EMOTE 空回复兜底异常:', e.message); }
+        return;
+      }
 
       // 解析操作指令
       const { commands, cleaned } = parseActionCommands(reply);
