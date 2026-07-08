@@ -877,12 +877,13 @@ ${recentSemantic}`;
         if (srcIdx < 0 || tIdx < 0) break;
         const wantIdx = side === "left" ? tIdx - 1 : tIdx + 1;
         if (srcIdx === wantIdx) break;  // 到位了
+        const publish = steps === 0; // 只有第一步推送公屏消息
         if (srcIdx < wantIdx) {
           // 需要往右移
-          ServerSend("ChatRoomAdmin", { MemberNumber: memberNumber, Action: "MoveRight", Publish: true });
+          ServerSend("ChatRoomAdmin", { MemberNumber: memberNumber, Action: "MoveRight", Publish: publish });
         } else {
           // 需要往左移
-          ServerSend("ChatRoomAdmin", { MemberNumber: memberNumber, Action: "MoveLeft", Publish: true });
+          ServerSend("ChatRoomAdmin", { MemberNumber: memberNumber, Action: "MoveLeft", Publish: publish });
         }
         steps++;
         // 等待服务器同步
@@ -917,7 +918,7 @@ ${recentSemantic}`;
         }
         lastSrcIdx = srcIdx;
         const action = edge === "left" ? "MoveLeft" : "MoveRight";
-        ServerSend("ChatRoomAdmin", { MemberNumber: memberNumber, Action: action, Publish: true });
+        ServerSend("ChatRoomAdmin", { MemberNumber: memberNumber, Action: action, Publish: steps === 0 });
         steps++;
         await new Promise(r => setTimeout(r, 400));
       }
