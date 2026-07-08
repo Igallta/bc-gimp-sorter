@@ -54,6 +54,7 @@ window.MisakaPersona = {
     "Rivets": "铆钉", "Rivet": "铆钉",
     "Buckle": "扣环", "Buckles": "扣环",
     "Laces": "系带", "Lace": "系带",
+    "Lacing": "系带", "LacingBack": "后系带", "LacingTrim": "系带镶边",
     "Studs": "钉饰", "Stud": "钉饰",
     "Trim": "镶边", "Border": "边框",
     "Panel": "面板", "Mesh": "网面",
@@ -291,7 +292,7 @@ window.MisakaPersona = {
 道具: 从【可操作道具清单】里选，用英文 Name。用户说中文名时自己找对应英文名。清单没有的不要编造。
 颜色: 除"默认/原色"外必须输出 #RRGGBB，自己根据描述判断好看的 hex。用户给 hex 时原样使用。
 属性: 从清单里选值。振动强度可用 Off/Low/Medium/High/Maximum/Random/Escalate/Tease/Deny/Edge。
-常见 layer 名: Bed=床体, Blanket=毛毯, Inner=内衬, Strap=束带, Frame=框架, Base=底座, Front=正面, Back=背面, Padding=软垫, Sheet=外层布料, Mattress=床垫, Pillow=枕头, Rivets=铆钉, Buckle=扣环, Laces=系带, Studs=钉饰, Trim=镶边, Panel=面板, Mesh=网面
+常见 layer 名: Bed=床体, Blanket=毛毯, Inner=内衬, Strap=束带, Straps=束带, Frame=框架, Base=底座, Front=正面, Back=背面, Padding=软垫, Sheet=外层布料, Mattress=床垫, Pillow=枕头, Rivets=铆钉, Buckle=扣环, Buckles=扣环, Laces=系带, Lacing=系带, LacingBack=后系带, LacingTrim=系带镶边, Studs=钉饰, Trim=镶边, Panel=面板, Mesh=网面, Gloss=光泽, Shine=光泽, Pad=爪垫, Paws=爪垫, Lock=锁, Locks=锁, Chain=链条, Chains=链条, Ring=环, Rings=环, Belt=腰带, Belts=腰带, Metal=金属, Display=显示屏, Band=头梁/腕带, Text=文字, Barcode=条形码
 
 操作要点：
 - 编号从【当前房间角色名单】里找，不要猜测
