@@ -2047,6 +2047,46 @@ function unescapeHTML(s) {
         }
       }
 
+      // EMOTE 兜底：检测“气泡/表情”关键词但 LLM 没输出 EMOTE 时，自动提取执行
+      if (executableCommands.length === 0 || !executableCommands.some(c => c.type === 'emote')) {
+        const emoteMatch = content.match(/(?:气泡|表情|状态气泡|emoticon|EMOTE)/i);
+        if (emoteMatch) {
+          // 从内容中提取表情名
+          const exprMap = {
+            'SOS':'SOS','afk':'Afk','brb':'Brb','sleep':'Sleep','hearts':'Hearts','heart':'Hearts','爱心':'Hearts',
+            'tear':'Tear','哭':'Tear','confusion':'Confusion','困惑':'Confusion','annoyed':'Annoyed','不耐烦':'Annoyed',
+            'thumbsup':'ThumbsUp','点赞':'ThumbsUp','thumbsdown':'ThumbsDown','踩':'ThumbsDown',
+            'warning':'Warning','警告':'Warning','brokenheart':'BrokenHeart','心碎':'BrokenHeart',
+            'lightbulb':'Lightbulb','主意':'Lightbulb','coffee':'Coffee','咖啡':'Coffee',
+            'music':'Music','音乐':'Music','gaming':'Gaming','游戏':'Gaming','read':'Read','阅读':'Read',
+            'drawing':'Drawing','画画':'Drawing','coding':'Coding','编程':'Coding','tv':'TV','电视':'TV',
+            'bathing':'Bathing','洗澡':'Bathing','shopping':'Shopping','购物':'Shopping',
+            'work':'Work','工作':'Work','call':'Call','通话':'Call','car':'Car','开车':'Car',
+            'spectator':'Spectator','旁观':'Spectator','raisedhand':'RaisedHand','举手':'RaisedHand',
+            'whisper':'Whisper','耳语':'Whisper','exclamation':'Exclamation','感叹':'Exclamation',
+            'hearing':'Hearing','loverope':'LoveRope','爱绳':'LoveRope','lovegag':'LoveGag','爱口塞':'LoveGag',
+            'lovelock':'LoveLock','爱锁':'LoveLock','wardrobe':'Wardrobe','衣柜':'Wardrobe','fork':'Fork','用餐':'Fork'
+          };
+          let targetExpr = null;
+          for (const [k, v] of Object.entries(exprMap)) {
+            if (new RegExp(k, 'i').test(content)) { targetExpr = v; break; }
+          }
+          if (targetExpr) {
+            // 判断目标："你的"=御坂自己，"我的/给我"=发送者
+            const isSelf = /你的|自己/.test(content) && !/我的|给我/.test(content);
+            const target = isSelf ? Player.MemberNumber : senderNum;
+            console.log(`[MisakaChat] EMOTE 兜底: #${target} -> ${targetExpr}`);
+            const emoteResult = executeEmote(target, targetExpr);
+            if (emoteResult.ok) {
+              const localMsg = `[MisakaChat] 表情气泡已设置: #${target} → ${targetExpr}`;
+              ChatRoomSendLocalMessage(localMsg);
+            } else {
+              ChatRoomSendLocalMessage(`[MisakaChat] EMOTE 兜底失败: ${emoteResult.reason}`);
+            }
+          }
+        }
+      }
+
       // 执行操作
       let commandResult = null;
       if (executableCommands.length > 0) {
