@@ -835,7 +835,7 @@ ${recentSemantic}`;
       const char = ChatRoomCharacter.find(c => c.MemberNumber === memberNumber);
       if (!char) { console.log("[MisakaChat] 找不到玩家 #" + memberNumber); return false; }
       const action = direction === "left" ? "MoveLeft" : "MoveRight";
-      ServerSend("ChatRoomAdmin", { MemberNumber: memberNumber, Action: action, Publish: false });
+      ServerSend("ChatRoomAdmin", { MemberNumber: memberNumber, Action: action });
       state.lastMoveTime = Date.now();
       console.log(`[MisakaChat] 已移动 #${memberNumber} ${direction}`);
       return true;
@@ -869,10 +869,10 @@ ${recentSemantic}`;
         if (srcIdx === wantIdx) break;  // 到位了
         if (srcIdx < wantIdx) {
           // 需要往右移
-          ServerSend("ChatRoomAdmin", { MemberNumber: memberNumber, Action: "MoveRight", Publish: false });
+          ServerSend("ChatRoomAdmin", { MemberNumber: memberNumber, Action: "MoveRight" });
         } else {
           // 需要往左移
-          ServerSend("ChatRoomAdmin", { MemberNumber: memberNumber, Action: "MoveLeft", Publish: false });
+          ServerSend("ChatRoomAdmin", { MemberNumber: memberNumber, Action: "MoveLeft" });
         }
         steps++;
         // 等待服务器同步
@@ -907,7 +907,7 @@ ${recentSemantic}`;
         }
         lastSrcIdx = srcIdx;
         const action = edge === "left" ? "MoveLeft" : "MoveRight";
-        ServerSend("ChatRoomAdmin", { MemberNumber: memberNumber, Action: action, Publish: false });
+        ServerSend("ChatRoomAdmin", { MemberNumber: memberNumber, Action: action });
         steps++;
         await new Promise(r => setTimeout(r, 400));
       }
@@ -1424,9 +1424,13 @@ ${recentSemantic}`;
         } else return { ok: false, reason: "unknown-color", memberNumber, item: itemName };
       }
       const existingItem = char.Appearance.find(a => a.Asset?.Group?.Name === targetGroup);
+      const prevItem = existingItem ? { ...existingItem } : null;
       if (existingItem && colorOverride) directSetColor(char, targetGroup, colorOverride);
       else directSetItem(char, targetGroup, targetAsset, colorOverride);
+      const nextItem = char.Appearance.find(a => a.Asset?.Group?.Name === targetGroup);
       ChatRoomCharacterUpdate(char);
+      // 推送公屏消息
+      try { ChatRoomPublishAction(char, "ItemAdd", prevItem, nextItem); } catch(e) { console.warn("[MisakaChat] publish ItemAdd 失败:", e.message); }
       console.log(`[MisakaChat] 已给 #${memberNumber} 添加 ${itemName} (group: ${targetGroup})`);
       return { ok: true };
     } catch(e) {
@@ -1464,9 +1468,12 @@ ${recentSemantic}`;
         return { ok: false, reason: "locked-item", memberNumber, item: itemName };
       }
       const groupName = target.Asset.Group.Name;
+      const prevItem = { ...target };
       console.log(`[MisakaChat] 准备移除 #${memberNumber} group=${groupName} desc=${target.Asset.Description}`);
       directRemoveItem(char, groupName);
       ChatRoomCharacterUpdate(char);
+      // 推送公屏消息
+      try { ChatRoomPublishAction(char, "ItemRemove", prevItem, null); } catch(e) { console.warn("[MisakaChat] publish ItemRemove 失败:", e.message); }
       console.log(`[MisakaChat] 已移除 #${memberNumber} 的 ${itemName} (group: ${target.Asset.Group.Name})`);
       return { ok: true };
     } catch(e) {
