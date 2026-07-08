@@ -1429,8 +1429,13 @@ ${recentSemantic}`;
       else directSetItem(char, targetGroup, targetAsset, colorOverride);
       const nextItem = char.Appearance.find(a => a.Asset?.Group?.Name === targetGroup);
       ChatRoomCharacterUpdate(char);
-      // 推送公屏消息
-      try { ChatRoomPublishAction(char, "ItemAdd", prevItem, nextItem); } catch(e) { console.warn("[MisakaChat] publish ItemAdd 失败:", e.message); }
+      // 推送公屏动作消息
+      try {
+        const assetDesc = nextItem?.Asset?.Description || itemName;
+        const selfName = CharacterNickname(Player);
+        const targetName = (char === Player) ? "自己" : CharacterNickname(char);
+        ServerSend("ChatRoomChat", { Content: `${selfName}把${assetDesc}穿在了${targetName}身上`, Type: "Emote" });
+      } catch(e) { console.warn("[MisakaChat] publish ItemAdd 失败:", e.message); }
       console.log(`[MisakaChat] 已给 #${memberNumber} 添加 ${itemName} (group: ${targetGroup})`);
       return { ok: true };
     } catch(e) {
@@ -1469,11 +1474,16 @@ ${recentSemantic}`;
       }
       const groupName = target.Asset.Group.Name;
       const prevItem = { ...target };
+      const assetDesc = target.Asset?.Description || itemName;
       console.log(`[MisakaChat] 准备移除 #${memberNumber} group=${groupName} desc=${target.Asset.Description}`);
       directRemoveItem(char, groupName);
       ChatRoomCharacterUpdate(char);
-      // 推送公屏消息
-      try { ChatRoomPublishAction(char, "ItemRemove", prevItem, null); } catch(e) { console.warn("[MisakaChat] publish ItemRemove 失败:", e.message); }
+      // 推送公屏动作消息
+      try {
+        const selfName = CharacterNickname(Player);
+        const targetName = (char === Player) ? "自己" : CharacterNickname(char);
+        ServerSend("ChatRoomChat", { Content: `${selfName}解除了${targetName}身上的${assetDesc}`, Type: "Emote" });
+      } catch(e) { console.warn("[MisakaChat] publish ItemRemove 失败:", e.message); }
       console.log(`[MisakaChat] 已移除 #${memberNumber} 的 ${itemName} (group: ${target.Asset.Group.Name})`);
       return { ok: true };
     } catch(e) {
