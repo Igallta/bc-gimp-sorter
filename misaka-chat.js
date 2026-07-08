@@ -2002,7 +2002,7 @@ function unescapeHTML(s) {
       let finalReply = sanitizeReply(cleaned);
 
       // 检测“应该有指令但没有”：如果用户明确要求操作道具/移动，但 LLM 没输出指令，给第二次机会
-      const actionKeywords = /调|开|关|绑|解|穿|脱|戴|摘|加|移|换|颜色|改色|跳蛋|振动|绳|口球|束缚|移动|挪|左边|右边|强度|档|绑法|记住|快照|恢复|复制|按.*样子/;
+      const actionKeywords = /调|开|关|绑|解|穿|脱|戴|摘|加|移|换|改|颜色|改色|跳蛋|振动|绳|口球|束缚|移动|挪|左边|右边|强度|档|绑法|记住|快照|恢复|复制|按.*样子|气泡|表情|状态/;
       if (executableCommands.length === 0 && actionKeywords.test(content)) {
         // 重试时必须加载道具清单（用户要求了操作）
         const retrySystemPrompt = needCatalog ? systemPrompt : getSystemPrompt(true);
