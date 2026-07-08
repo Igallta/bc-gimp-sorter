@@ -987,29 +987,8 @@ ${recentSemantic}`;
   }
 
 
-  function translateAssetText(text) {
-    if (!text) return "";
-    try {
-      const cache = typeof TranslationCache !== "undefined" && TranslationCache["Assets/Female3DCG/Female3DCG_CN.txt"];
-      if (!cache) return text;
-      if (Array.isArray(cache)) {
-        for (let i = 0; i < cache.length - 1; i += 2) {
-          if (cache[i] === text && cache[i + 1]) return cache[i + 1];
-        }
-        const idx = cache.indexOf(text);
-        if (idx >= 0 && cache[idx + 1]) return cache[idx + 1];
-      } else if (typeof cache === "object" && cache[text]) {
-        return cache[text];
-      }
-    } catch(e) {}
-    return text;
-  }
-
   function assetCnName(asset) {
-    if (!asset) return "";
-    const translated = translateAssetText(asset.Description || asset.Name || "");
-    if (translated && translated !== asset.Name) return translated;
-    return asset.Description || asset.Name || "";
+    return (typeof MisakaPersona !== "undefined" && MisakaPersona.assetCnName) ? MisakaPersona.assetCnName(asset) : (asset?.Description || asset?.Name || "");
   }
 
   function findItemAsset(itemName) {
@@ -1201,9 +1180,6 @@ ${recentSemantic}`;
     return null;
   }
 
-  function findDynamicPropertyKey(asset, propName) {
-    return null;
-  }
 
   function findModularOption(asset, moduleKey, valueName) {
     try {
@@ -1244,13 +1220,6 @@ ${recentSemantic}`;
       item.Property[fallbackProperty.key] = (fallbackProperty.values && Object.prototype.hasOwnProperty.call(fallbackProperty.values, valueName)) ? fallbackProperty.values[valueName] : valueName;
       ChatRoomCharacterUpdate(char);
       return { ok: true, msg: `已设置 ${item.Asset.Description} ${fallbackProperty.key}=${item.Property[fallbackProperty.key]}` };
-    }
-
-    const dynamicPropertyKey = findDynamicPropertyKey(item.Asset, propName);
-    if (dynamicPropertyKey && archetype !== "typed" && archetype !== "modular") {
-      item.Property[dynamicPropertyKey] = valueName;
-      ChatRoomCharacterUpdate(char);
-      return { ok: true, msg: `已设置 ${item.Asset.Description} ${dynamicPropertyKey}=${item.Property[dynamicPropertyKey]}` };
     }
 
     if (archetype === "vibrating") {
@@ -1369,8 +1338,6 @@ ${recentSemantic}`;
   function executeItemSet(memberNumber, itemName, part, propName, valueName) {
     try {
       const char = (memberNumber === Player.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === memberNumber); if (!char) { console.log("[MisakaChat] 找不到玩家 #" + memberNumber); return { ok: false, reason: "missing-character" }; }
-      if (!char) return { ok: false, reason: "missing-character" };
-
       let target = findItemByPart(char, itemName, part);
       if (!target) {
         const mapping = findItemAsset(itemName);
@@ -1448,7 +1415,6 @@ ${recentSemantic}`;
   function executeItemDel(memberNumber, itemName, part) {
     try {
       const char = (memberNumber === Player.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === memberNumber); if (!char) { console.log("[MisakaChat] 找不到玩家 #" + memberNumber); return { ok: false, reason: "missing-character" }; }
-      if (!char) return { ok: false, reason: "missing-character" };
 
       console.log(`[MisakaChat] executeItemDel #${memberNumber} item="${itemName}" part="${part||""}"`);
 
@@ -1488,7 +1454,8 @@ ${recentSemantic}`;
   // 释放全部未锁道具
   function executeItemDelAll(memberNumber) {
     try {
-      const char = (memberNumber === Player.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === memberNumber); if (!char) { console.log("[MisakaChat] 找不到玩家 #" + memberNumber); return false; }
+      const char = (memberNumber === Player.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === memberNumber);
+      if (!char) { console.log("[MisakaChat] 找不到玩家 #" + memberNumber); return false; }
       if (!char) return false;
       let count = 0;
       const toRemove = (char.Appearance || [])
@@ -1581,6 +1548,63 @@ ${recentSemantic}`;
       console.error("[MisakaChat] 束缚复制失败:", e.message);
       return { ok: false, reason: e.message };
     }
+  }
+
+  // 发送回复到 BC 聊天室(含去重 + 多行分割)
+  function sendReply(text) {
+    if (!text) return false;
+    const sentKey = text;
+    const now = Date.now();
+    if (window.__misakaLastSentReply === sentKey && now - (window.__misakaLastSentReplyTime || 0) < 5000) {
+      console.warn("[MisakaChat] 跳过重复发送:", text);
+      return false;
+    }
+    window.__misakaLastSentReply = sentKey;
+    window.__misakaLastSentReplyTime = now;
+    if (typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom") {
+      let parts = text.split(/\n/).map(p => p.trim()).filter(Boolean);
+      if (parts.length === 1 && parts[0].includes("|")) parts = parts[0].split(/\|/).map(p => p.trim()).filter(Boolean);
+      if (parts.length >= 2) {
+        let delay = 0;
+        for (const p of parts) { if (!p) continue; setTimeout(() => { ElementValue("InputChat", p); ChatRoomSendChat(); }, delay); delay += 600; }
+      } else { ElementValue("InputChat", parts[0] || text); ChatRoomSendChat(); }
+      if (state.recentMessages.length > CONFIG.maxContext) state.recentMessages.shift();
+    }
+    return true;
+  }
+
+  // EMOTE 表情名映射(中英文 → BC 标准名)
+  const EMOTE_EXPR_MAP = {
+    'SOS':'SOS','afk':'Afk','brb':'Brb','sleep':'Sleep','hearts':'Hearts','heart':'Hearts','爱心':'Hearts',
+    'tear':'Tear','哭':'Tear','confusion':'Confusion','困惑':'Confusion','annoyed':'Annoyed','不耐烦':'Annoyed',
+    'thumbsup':'ThumbsUp','点赞':'ThumbsUp','thumbsdown':'ThumbsDown','踩':'ThumbsDown',
+    'warning':'Warning','警告':'Warning','brokenheart':'BrokenHeart','心碎':'BrokenHeart',
+    'lightbulb':'Lightbulb','主意':'Lightbulb','coffee':'Coffee','咖啡':'Coffee',
+    'music':'Music','音乐':'Music','gaming':'Gaming','游戏':'Gaming','read':'Read','阅读':'Read',
+    'drawing':'Drawing','画画':'Drawing','coding':'Coding','编程':'Coding','tv':'TV','电视':'TV',
+    'bathing':'Bathing','洗澡':'Bathing','shopping':'Shopping','购物':'Shopping',
+    'work':'Work','工作':'Work','call':'Call','通话':'Call','car':'Car','开车':'Car',
+    'spectator':'Spectator','旁观':'Spectator','raisedhand':'RaisedHand','举手':'RaisedHand',
+    'whisper':'Whisper','耳语':'Whisper','exclamation':'Exclamation','感叹':'Exclamation',
+    'hearing':'Hearing','loverope':'LoveRope','爱绳':'LoveRope','lovegag':'LoveGag','爱口塞':'LoveGag',
+    'lovelock':'LoveLock','爱锁':'LoveLock','wardrobe':'Wardrobe','衣柜':'Wardrobe','fork':'Fork','用餐':'Fork'
+  };
+
+  // EMOTE 兜底:从消息内容中提取表情名并执行
+  function tryEmoteFallback(content, senderNum) {
+    try {
+      if (!/(?:气泡|表情|状态气泡|emoticon|EMOTE)/i.test(content)) return;
+      let targetExpr = null;
+      for (const [k, v] of Object.entries(EMOTE_EXPR_MAP)) {
+        if (new RegExp(k, 'i').test(content)) { targetExpr = v; break; }
+      }
+      if (!targetExpr) return;
+      const isSelf = /你的|自己/.test(content) && !/我的|给我/.test(content);
+      const target = isSelf ? Player.MemberNumber : senderNum;
+      console.log(`[MisakaChat] EMOTE 兜底: #${target} -> ${targetExpr}`);
+      const result = executeEmote(target, targetExpr);
+      sendLocal(result.ok ? `表情气泡已设置: #${target} → ${targetExpr}` : `EMOTE 兜底失败: ${result.reason}`);
+    } catch(e) { console.error('[MisakaChat] EMOTE 兜底异常:', e.message); }
   }
 
   function executeEmote(memberNumber, expression) {
@@ -2012,21 +2036,7 @@ function unescapeHTML(s) {
         }
       }
       if (!reply) { console.warn("[MisakaChat] LLM 返回空,未回复");
-        // LLM 空回复也尝试 EMOTE 兜底
-        try {
-          const emoteMatch = content.match(/(?:气泡|表情|状态气泡|emoticon|EMOTE)/i);
-          if (emoteMatch) {
-            const exprMap = {'SOS':'SOS','afk':'Afk','brb':'Brb','sleep':'Sleep','hearts':'Hearts','heart':'Hearts','爱心':'Hearts','tear':'Tear','哭':'Tear','confusion':'Confusion','困惑':'Confusion','annoyed':'Annoyed','不耐烦':'Annoyed','thumbsup':'ThumbsUp','点赞':'ThumbsUp','thumbsdown':'ThumbsDown','踩':'ThumbsDown','warning':'Warning','警告':'Warning','brokenheart':'BrokenHeart','心碎':'BrokenHeart','lightbulb':'Lightbulb','主意':'Lightbulb','coffee':'Coffee','咖啡':'Coffee','music':'Music','音乐':'Music','gaming':'Gaming','游戏':'Gaming','read':'Read','阅读':'Read','drawing':'Drawing','画画':'Drawing','coding':'Coding','编程':'Coding','tv':'TV','电视':'TV','bathing':'Bathing','洗澡':'Bathing','shopping':'Shopping','购物':'Shopping','work':'Work','工作':'Work','call':'Call','通话':'Call','car':'Car','开车':'Car','spectator':'Spectator','旁观':'Spectator','raisedhand':'RaisedHand','举手':'RaisedHand','whisper':'Whisper','耳语':'Whisper','exclamation':'Exclamation','感叹':'Exclamation','hearing':'Hearing','loverope':'LoveRope','爱绳':'LoveRope','lovegag':'LoveGag','爱口塞':'LoveGag','lovelock':'LoveLock','爱锁':'LoveLock','wardrobe':'Wardrobe','衣柜':'Wardrobe','fork':'Fork','用餐':'Fork'};
-            let targetExpr = null;
-            for (const [k, v] of Object.entries(exprMap)) { if (new RegExp(k, 'i').test(content)) { targetExpr = v; break; } }
-            if (targetExpr) {
-              const isSelf = /你的|自己/.test(content) && !/我的|给我/.test(content);
-              const target = isSelf ? Player.MemberNumber : senderNum;
-              const emoteResult = executeEmote(target, targetExpr);
-              sendLocal(emoteResult.ok ? `表情气泡已设置: #${target} → ${targetExpr}` : `EMOTE 兜底失败: ${emoteResult.reason}`);
-            }
-          }
-        } catch(e) { console.error('[MisakaChat] EMOTE 空回复兜底异常:', e.message); }
+        tryEmoteFallback(content, senderNum);
         return;
       }
 
@@ -2035,46 +2045,10 @@ function unescapeHTML(s) {
       const executableCommands = commands.filter(c => c.type !== "memsearch" && c.type !== "bcequery");
       let finalReply = sanitizeReply(cleaned);
 
-      // EMOTE 兜底:检测"气泡/表情"关键词但 LLM 没输出 EMOTE 时,自动提取执行
-      try {
+      // EMOTE 兜底:LLM 没输出 EMOTE 时自动提取执行
       if (!executableCommands.some(c => c.type === 'emote')) {
-        const emoteMatch = content.match(/(?:气泡|表情|状态气泡|emoticon|EMOTE)/i);
-        if (emoteMatch) {
-          // 从内容中提取表情名
-          const exprMap = {
-            'SOS':'SOS','afk':'Afk','brb':'Brb','sleep':'Sleep','hearts':'Hearts','heart':'Hearts','爱心':'Hearts',
-            'tear':'Tear','哭':'Tear','confusion':'Confusion','困惑':'Confusion','annoyed':'Annoyed','不耐烦':'Annoyed',
-            'thumbsup':'ThumbsUp','点赞':'ThumbsUp','thumbsdown':'ThumbsDown','踩':'ThumbsDown',
-            'warning':'Warning','警告':'Warning','brokenheart':'BrokenHeart','心碎':'BrokenHeart',
-            'lightbulb':'Lightbulb','主意':'Lightbulb','coffee':'Coffee','咖啡':'Coffee',
-            'music':'Music','音乐':'Music','gaming':'Gaming','游戏':'Gaming','read':'Read','阅读':'Read',
-            'drawing':'Drawing','画画':'Drawing','coding':'Coding','编程':'Coding','tv':'TV','电视':'TV',
-            'bathing':'Bathing','洗澡':'Bathing','shopping':'Shopping','购物':'Shopping',
-            'work':'Work','工作':'Work','call':'Call','通话':'Call','car':'Car','开车':'Car',
-            'spectator':'Spectator','旁观':'Spectator','raisedhand':'RaisedHand','举手':'RaisedHand',
-            'whisper':'Whisper','耳语':'Whisper','exclamation':'Exclamation','感叹':'Exclamation',
-            'hearing':'Hearing','loverope':'LoveRope','爱绳':'LoveRope','lovegag':'LoveGag','爱口塞':'LoveGag',
-            'lovelock':'LoveLock','爱锁':'LoveLock','wardrobe':'Wardrobe','衣柜':'Wardrobe','fork':'Fork','用餐':'Fork'
-          };
-          let targetExpr = null;
-          for (const [k, v] of Object.entries(exprMap)) {
-            if (new RegExp(k, 'i').test(content)) { targetExpr = v; break; }
-          }
-          if (targetExpr) {
-            // 判断目标:"你的"=御坂自己,"我的/给我"=发送者
-            const isSelf = /你的|自己/.test(content) && !/我的|给我/.test(content);
-            const target = isSelf ? Player.MemberNumber : senderNum;
-            console.log(`[MisakaChat] EMOTE 兜底: #${target} -> ${targetExpr}`);
-            const emoteResult = executeEmote(target, targetExpr);
-            if (emoteResult.ok) {
-              sendLocal(`表情气泡已设置: #${target} → ${targetExpr}`);
-            } else {
-              sendLocal(`EMOTE 兜底失败: ${emoteResult.reason}`);
-            }
-          }
-        }
+        tryEmoteFallback(content, senderNum);
       }
-      } catch(emoteErr) { console.error('[MisakaChat] EMOTE 兜底异常:', emoteErr.message); }
 
       // 检测"应该有指令但没有":如果用户明确要求操作道具/移动,但 LLM 没输出指令,给第二次机会
       const actionKeywords = /调|开|关|绑|解|穿|脱|戴|摘|加|移|换|改|颜色|改色|跳蛋|振动|绳|口球|束缚|移动|挪|左边|右边|强度|档|绑法|记住|快照|恢复|复制|按.*样子|气泡|表情|状态/;
@@ -2097,26 +2071,7 @@ function unescapeHTML(s) {
               const memText = `${senderName}: ${content} → 御坂: ${finalReply}`;
               storeSemanticMemory(memText, { sender: senderName, memberNum: senderNum }).catch(() => {});
             }
-            // 发送去重
-            const sentKey = finalReply;
-            if (window.__misakaLastSentReply === sentKey && Date.now() - (window.__misakaLastSentReplyTime || 0) < 5000) {
-              console.warn("[MisakaChat] 跳过重复发送:", finalReply);
-              return;
-            }
-            window.__misakaLastSentReply = sentKey;
-            window.__misakaLastSentReplyTime = Date.now();
-            // 发送
-            if (typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom") {
-              let parts = finalReply.split(/\n/).map(p => p.trim()).filter(Boolean);
-              if (parts.length === 1 && parts[0].includes("|")) parts = parts[0].split(/\|/).map(p => p.trim()).filter(Boolean);
-              if (parts.length >= 2) {
-                let delay = 0;
-                for (const p of parts) { if (!p) continue; setTimeout(() => { ElementValue("InputChat", p); ChatRoomSendChat(); }, delay); delay += 600; }
-              } else {
-                ElementValue("InputChat", parts[0] || finalReply); ChatRoomSendChat();
-              }
-              if (state.recentMessages.length > CONFIG.maxContext) state.recentMessages.shift();
-            }
+            sendReply(finalReply);
             return;
           }
         }
@@ -2161,38 +2116,7 @@ function unescapeHTML(s) {
         storeSemanticMemory(memText, { sender: senderName, memberNum: senderNum }).catch(() => {});
       }
 
-      // 发送去重
-      const sentKey = finalReply;
-      const sentAt = Date.now();
-      if (window.__misakaLastSentReply === sentKey && sentAt - (window.__misakaLastSentReplyTime || 0) < 5000) {
-        console.warn("[MisakaChat] 跳过重复发送:", finalReply);
-        return;
-      }
-      window.__misakaLastSentReply = sentKey;
-      window.__misakaLastSentReplyTime = sentAt;
-
-      if (typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom") {
-        // 按换行分割动作和说话(兼容旧 | 格式)
-        let parts = finalReply.split(/\n/).map(p => p.trim()).filter(Boolean);
-        // 兼容旧 | 格式:单行含 | 时拆开
-        if (parts.length === 1 && parts[0].includes("|")) {
-          parts = parts[0].split(/\|/).map(p => p.trim()).filter(Boolean);
-        }
-        if (parts.length >= 2) {
-          // 多段发送(动作/说话)
-          let delay = 0;
-          for (const p of parts) {
-            if (!p) continue;
-            setTimeout(() => { ElementValue("InputChat", p); ChatRoomSendChat(); }, delay);
-            delay += 600;
-          }
-        } else {
-          ElementValue("InputChat", parts[0] || finalReply);
-          ChatRoomSendChat();
-        }
-        // 不再手动 push--BC 的 ChatRoomMessage hook 会自动处理 self message
-        if (state.recentMessages.length > CONFIG.maxContext) state.recentMessages.shift();
-      }
+      sendReply(finalReply);
 
     } catch (e) {
       console.error("[MisakaChat] 回复失败:", e.message);
