@@ -1577,15 +1577,13 @@ ${recentSemantic}`;
     try {
       const char = (memberNumber === Player.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === memberNumber);
       if (!char) return { ok: false, reason: "找不到玩家" };
-      const emoteItem = char.Appearance.find(a => a?.Asset?.Group?.Name === "Emoticon");
-      if (!emoteItem) return { ok: false, reason: "没有 Emoticon 槽位" };
       // 校验 expression 是否在允许列表内
       const group = AssetGroup.find(g => g?.Name === "Emoticon");
       const allowed = group?.AllowExpression || [];
       const expr = allowed.find(e => e.toLowerCase() === expression.toLowerCase());
       if (!expr) return { ok: false, reason: `未知表情: ${expression}` };
-      emoteItem.Property = emoteItem.Property || {};
-      emoteItem.Property.Expression = expr;
+      CharacterSetFacialExpression(char, "Emoticon", expr);
+      if (memberNumber === Player.MemberNumber) ChatRoomSyncExpression();
       ChatRoomCharacterUpdate(char);
       console.log(`[MisakaChat] EMOTE: #${memberNumber} -> ${expr}`);
       return { ok: true, msg: `表情改为 ${expr}` };
