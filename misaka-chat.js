@@ -845,7 +845,7 @@ ${recentSemantic}`;
       const char = ChatRoomCharacter.find(c => c.MemberNumber === memberNumber);
       if (!char) { console.log("[MisakaChat] 找不到玩家 #" + memberNumber); return false; }
       const action = direction === "left" ? "MoveLeft" : "MoveRight";
-      ServerSend("ChatRoomAdmin", { MemberNumber: memberNumber, Action: action });
+      ServerSend("ChatRoomAdmin", { MemberNumber: memberNumber, Action: action, Publish: true });
       state.lastMoveTime = Date.now();
       console.log(`[MisakaChat] 已移动 #${memberNumber} ${direction}`);
       return true;
@@ -879,10 +879,10 @@ ${recentSemantic}`;
         if (srcIdx === wantIdx) break;  // 到位了
         if (srcIdx < wantIdx) {
           // 需要往右移
-          ServerSend("ChatRoomAdmin", { MemberNumber: memberNumber, Action: "MoveRight" });
+          ServerSend("ChatRoomAdmin", { MemberNumber: memberNumber, Action: "MoveRight", Publish: true });
         } else {
           // 需要往左移
-          ServerSend("ChatRoomAdmin", { MemberNumber: memberNumber, Action: "MoveLeft" });
+          ServerSend("ChatRoomAdmin", { MemberNumber: memberNumber, Action: "MoveLeft", Publish: true });
         }
         steps++;
         // 等待服务器同步
@@ -917,7 +917,7 @@ ${recentSemantic}`;
         }
         lastSrcIdx = srcIdx;
         const action = edge === "left" ? "MoveLeft" : "MoveRight";
-        ServerSend("ChatRoomAdmin", { MemberNumber: memberNumber, Action: action });
+        ServerSend("ChatRoomAdmin", { MemberNumber: memberNumber, Action: action, Publish: true });
         steps++;
         await new Promise(r => setTimeout(r, 400));
       }
