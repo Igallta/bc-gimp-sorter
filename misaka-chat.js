@@ -1,5 +1,5 @@
-// MisakaChat v2.3.1 — BC 御坂自动回复系统
-// 模块分区：
+// MisakaChat v2.3.1 - BC 御坂自动回复系统
+// 模块分区:
 //   [Config]      L15-55   配置 + 状态
 //   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
 //   [Idle]        L441-527 闲聊 / Heartbeat
@@ -26,7 +26,7 @@
     fallbackModel: "deepseek-v4-flash",
     maxTokens: 8192,
     maxContext: 50,
-    maxContextTokens: 20000, // context messages 的 token 预算上限（system prompt 不算）
+    maxContextTokens: 20000, // context messages 的 token 预算上限(system prompt 不算)
     cooldownMs: 3000,
     perUserCooldownMs: 5000,
     apiKeyTimeout: 45000,
@@ -51,12 +51,12 @@
     messageCount: 0,
     busy: false,
     lastMoveTime: 0,  // 移动操作冷却
-    lastNonSelfMsgTime: 0,  // 上次非自己消息时间（idle 检测用）
+    lastNonSelfMsgTime: 0,  // 上次非自己消息时间(idle 检测用)
     roomLog: [],          // 进出记录
     snapshots: {},        // 束缚快照 { memberNumber: { items, time } }
   };
 
-  // 恢复 messageCount（避免刷新后归零导致 refine 不触发）
+  // 恢复 messageCount(避免刷新后归零导致 refine 不触发)
   try {
     const saved = parseInt(localStorage.getItem("misaka_msg_count") || "0", 10);
     if (saved > 0) state.messageCount = saved;
@@ -133,14 +133,14 @@
     };
   })();
 
-  // 从 IndexedDB 异步加载语义记忆和提炼记忆（加载完成前用空数组占位）
+  // 从 IndexedDB 异步加载语义记忆和提炼记忆(加载完成前用空数组占位)
   state.semanticMemories = [];
   state.refinedMemories = [];
   state.idbReady = false;
 
   IDB.getSemantic().then(entries => {
     if (Array.isArray(entries)) {
-      // 按 time 排序（IndexedDB autoIncrement id 基本保序，但显式排序更稳）
+      // 按 time 排序(IndexedDB autoIncrement id 基本保序,但显式排序更稳)
       entries.sort((a, b) => (a.time || 0) - (b.time || 0));
       state.semanticMemories = entries;
     }
@@ -148,7 +148,7 @@
     console.log(`[MisakaChat] IDB 加载完成: ${state.semanticMemories.length} 条语义记忆`);
   }).catch(e => {
     state.idbReady = true;
-    console.warn("[MisakaChat] IDB 加载语义记忆失败，从空开始:", e.message);
+    console.warn("[MisakaChat] IDB 加载语义记忆失败,从空开始:", e.message);
   });
 
   IDB.getRefined().then(entries => {
@@ -210,7 +210,7 @@
   // === [Memory] Semantic Memory (Embedding-based) ===
   // 调用 OpenAI embedding API (text-embedding-3-large)
   function getEmbeddingKey() {
-    // 优先从 GM_getValue 读（Tampermonkey 存储，BC 脚本读不到）
+    // 优先从 GM_getValue 读(Tampermonkey 存储,BC 脚本读不到)
     if (typeof window.__GM_getValue === "function") {
       const v = window.__GM_getValue("misaka_openai_key");
       if (v) return v;
@@ -273,13 +273,13 @@
     return denom > 0 ? dot / denom : 0;
   }
 
-  // 智能遗忘：超限时按价值评分淘汰低价值记忆，而非简单 FIFO
+  // 智能遗忘:超限时按价值评分淘汰低价值记忆,而非简单 FIFO
   function smartForget() {
     const now = Date.now();
     const scored = state.semanticMemories.map((m, i) => {
       const ageDays = (now - (m.time || 0)) / 86400000;
       const textLen = (m.text || "").length;
-      // 价值 = 文本长度（信息量）× 时间衰减（越新价值越高）
+      // 价值 = 文本长度(信息量)× 时间衰减(越新价值越高)
       const value = textLen * Math.max(0.2, 1 - ageDays / 90);
       return { idx: i, value };
     });
@@ -289,16 +289,16 @@
     for (const idx of toDrop) {
       state.semanticMemories.splice(idx, 1);
     }
-    // 全量同步 semantic store（超限淘汰是稀有事件，全量写可接受）
+    // 全量同步 semantic store(超限淘汰是稀有事件,全量写可接受)
     IDB.clearSemantic().then(() => Promise.all(state.semanticMemories.map(m => IDB.putSemanticOne(m))));
     console.log(`[MisakaChat] 智能遗忘: 淘汰 ${toDrop.length} 条低价值记忆`);
   }
 
-  // 存一条语义记忆（带 embedding）
+  // 存一条语义记忆(带 embedding)
   async function storeSemanticMemory(text, meta = {}) {
     if (!text || text.length < 15) return; // 太短的消息不值得存 embedding
 
-    // 去重：搜索已有记忆，相似度 > 0.92 则跳过
+    // 去重:搜索已有记忆,相似度 > 0.92 则跳过
     const dup = await searchMemories(text, 1);
     if (dup.length > 0 && dup[0].score > 0.92) return;
 
@@ -314,10 +314,10 @@
       ...meta,
     };
     state.semanticMemories.push(entry);
-    IDB.putSemanticOne(entry); // 增量写入，不再全量覆盖
+    IDB.putSemanticOne(entry); // 增量写入,不再全量覆盖
   }
 
-  // 语义搜索：用 query embedding 找最相似的 K 条记忆（带时间衰减）
+  // 语义搜索:用 query embedding 找最相似的 K 条记忆(带时间衰减)
   async function searchMemories(query, topK = CONFIG.topKMemories) {
     if (!query || state.semanticMemories.length === 0) return [];
     const qEmb = await getEmbedding(query);
@@ -339,7 +339,7 @@
     const now = Date.now();
     const results = [];
 
-    // 统一语义搜索（semantic_mem + refined_mem）
+    // 统一语义搜索(semantic_mem + refined_mem)
     const sources = [
       { list: state.semanticMemories, source: "semantic" },
       { list: state.refinedMemories, source: "refined" },
@@ -354,9 +354,9 @@
           const decayed = cosineSim(qEmb, emb) * Math.max(0.3, 1 - ((now - (m.time || 0)) / 86400000) / 90);
           if (decayed > 0.3) results.push({ text, score: decayed, source });
         } else {
-          // 关键词 fallback（无 embedding 的旧条目）
+          // 关键词 fallback(无 embedding 的旧条目)
           const q = query.toLowerCase(), lower = text.toLowerCase();
-          const terms = q.split(/[\s,，、。.!！?？;；:：]+/).filter(t => t.length >= 2);
+          const terms = q.split(/[\s,,、。.!!??;;::]+/).filter(t => t.length >= 2);
           let kw = lower.includes(q) ? 3 : 0;
           for (const t of terms) if (lower.includes(t)) kw++;
           if (kw > 0) results.push({ text, score: kw, source: source + "-keyword" });
@@ -395,7 +395,7 @@
 
 
   // === [Memory] Long-term Memory Refinement ===
-  // 每 memoryRefineInterval 条消息，用 LLM 从 profiles + semanticMemories 提炼长期记忆
+  // 每 memoryRefineInterval 条消息,用 LLM 从 profiles + semanticMemories 提炼长期记忆
   async function maybeRefineMemory() {
     if (state.messageCount % CONFIG.memoryRefineInterval !== 0) return;
     if (state.messageCount === 0) return;
@@ -404,23 +404,23 @@
       const profiles = Object.entries(mem.profiles || {}).map(([mn, info]) =>
         `#${mn} ${info.name}: ${info.notes || ""} (${info.chatCount || 0}次互动)`).join("\n");
       const recentSemantic = (state.semanticMemories || []).slice(-20).map(m => m.text).join("\n");
-      
-      const prompt = `根据以下 BC 聊天记录片段，提炼出御坂应该长期记住的重要信息（人际关系、明确偏好、重要事件、约束关系），不超过100字，用中文。
-重要限制：
+
+      const prompt = `根据以下 BC 聊天记录片段,提炼出御坂应该长期记住的重要信息(人际关系、明确偏好、重要事件、约束关系),不超过100字,用中文。
+重要限制:
 - 不要把"让御坂改成某种颜色/操作某个颜色"当成用户偏好。
-- 只有用户明确说"我喜欢/我最喜欢/我偏好/我讨厌"时，才能提炼为偏好。
+- 只有用户明确说"我喜欢/我最喜欢/我偏好/我讨厌"时,才能提炼为偏好。
 - 不确定是不是偏好就不要写偏好。
-- 御坂自己说的话可能是编造的记忆（如"XX和我玩过YY"），不要把御坂的回答当作事实提炼。
-- 区分"谁说的"：如果是御坂说自己喜欢XX，就写"御坂喜欢XX"，不要写成"XX喜欢"。如果是用户说自己喜欢XX，就写"XX喜欢XX"。不要混淆说话者和内容主语。
-- 只有用户说的才值提炼为事实，御坂说的只提炼御坂自己的偏好/特征。
-- 不要推断原因和细节，只提炼明确说出的内容。如用户说"帮我修输入法"，只提炼"伊水输入法有问题"，不要推断"失灵/重启可恢复"等未说出的细节。
+- 御坂自己说的话可能是编造的记忆(如"XX和我玩过YY"),不要把御坂的回答当作事实提炼。
+- 区分"谁说的":如果是御坂说自己喜欢XX,就写"御坂喜欢XX",不要写成"XX喜欢"。如果是用户说自己喜欢XX,就写"XX喜欢XX"。不要混淆说话者和内容主语。
+- 只有用户说的才值提炼为事实,御坂说的只提炼御坂自己的偏好/特征。
+- 不要推断原因和细节,只提炼明确说出的内容。如用户说"帮我修输入法",只提炼"伊水输入法有问题",不要推断"失灵/重启可恢复"等未说出的细节。
 
 人物档案:
 ${profiles}
 
 记忆片段:
 ${recentSemantic}`;
-      const refined = await callLLM("你是记忆提炼助手。只提炼有明确证据的长期信息，禁止把操作请求推断成偏好。", [{role:"user", content: prompt}], {
+      const refined = await callLLM("你是记忆提炼助手。只提炼有明确证据的长期信息,禁止把操作请求推断成偏好。", [{role:"user", content: prompt}], {
         model: CONFIG.fallbackModel,
         fallbackModel: CONFIG.fallbackModel,
       });
@@ -428,7 +428,7 @@ ${recentSemantic}`;
         const ts = Date.now();
         const time = new Date(ts).toLocaleDateString("zh-CN", {month:"2-digit",day:"2-digit"});
         const refinedText = `[${time}] ${refined.slice(0, 100)}`;
-        // 给 refined memory 算 embedding，让语义搜索能命中
+        // 给 refined memory 算 embedding,让语义搜索能命中
         let refinedEmb = null;
         try { refinedEmb = await getEmbedding(refinedText); } catch(e) {}
         const entry = { text: refinedText, embedding: refinedEmb, time: ts };
@@ -436,7 +436,7 @@ ${recentSemantic}`;
         if (state.refinedMemories.length > CONFIG.maxRefinedMemories) {
           state.refinedMemories.shift();
         }
-        // refined 最多 20 条，先 clear 再全量写，避免 autoIncrement 重复堆积
+        // refined 最多 20 条,先 clear 再全量写,避免 autoIncrement 重复堆积
         IDB.clearRefined().then(() => Promise.all(state.refinedMemories.map(m => IDB.putRefinedOne(m))));
         console.log("[MisakaChat] 长期记忆提炼完成:", refined.slice(0, 50));
       }
@@ -450,13 +450,13 @@ ${recentSemantic}`;
 
   async function generateIdleLine() {
     try {
-      // idle 去重：记录最近发过的 idle 内容
+      // idle 去重:记录最近发过的 idle 内容
       if (!state.recentIdleLines) state.recentIdleLines = [];
       const recentIdle = state.recentIdleLines.slice(-3);
-      // idle 不需要道具清单，用精简 prompt
+      // idle 不需要道具清单,用精简 prompt
       const systemPrompt = getSystemPrompt(false) +
-        "\n\n【当前任务】房间安静了。自然地说一句闲聊或做一个小动作。只输出最终回复本身，不要分析、不要描述你在做什么、不要输出思考过程。直接给出那句话。";
-      // 扩大到最近 15 条，让 LLM 看到更完整的时间线
+        "\n\n【当前任务】房间安静了。自然地说一句闲聊或做一个小动作。只输出最终回复本身,不要分析、不要描述你在做什么、不要输出思考过程。直接给出那句话。";
+      // 扩大到最近 15 条,让 LLM 看到更完整的时间线
       const recent = state.recentMessages.slice(-15).map(m => {
         const t = new Date(m.time || Date.now());
         const hh = String(t.getHours()).padStart(2, '0');
@@ -464,16 +464,16 @@ ${recentSemantic}`;
         if (m.isSelf) return `[${hh}:${mm}] 御坂: ${m.content}`;
         return `[${hh}:${mm}] ${m.senderName}#${m.senderMemberNumber || "?"}: ${m.content}`;
       }).join("\n");
-      // 检测最近是否全是自己（深夜无人说话场景）
+      // 检测最近是否全是自己(深夜无人说话场景)
       const lastNonSelf = state.recentMessages.slice(-15).filter(m => !m.isSelf);
       const allSelf = lastNonSelf.length === 0 && state.recentMessages.length > 0;
       const idleHint = allSelf
-        ? "\n（注意：最近没有任何玩家说话，房间非常安静。你可以做个无聊的小动作或者说一句自言自语。不要重复之前的动作。）"
+        ? "\n(注意:最近没有任何玩家说话,房间非常安静。你可以做个无聊的小动作或者说一句自言自语。不要重复之前的动作。)"
         : "";
       const idleGuard = recentIdle.length
         ? `\n最近你已经说过:\n${recentIdle.join("\n")}\n不要重复类似内容。`
         : "";
-      const userPrompt = `最近消息:\n${recent || "暂无消息"}${idleGuard}${idleHint}\n\n直接输出一句自然的闲聊（不超过40字），不要分析，不要解释。`;
+      const userPrompt = `最近消息:\n${recent || "暂无消息"}${idleGuard}${idleHint}\n\n直接输出一句自然的闲聊(不超过40字),不要分析,不要解释。`;
       const reply = await callLLM(systemPrompt, [{ role: "user", content: userPrompt }], {
         model: CONFIG.fallbackModel,
         fallbackModel: CONFIG.fallbackModel,
@@ -481,7 +481,7 @@ ${recentSemantic}`;
       });
       const cleaned = sanitizeReply(reply || "");
       if (!cleaned || cleaned.length < 2) return "";
-      // 简易去重：字符集相似度 > 0.7 跳过
+      // 简易去重:字符集相似度 > 0.7 跳过
       const similarity = (a, b) => {
         if (!a || !b) return 0;
         const setA = new Set(a.split(''));
@@ -491,7 +491,7 @@ ${recentSemantic}`;
       };
       for (const prev of recentIdle) {
         if (similarity(cleaned, prev) > 0.7) {
-          console.log("[MisakaChat] idle 去重: 与最近 idle 相似，跳过");
+          console.log("[MisakaChat] idle 去重: 与最近 idle 相似,跳过");
           return "";
         }
       }
@@ -517,13 +517,13 @@ ${recentSemantic}`;
         state.busy = true;
         try {
           const generated = await generateIdleLine();
-          // fallback 也带变化，不要每次都同一条
+          // fallback 也带变化,不要每次都同一条
           const fallbacks = [
             "*百无聊赖地翻看记录本*",
             "*无聊地玩弄手边的道具*",
             "*靠在墙边发呆*",
             "*无聊地数着天花板的纹路*",
-            "*打了个哈欠，揉揉眼睛*",
+            "*打了个哈欠,揉揉眼睛*",
             "*无聊地翻看房间里的束缚道具*",
             "*百无聊赖地望着房间发呆*",
             "*无聊地拨弄着头发*",
@@ -555,25 +555,25 @@ ${recentSemantic}`;
     }, CONFIG.idleCheckMs);
   }
 
-  // 有人进入时打招呼（延迟 2-5 秒，不抢话）
+  // 有人进入时打招呼(延迟 2-5 秒,不抢话)
 
-// 从 DeepSeek 响应提取回复（处理 thinking 模式 content 为空）
+// 从 DeepSeek 响应提取回复(处理 thinking 模式 content 为空)
   function extractReply(msg) {
     if (!msg) return null;
-    // thinking 模式下：reasoning_content 是思考过程，content 是最终回复
-    // 只取 content，永不回退到 reasoning_content
+    // thinking 模式下:reasoning_content 是思考过程,content 是最终回复
+    // 只取 content,永不回退到 reasoning_content
     return (msg.content || "").trim() || null;
   }
 
   // === [API] callLLM ===
   // === [API] LLM 速率限制 ===
   const rateLimiter = {
-    window: 60000, maxCalls: 30, calls: [], // 御坂有 3s 全局冷却 + 5s 单用户冷却，30 次/分钟足够
+    window: 60000, maxCalls: 30, calls: [], // 御坂有 3s 全局冷却 + 5s 单用户冷却,30 次/分钟足够
     canCall() { const now = Date.now(); this.calls = this.calls.filter(t => now - t < this.window); return this.calls.length < this.maxCalls; },
     record() { this.calls.push(Date.now()); }
   };
 
-  // 粗估 token 数：中文≈2 token/字，英文≈1.3 token/字，符号≈1 token/字
+  // 粗估 token 数:中文≈2 token/字,英文≈1.3 token/字,符号≈1 token/字
   function estimateTokens(text) {
     if (!text) return 0;
     let tokens = 0;
@@ -585,7 +585,7 @@ ${recentSemantic}`;
     return Math.ceil(tokens);
   }
 
-  // 按 token 预算截断 context messages（从末尾保留最近的）
+  // 按 token 预算截断 context messages(从末尾保留最近的)
   function trimContextByTokenBudget(messages, budget) {
     if (!messages || messages.length === 0) return messages;
     let total = 0;
@@ -620,7 +620,7 @@ ${recentSemantic}`;
     const useThinking = options.thinking !== false;
     return new Promise((resolve) => {
       const doRequest = (url, model, isFallback) => {
-        // thinking 模式：思考进 reasoning_content，回复进 content
+        // thinking 模式:思考进 reasoning_content,回复进 content
         const bodyObj = { model, messages, max_tokens: maxTokens };
         if (useThinking) bodyObj.thinking = { type: "enabled" };
         const reqBody = JSON.stringify(bodyObj);
@@ -674,11 +674,11 @@ ${recentSemantic}`;
   let _rosterCache = { snapshot: "", roster: "", time: 0 };
   let _itemCatalogCache = { text: "", time: 0 };
 
-  // 道具清单按需注入：只在涉及道具/穿着/操作时才加载完整清单
+  // 道具清单按需注入:只在涉及道具/穿着/操作时才加载完整清单
   function getItemCatalog() {
     if (typeof MisakaPersona === "undefined") return "";
     const now = Date.now();
-    // 缓存 5 分钟，避免每次道具相关对话都重建
+    // 缓存 5 分钟,避免每次道具相关对话都重建
     if (_itemCatalogCache.text && now - _itemCatalogCache.time < 300000) return _itemCatalogCache.text;
     const text = MisakaPersona.buildItemCatalog();
     _itemCatalogCache = { text, time: now };
@@ -697,10 +697,10 @@ ${recentSemantic}`;
   function getSystemPrompt(includeCatalog) {
     const mem = loadMemory();
     if (typeof MisakaPersona === "undefined") {
-      return `你是御坂 (Misaka)，Bondage Club 中 Gimp Dolls 房间的管理员。安静、简短、偶尔傲娇。中文为主，回复不超过50字。不提及AI或现实信息。`;
+      return `你是御坂 (Misaka),Bondage Club 中 Gimp Dolls 房间的管理员。安静、简短、偶尔傲娇。中文为主,回复不超过50字。不提及AI或现实信息。`;
     }
 
-    // 缓存房间名单：人员变化或超过 30 秒才重建
+    // 缓存房间名单:人员变化或超过 30 秒才重建
     let roster = "";
     if (typeof ChatRoomCharacter !== "undefined" && Array.isArray(ChatRoomCharacter) && typeof Player !== "undefined") {
       const snapshot = ChatRoomCharacter.map(c => c.MemberNumber + ":" + (c.Nickname || c.Name)).join(",");
@@ -721,7 +721,7 @@ ${recentSemantic}`;
       mem.refined = state.refinedMemories.slice(-CONFIG.maxRefinedMemories);
     }
 
-    // 注入当前时间，让御坂知道几点
+    // 注入当前时间,让御坂知道几点
     mem.currentTime = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
     mem.currentDate = new Date().toLocaleDateString('zh-CN');
     const dayOfWeek = ['日','一','二','三','四','五','六'][new Date().getDay()];
@@ -739,11 +739,11 @@ ${recentSemantic}`;
   }
 
   // === [Actions] 操作指令解析 ===
-  // 支持3种MOVE格式：
-  //   [MOVE:166706:left]           — 往左移一步
-  //   [MOVE:166706:right]          — 往右移一步
-  //   [MOVE:166706:to:182401:left]  — 把166706移到182401左边（自动多步）
-  //   [MOVE:166706:to:182401:right] — 把166706移到182401右边（自动多步）
+  // 支持3种MOVE格式:
+  //   [MOVE:166706:left]           - 往左移一步
+  //   [MOVE:166706:right]          - 往右移一步
+  //   [MOVE:166706:to:182401:left]  - 把166706移到182401左边(自动多步)
+  //   [MOVE:166706:to:182401:right] - 把166706移到182401右边(自动多步)
   function parseActionCommands(reply) {
     const commands = [];
     const cleaned = String(reply || "")
@@ -798,7 +798,7 @@ ${recentSemantic}`;
         return "";
       })
       .replace(/\[ITEMDEL:(\d+):([^\]:]+):([^\]]+)\]/gi, (m, mn, item, part) => {
-        // [ITEMDEL:编号:道具名:部位] — 指定部位移除
+        // [ITEMDEL:编号:道具名:部位] - 指定部位移除
         commands.push({ type: "itemdel", memberNumber: parseInt(mn), item: item.trim(), part: part.trim() });
         return "";
       })
@@ -845,7 +845,7 @@ ${recentSemantic}`;
     }
   }
 
-  // 把 memberNumber 移到 targetNumber 的左边或右边（自动多步）
+  // 把 memberNumber 移到 targetNumber 的左边或右边(自动多步)
   async function executeMoveTo(memberNumber, targetNumber, side) {
     try {
       const findIdx = (mn) => ChatRoomCharacter.findIndex(c => c.MemberNumber === mn);
@@ -855,10 +855,10 @@ ${recentSemantic}`;
         console.log(`[MisakaChat] moveTo 找不到玩家 src=${srcIdx} target=${targetIdx}`);
         return false;
       }
-      // 目标位置：left = target 的前一位，right = target 的后一位
+      // 目标位置:left = target 的前一位,right = target 的后一位
       let destIdx = side === "left" ? targetIdx : targetIdx + 1;
-      // 如果 src 已经在 dest 位置，不需要移动
-      // 注意：移走 src 后其他人的 index 会变化，需要逐步移并重新计算
+      // 如果 src 已经在 dest 位置,不需要移动
+      // 注意:移走 src 后其他人的 index 会变化,需要逐步移并重新计算
       let steps = 0;
       const maxSteps = 20;  // 安全上限
       while (steps < maxSteps) {
@@ -887,7 +887,7 @@ ${recentSemantic}`;
     }
   }
 
-  // 把 memberNumber 移到房间最左或最右（循环到头）
+  // 把 memberNumber 移到房间最左或最右(循环到头)
   async function executeMoveEdge(memberNumber, edge) {
     try {
       const findIdx = (mn) => ChatRoomCharacter.findIndex(c => c.MemberNumber === mn);
@@ -900,9 +900,9 @@ ${recentSemantic}`;
         if (srcIdx < 0) break;
         if (edge === "left" && srcIdx === 0) break;
         if (edge === "right" && srcIdx === lastIdx()) break;
-        // 如果位置没变说明服务器不让再移了（被阻挡）
+        // 如果位置没变说明服务器不让再移了(被阻挡)
         if (srcIdx === lastSrcIdx) {
-          console.log(`[MisakaChat] moveEdge 卡在 index ${srcIdx}，服务器拒绝移动`);
+          console.log(`[MisakaChat] moveEdge 卡在 index ${srcIdx},服务器拒绝移动`);
           break;
         }
         lastSrcIdx = srcIdx;
@@ -921,7 +921,7 @@ ${recentSemantic}`;
   }
 
 
-  // 部位名 → BC Item group 列表（按优先级）
+  // 部位名 → BC Item group 列表(按优先级)
   const BODY_PART_GROUPS = {
     "Arms": ["ItemArms"],
     "Hands": ["ItemHands"],
@@ -947,8 +947,8 @@ ${recentSemantic}`;
       const groups = BODY_PART_GROUPS[part];
       if (groups) {
         for (const g of groups) {
-          const item = char.Appearance.find(a => 
-            a?.Asset?.Group?.Name === g && 
+          const item = char.Appearance.find(a =>
+            a?.Asset?.Group?.Name === g &&
             (a?.Asset?.Name === searchName || a?.Asset?.Name === itemName ||
              a?.Asset?.Description === searchName || a?.Asset?.Description === itemName ||
              a?.Asset?.Description?.includes(searchName) || a?.Asset?.Description?.includes(itemName))
@@ -957,20 +957,20 @@ ${recentSemantic}`;
         }
       }
     }
-    // 不限定部位 — 精确匹配
-    let target = char.Appearance.find(a => 
-      a?.Asset?.Group?.Name?.startsWith("Item") && 
+    // 不限定部位 - 精确匹配
+    let target = char.Appearance.find(a =>
+      a?.Asset?.Group?.Name?.startsWith("Item") &&
       (a?.Asset?.Name === searchName || a?.Asset?.Description === searchName)
     );
     if (!target && searchName !== itemName) {
-      target = char.Appearance.find(a => 
-        a?.Asset?.Group?.Name?.startsWith("Item") && 
+      target = char.Appearance.find(a =>
+        a?.Asset?.Group?.Name?.startsWith("Item") &&
         (a?.Asset?.Name === itemName || a?.Asset?.Description === itemName)
       );
     }
     // 包含匹配
-    if (!target) target = char.Appearance.find(a => 
-      a?.Asset?.Group?.Name?.startsWith("Item") && 
+    if (!target) target = char.Appearance.find(a =>
+      a?.Asset?.Group?.Name?.startsWith("Item") &&
       (a?.Asset?.Description?.includes(searchName) || a?.Asset?.Description?.includes(itemName))
     );
     return target;
@@ -1001,7 +1001,7 @@ ${recentSemantic}`;
     if (translated && translated !== asset.Name) return translated;
     return asset.Description || asset.Name || "";
   }
-  
+
   function findItemAsset(itemName) {
     if (!itemName) return null;
     if (typeof Asset === "undefined" || !Array.isArray(Asset)) return null;
@@ -1012,7 +1012,7 @@ ${recentSemantic}`;
     const exact = Asset.find(a => a?.Group?.Name?.startsWith("Item") && a.Name === rawName);
     if (exact) return { group: exact.Group.Name, asset: exact.Name };
 
-    // 中文/描述匹配（按优先级分组）
+    // 中文/描述匹配(按优先级分组)
     const priorityGroups = [
       "ItemMouth","ItemMouth2","ItemMouth3","ItemHead","ItemHood","ItemEars",
       "ItemNeck","ItemNeckAccessories","ItemArms","ItemHands","ItemFeet",
@@ -1040,14 +1040,14 @@ ${recentSemantic}`;
     return null;
   }
 
-  // 拘束快照系统 — 存储玩家当前道具状态，用于"绑回去"
+  // 拘束快照系统 - 存储玩家当前道具状态,用于"绑回去"
 
 
   // 按 snapshot 恢复玩家道具
 
   // 复制 src 玩家的道具到 dst 玩家
 
-  // 直接修改 Appearance 数组（绕过 CharacterAppearanceSetItem 的权限检查）
+  // 直接修改 Appearance 数组(绕过 CharacterAppearanceSetItem 的权限检查)
   function directSetItem(char, groupName, asset, colorOverride, propertyOverride) {
     if (!char || !asset) return false;
     const idx = char.Appearance.findIndex(a => a.Asset?.Group?.Name === groupName);
@@ -1059,22 +1059,22 @@ ${recentSemantic}`;
     };
     if (idx >= 0) char.Appearance[idx] = entry;
     else char.Appearance.push(entry);
-    // 必须调 CharacterRefresh 重建渲染层，否则 BC 验证循环会重置
+    // 必须调 CharacterRefresh 重建渲染层,否则 BC 验证循环会重置
     if (typeof CharacterRefresh === "function") CharacterRefresh(char);
     return true;
   }
 
-  // 只修改已有道具的颜色（不替换整个 entry）
+  // 只修改已有道具的颜色(不替换整个 entry)
   // colorOverride: hex 字符串或数组
-  // layerIndex: 可选，指定改哪个 color slot（0-based），不传=全部改
+  // layerIndex: 可选,指定改哪个 color slot(0-based),不传=全部改
   function directSetColor(char, groupName, colorOverride, layerIndex) {
     if (!char || !colorOverride) return false;
     const idx = char.Appearance.findIndex(a => a.Asset?.Group?.Name === groupName);
     if (idx < 0) return false;
     const item = char.Appearance[idx];
     const assetLayerCount = item.Asset?.ColorableLayerCount || item.Asset?.DefaultColor?.length || 1;
-    // BC 服务器可能只存储被修改过的 color slot，导致 Color 数组比实际 layer 数短
-    // 用 ColorableLayerCount 作为真正的长度，不足时用 DefaultColor 补齐
+    // BC 服务器可能只存储被修改过的 color slot,导致 Color 数组比实际 layer 数短
+    // 用 ColorableLayerCount 作为真正的长度,不足时用 DefaultColor 补齐
     if (!Array.isArray(item.Color) || item.Color.length < assetLayerCount) {
       const defaults = item.Asset?.DefaultColor || [];
       const newColor = [];
@@ -1107,7 +1107,7 @@ ${recentSemantic}`;
         layers.push({ name: layer.Name, index: layer.ColorIndex });
       }
     }
-    // fallback: 如果没找到 AllowColorize 的 layer，用旧逻辑
+    // fallback: 如果没找到 AllowColorize 的 layer,用旧逻辑
     if (layers.length === 0) {
       const count = asset.ColorableLayerCount || asset.DefaultColor?.length || 0;
       let colorIdx = 0;
@@ -1156,10 +1156,10 @@ ${recentSemantic}`;
     "Opacity": { type: "direct", key: "Opacity", values: null },
   };
 
-  // 通用：通过 archetype 正规设置道具属性
-  // 会同步 TypeRecord + Property，避免 BC 验证循环重置
+  // 通用:通过 archetype 正规设置道具属性
+  // 会同步 TypeRecord + Property,避免 BC 验证循环重置
 
-  // 振动器标准选项（TypeRecord.vibrating 索引 → 选项名）
+  // 振动器标准选项(TypeRecord.vibrating 索引 → 选项名)
   const VIBRATOR_OPTIONS = [
     { name: "Off",     mode: "Off",     intensity: -1, effect: ["Egged"],               tr: 0 },
     { name: "Low",     mode: "Low",     intensity: 0,  effect: ["Egged","Vibrating"],   tr: 1 },
@@ -1177,8 +1177,8 @@ ${recentSemantic}`;
 
 
 
-  // 在 setExtendedItemProperty 的 typed 分支里用动态 BC 选项，中文表只作 fallback
-  // 返回 BC 选项名（英文），而非索引
+  // 在 setExtendedItemProperty 的 typed 分支里用动态 BC 选项,中文表只作 fallback
+  // 返回 BC 选项名(英文),而非索引
   function findTypedOptionName(item, valueName) {
     try {
       const key = item.Asset.Group.Name + item.Asset.Name;
@@ -1220,7 +1220,7 @@ ${recentSemantic}`;
   }
 
 
-  // 通用：设置 Extended 道具属性
+  // 通用:设置 Extended 道具属性
   function setExtendedItemProperty(char, item, propName, valueName) {
     if (!item || !item.Asset) return { ok: false, msg: "道具不存在" };
     if (item.Property?.LockedBy) return { ok: false, msg: "道具被锁" };
@@ -1244,7 +1244,7 @@ ${recentSemantic}`;
     }
 
     if (archetype === "vibrating") {
-      // 振动器：propName 应该是 "强度" 或 "震动" 或 "模式"
+      // 振动器:propName 应该是 "强度" 或 "震动" 或 "模式"
       const opt = VIBRATOR_OPTIONS.find(o => o.name.toLowerCase() === valueName.toLowerCase());
       if (!opt) return { ok: false, msg: `未知振动档位: ${valueName}` };
       return applyVibratorOption(char, item, opt);
@@ -1252,14 +1252,14 @@ ${recentSemantic}`;
 
     if (archetype === "typed") {
       const optName = findTypedOptionName(item, valueName);
-      if (!optName) return { ok: false, msg: `无法识别样式: ${valueName}（道具: ${item.Asset.Description}）` };
+      if (!optName) return { ok: false, msg: `无法识别样式: ${valueName}(道具: ${item.Asset.Description})` };
       TypedItemSetOptionByName(char, item, optName, true, null, true);
       return { ok: true, msg: `已设置 ${item.Asset.Description} 样式=${optName}` };
     }
 
     if (archetype === "modular") {
-      // modular 道具：TypeRecord 有多个 key
-      // propName 格式：模块key（如 g/h/c/b/e），valueName：选项名或索引
+      // modular 道具:TypeRecord 有多个 key
+      // propName 格式:模块key(如 g/h/c/b/e),valueName:选项名或索引
       const trKey = propName;
       const match = findModularOption(item.Asset, trKey, valueName);
       if (!match) return { ok: false, msg: `modular 模块 ${trKey} 无法识别选项: ${valueName}` };
@@ -1275,7 +1275,7 @@ ${recentSemantic}`;
       return { ok: true, msg: `已设置 ${item.Asset.Description} 模块 ${trKey}=${match.index}` };
     }
 
-    // 非 Extended 道具 — 直接设 Property
+    // 非 Extended 道具 - 直接设 Property
     if (!item.Property) item.Property = {};
     item.Property[propName] = valueName;
     ChatRoomCharacterUpdate(char);
@@ -1283,14 +1283,14 @@ ${recentSemantic}`;
   }
 
   function applyVibratorOption(char, item, opt) {
-    // 用 BC 正规 API：VibratorModeSetOptionByName
+    // 用 BC 正规 API:VibratorModeSetOptionByName
     try {
       if (typeof VibratorModeSetOptionByName === "function") {
         VibratorModeSetOptionByName(char, item, opt.name, true, null, true);
         return { ok: true, msg: `已设置 ${item.Asset.Description} ${opt.name}` };
       }
     } catch(e) { console.warn("[MisakaChat] VibratorModeSetOptionByName 失败:", e.message); }
-    
+
     // fallback: 手动设置
     if (!item.Property) item.Property = {};
     if (!item.Property.TypeRecord) item.Property.TypeRecord = {};
@@ -1308,21 +1308,21 @@ ${recentSemantic}`;
     return { ok: true, msg: `已设置 ${item.Asset.Description} ${opt.name}` };
   }
 
-  // 设置已有道具的属性（强度/绑法/开关等）
+  // 设置已有道具的属性(强度/绑法/开关等)
   function executeItemColor(memberNumber, itemName, part, colorName) {
     console.log(`[MisakaChat] 改颜色: #${memberNumber} ${itemName} part=${part} color=${colorName}`);
     const char = (memberNumber === Player.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === memberNumber);
     if (!char) { console.log("[MisakaChat] 找不到玩家 #" + memberNumber); return { ok: false, reason: "missing-character" }; }
     const mapping = findItemAsset(itemName);
     if (!mapping) { console.log("[MisakaChat] 找不到道具: " + itemName); return { ok: false, reason: "unknown-item" }; }
-    // findItemAsset 返回 { group, asset }，需要从 BC Asset 数组里找真正的 Asset 对象
+    // findItemAsset 返回 { group, asset },需要从 BC Asset 数组里找真正的 Asset 对象
     const realAsset = Asset.find(a => a.Name === mapping.asset && a.Group?.Name === mapping.group);
     if (!realAsset) { console.log("[MisakaChat] 找不到 Asset 对象: " + mapping.asset); return { ok: false, reason: "missing-asset" }; }
     const groupName = mapping.group;
     const hex = colorNameToHex(colorName);
     if (!hex) { console.log("[MisakaChat] 未知颜色: " + colorName); return { ok: false, reason: "unknown-color" }; }
 
-    // part 可能是身体部位（如"腿"）或道具部件名（如"毛毯"）
+    // part 可能是身体部位(如"腿")或道具部件名(如"毛毯")
     // 先检查是不是身体部位
     if (part && BODY_PART_GROUPS[part]) {
       const groupList = BODY_PART_GROUPS[part];
@@ -1338,16 +1338,16 @@ ${recentSemantic}`;
 
     const existingItem = char.Appearance.find(a => a.Asset?.Group?.Name === groupName);
     if (!existingItem) {
-      console.log(`[MisakaChat] #${memberNumber} 身上没有 ${itemName}，不硬加`);
+      console.log(`[MisakaChat] #${memberNumber} 身上没有 ${itemName},不硬加`);
       return { ok: false, reason: "missing-item", memberNumber, item: itemName };
     }
 
-    // part 是道具部件名（layer name）
+    // part 是道具部件名(layer name)
     let layerIndex = undefined;
     if (part && !BODY_PART_GROUPS[part]) {
       layerIndex = findLayerIndex(realAsset, part);
       if (layerIndex === undefined) {
-        console.log(`[MisakaChat] 找不到部件 "${part}"，可上色部件: ${getItemColorLayers(realAsset).map(l => l.name).join("/")}`);
+        console.log(`[MisakaChat] 找不到部件 "${part}",可上色部件: ${getItemColorLayers(realAsset).map(l => l.name).join("/")}`);
       }
     }
 
@@ -1387,7 +1387,7 @@ ${recentSemantic}`;
   }
 
   function findEmptyGroup(char, groups, assetName) {
-    // 先找空 group，再找有同名 asset 的 group（覆盖）
+    // 先找空 group,再找有同名 asset 的 group(覆盖)
     for (const g of groups) {
       if (!char.Appearance.find(a => a?.Asset?.Group?.Name === g) && AssetGet(char.AssetFamily, g, assetName))
         return g;
@@ -1439,20 +1439,20 @@ ${recentSemantic}`;
     try {
       const char = (memberNumber === Player.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === memberNumber); if (!char) { console.log("[MisakaChat] 找不到玩家 #" + memberNumber); return { ok: false, reason: "missing-character" }; }
       if (!char) return { ok: false, reason: "missing-character" };
-      
+
       console.log(`[MisakaChat] executeItemDel #${memberNumber} item="${itemName}" part="${part||""}"`);
-      
+
       // 使用 findItemByPart 支持部位限定
       let target = findItemByPart(char, itemName, part);
-      
+
       // fallback: findItemAsset mapping
       if (!target) {
         const mapping = findItemAsset(itemName);
         if (mapping) {
           target = char.Appearance.find(a => a?.Asset?.Group?.Name === mapping.group);
           if (!target) {
-            target = char.Appearance.find(a => 
-              a?.Asset?.Group?.Name?.startsWith("Item") && 
+            target = char.Appearance.find(a =>
+              a?.Asset?.Group?.Name?.startsWith("Item") &&
               a?.Asset?.Name === mapping.asset
             );
           }
@@ -1595,11 +1595,11 @@ ${recentSemantic}`;
     }
   }
 
-  // Tool Policy: 检测危险操作，通知玩家但不拦截
+  // Tool Policy: 检测危险操作,通知玩家但不拦截
   function checkToolPolicy(cmd) {
     // 对真人的道具操作和移动视为危险操作
     const selfMn = Player?.MemberNumber;
-    // EMOTE: 无危险，直接放行
+    // EMOTE: 无危险,直接放行
     if (cmd.type === "emote") return { ok: true, dangerous: false };
     // COPY: 检查源和目标
     if (cmd.type === "copyRestraint") {
@@ -1622,7 +1622,7 @@ ${recentSemantic}`;
       return { ok: true, dangerous: false };
     }
     if (cmd.memberNumber === selfMn) return { ok: true, dangerous: false };
-    // 检查目标是否为真人（不是 GIMP 娃娃）
+    // 检查目标是否为真人(不是 GIMP 娃娃)
     const c = ChatRoomCharacter.find(ch => ch.MemberNumber === cmd.memberNumber);
     const isGimp = !!(c && (c.Nickname || c.Name || "").startsWith("GIMP "));
     if (!isGimp) {
@@ -1658,7 +1658,7 @@ ${recentSemantic}`;
       if (!ok) failures.push({ cmd, reason: result?.reason || "failed" });
       return ok;
     };
-    
+
     for (const cmd of filtered) {
       if (cmd.type === "memsearch" || cmd.type === "bcequery") continue;
       const policy = checkToolPolicy(cmd);
@@ -1716,7 +1716,7 @@ ${recentSemantic}`;
     const content = data.Content || "";
     const senderNum = data.Sender;
 
-    // 进出检测（在 validTypes 之前）
+    // 进出检测(在 validTypes 之前)
     if (data.Type === "Action" && ["ServerEnter","ServerDisconnect","ServerLeave"].includes(data.Content)) {
       let who = "";
       let whoNum = 0;
@@ -1747,7 +1747,7 @@ ${recentSemantic}`;
       /^ChatSelf-ItemMouth-MoanGag(Giggle)?$/i,
     ];
     function isNoise(type, rawContent, senderName) {
-      // GIMP 娃娃只过滤自动消息类型（Activity/Emote/Action），保留 Chat/Talk/Whisper（可能是真人）
+      // GIMP 娃娃只过滤自动消息类型(Activity/Emote/Action),保留 Chat/Talk/Whisper(可能是真人)
       if (senderName && senderName.startsWith("GIMP ")) {
         return type === "Activity" || type === "Emote" || type === "Action" ||
                NOISE_PATTERNS.some(pat => pat.test(rawContent));
@@ -1793,7 +1793,7 @@ ${recentSemantic}`;
     const noise = isNoise(data.Type, content, senderName);
 
 
-    // 垃圾消息：不进上下文、不推动 messageCount
+    // 垃圾消息:不进上下文、不推动 messageCount
     if (noise) return;
 
     updateProfile(senderNum, senderName, readableContent);
@@ -1803,7 +1803,7 @@ ${recentSemantic}`;
 
     state.messageCount++;
     try { localStorage.setItem("misaka_msg_count", String(state.messageCount)); } catch(e) {}
-    
+
 
     // 触发长期记忆提炼
     if (state.messageCount % CONFIG.memoryRefineInterval === 0) {
@@ -1869,12 +1869,12 @@ ${recentSemantic}`;
                 info.nickname = b.Nickname || "";
                 info.owner = b.Ownership?.Name ? `${b.Ownership.Name} (#${b.Ownership.MemberNumber})` : "无";
                 info.lovers = Array.isArray(b.Lovership) ? b.Lovership.map(l => `${l.Name}${l.Stage===2?"(正式)":""}`).join(", ") : "无";
-                // 描述处理：BCE 缓存中未见过的玩家描述会是乱码，这是正常的
+                // 描述处理:BCE 缓存中未见过的玩家描述会是乱码,这是正常的
                 const rawDesc = (b.Description || "").slice(0, 200);
                 info.description = rawDesc;
                 const normalChars = (rawDesc.match(/[\u0020-\u007e\u4e00-\u9fff\u3000-\u303f\uff00-\uffef\n\r\t]/g) || []).length;
                 if (rawDesc.length > 0 && normalChars / rawDesc.length < 0.7) {
-                  info.descNote = "（描述是乱码，因为没见过这个玩家，BCE 缓存里只有损坏的数据，这是正常的）";
+                  info.descNote = "(描述是乱码,因为没见过这个玩家,BCE 缓存里只有损坏的数据,这是正常的)";
                 } else {
                   info.descNote = "";
                 }
@@ -1894,7 +1894,7 @@ ${recentSemantic}`;
     });
   }
 
-  // 检测明确的档案查询请求（只在很明确的场景触发 BCE 查询）
+  // 检测明确的档案查询请求(只在很明确的场景触发 BCE 查询)
 
 function unescapeHTML(s) {
     return s.replace(/&quot;/g, '"').replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&#39;/g, "'");
@@ -1903,15 +1903,15 @@ function unescapeHTML(s) {
   function sanitizeReply(reply) {
     let cleaned = String(reply || "").replace(/^["""''''']+|["""''''']+$/g, "").trim();
 
-    // thinking 模式下思考过程在 reasoning_content 里，content 是干净的回复
-    // 这里只做格式处理：按行分割、兼容旧 | 格式、清理孤立 *
-    let lines = cleaned.split(/\n+/).map(l => l.trim().replace(/^(御[搬坂]|Misaka|misaka)\s*[:：]\s*/i, "").trim()).filter(Boolean);
-    // 最多取前两行（动作 + 说话）
+    // thinking 模式下思考过程在 reasoning_content 里,content 是干净的回复
+    // 这里只做格式处理:按行分割、兼容旧 | 格式、清理孤立 *
+    let lines = cleaned.split(/\n+/).map(l => l.trim().replace(/^(御[搬坂]|Misaka|misaka)\s*[::]\s*/i, "").trim()).filter(Boolean);
+    // 最多取前两行(动作 + 说话)
     lines = lines.slice(0, 2);
-    // 兼容旧 | 格式：如果单行包含 |，拆成多行
+    // 兼容旧 | 格式:如果单行包含 |,拆成多行
     lines = lines.flatMap(l => l.split(/\|/).map(s => s.trim()).filter(Boolean));
     lines = lines.slice(0, 2);
-    // 清理每行：奇数 * 时去掉末尾孤立 *
+    // 清理每行:奇数 * 时去掉末尾孤立 *
     lines = lines.map(l => {
       const stars = (l.match(/\*/g) || []).length;
       if (stars % 2 !== 0) l = l.replace(/\*+$/, '');
@@ -1932,13 +1932,13 @@ function unescapeHTML(s) {
     try {
       await new Promise(r => setTimeout(r, CONFIG.replyDelayMs));
 
-      // 构建上下文（带时间戳 + 身份标识，帮 LLM 理解对话时间线和说话者）
+      // 构建上下文(带时间戳 + 身份标识,帮 LLM 理解对话时间线和说话者)
       let contextMessages = state.recentMessages.slice(-CONFIG.maxContext).map(m => {
         const t = new Date(m.time || Date.now());
         const hh = String(t.getHours()).padStart(2, '0');
         const mm = String(t.getMinutes()).padStart(2, '0');
         if (m.isSelf) {
-          // 御坂自己的消息不加时间戳和名字前缀，避免 LLM 模仿
+          // 御坂自己的消息不加时间戳和名字前缀,避免 LLM 模仿
           return { role: "assistant", content: m.content };
         }
         return {
@@ -1948,18 +1948,18 @@ function unescapeHTML(s) {
       });
       contextMessages = trimContextByTokenBudget(contextMessages, CONFIG.maxContextTokens);
 
-      // 构建系统 prompt（按需注入道具清单）
+      // 构建系统 prompt(按需注入道具清单)
       const needCatalog = needsItemCatalog(content, state.recentMessages.slice(-5));
       let systemPrompt = getSystemPrompt(needCatalog);
-      if (!needCatalog) console.log("[MisakaChat] 跳过道具清单（日常闲聊）");
-      else console.log("[MisakaChat] 加载道具清单（涉及道具/操作）");
+      if (!needCatalog) console.log("[MisakaChat] 跳过道具清单(日常闲聊)");
+      else console.log("[MisakaChat] 加载道具清单(涉及道具/操作)");
 
       let reply = await callLLM(systemPrompt, contextMessages);
       if (reply) {
         const firstPass = parseActionCommands(reply);
         const memCommands = firstPass.commands.filter(c => c.type === "memsearch");
         const bceCommands = firstPass.commands.filter(c => c.type === "bcequery");
-        // 兜底：用户说"查一下XXX"但 LLM 没输出 BCEQUERY 时，自动提取查询目标
+        // 兜底:用户说"查一下XXX"但 LLM 没输出 BCEQUERY 时,自动提取查询目标
         const queryPattern = /(?:查(?:一查|一下|查)?|搜(?:一搜|一下)?|找(?:一找|一下)?)\s*([\u4e00-\u9fff\w]{2,20})/i;
         const queryMatch = content.match(queryPattern);
         if (bceCommands.length === 0 && queryMatch && queryMatch[1] && !/房间|名单|记录|道具|窝窝|颜色|几点|时间|状态/.test(queryMatch[1])) {
@@ -1976,7 +1976,7 @@ function unescapeHTML(s) {
             for (const cmd of bceCommands) {
               const results = await queryProfile(cmd.target);
               if (results) {
-                extraContext += "\n\n【BCE档案查询结果：" + cmd.target + "】\n";
+                extraContext += "\n\n【BCE档案查询结果:" + cmd.target + "】\n";
                 extraContext += results.map(r => {
                   let line = `${r.lastNick || r.name} (#${r.memberNumber}) - 上次在线/出现: ${r.seen}`;
                   if (r.owner && r.owner !== "无") line += ` | 主人: ${r.owner}`;
@@ -1985,28 +1985,67 @@ function unescapeHTML(s) {
                   if (r.description) line += `\n描述: ${r.description}${r.descNote||""}`;
                   return line;
                 }).join("\n");
-                extraContext += "\n（直接用这些 BCE 档案信息回答；时间可作为 BCE 记录到的上次在线/出现时间。）";
+                extraContext += "\n(直接用这些 BCE 档案信息回答;时间可作为 BCE 记录到的上次在线/出现时间。)";
               } else {
-                extraContext += `\n\n【BCE档案查询结果：${cmd.target}】\n没有找到这个人的档案。\n`;
+                extraContext += `\n\n【BCE档案查询结果:${cmd.target}】\n没有找到这个人的档案。\n`;
               }
             }
           }
           reply = await callLLM(systemPrompt + extraContext, contextMessages);
         }
       }
-      if (!reply) { console.warn("[MisakaChat] LLM 返回空，未回复"); return; }
+      if (!reply) { console.warn("[MisakaChat] LLM 返回空,未回复"); return; }
 
       // 解析操作指令
       const { commands, cleaned } = parseActionCommands(reply);
       const executableCommands = commands.filter(c => c.type !== "memsearch" && c.type !== "bcequery");
       let finalReply = sanitizeReply(cleaned);
 
-      // 检测“应该有指令但没有”：如果用户明确要求操作道具/移动，但 LLM 没输出指令，给第二次机会
+      // EMOTE 兜底:检测"气泡/表情"关键词但 LLM 没输出 EMOTE 时,自动提取执行
+      if (!executableCommands.some(c => c.type === 'emote')) {
+        const emoteMatch = content.match(/(?:气泡|表情|状态气泡|emoticon|EMOTE)/i);
+        if (emoteMatch) {
+          // 从内容中提取表情名
+          const exprMap = {
+            'SOS':'SOS','afk':'Afk','brb':'Brb','sleep':'Sleep','hearts':'Hearts','heart':'Hearts','爱心':'Hearts',
+            'tear':'Tear','哭':'Tear','confusion':'Confusion','困惑':'Confusion','annoyed':'Annoyed','不耐烦':'Annoyed',
+            'thumbsup':'ThumbsUp','点赞':'ThumbsUp','thumbsdown':'ThumbsDown','踩':'ThumbsDown',
+            'warning':'Warning','警告':'Warning','brokenheart':'BrokenHeart','心碎':'BrokenHeart',
+            'lightbulb':'Lightbulb','主意':'Lightbulb','coffee':'Coffee','咖啡':'Coffee',
+            'music':'Music','音乐':'Music','gaming':'Gaming','游戏':'Gaming','read':'Read','阅读':'Read',
+            'drawing':'Drawing','画画':'Drawing','coding':'Coding','编程':'Coding','tv':'TV','电视':'TV',
+            'bathing':'Bathing','洗澡':'Bathing','shopping':'Shopping','购物':'Shopping',
+            'work':'Work','工作':'Work','call':'Call','通话':'Call','car':'Car','开车':'Car',
+            'spectator':'Spectator','旁观':'Spectator','raisedhand':'RaisedHand','举手':'RaisedHand',
+            'whisper':'Whisper','耳语':'Whisper','exclamation':'Exclamation','感叹':'Exclamation',
+            'hearing':'Hearing','loverope':'LoveRope','爱绳':'LoveRope','lovegag':'LoveGag','爱口塞':'LoveGag',
+            'lovelock':'LoveLock','爱锁':'LoveLock','wardrobe':'Wardrobe','衣柜':'Wardrobe','fork':'Fork','用餐':'Fork'
+          };
+          let targetExpr = null;
+          for (const [k, v] of Object.entries(exprMap)) {
+            if (new RegExp(k, 'i').test(content)) { targetExpr = v; break; }
+          }
+          if (targetExpr) {
+            // 判断目标:"你的"=御坂自己,"我的/给我"=发送者
+            const isSelf = /你的|自己/.test(content) && !/我的|给我/.test(content);
+            const target = isSelf ? Player.MemberNumber : senderNum;
+            console.log(`[MisakaChat] EMOTE 兜底: #${target} -> ${targetExpr}`);
+            const emoteResult = executeEmote(target, targetExpr);
+            if (emoteResult.ok) {
+              ChatRoomSendLocalMessage(`[MisakaChat] 表情气泡已设置: #${target} → ${targetExpr}`);
+            } else {
+              ChatRoomSendLocalMessage(`[MisakaChat] EMOTE 兜底失败: ${emoteResult.reason}`);
+            }
+          }
+        }
+      }
+
+      // 检测"应该有指令但没有":如果用户明确要求操作道具/移动,但 LLM 没输出指令,给第二次机会
       const actionKeywords = /调|开|关|绑|解|穿|脱|戴|摘|加|移|换|改|颜色|改色|跳蛋|振动|绳|口球|束缚|移动|挪|左边|右边|强度|档|绑法|记住|快照|恢复|复制|按.*样子|气泡|表情|状态/;
       if (executableCommands.length === 0 && actionKeywords.test(content)) {
-        // 重试时必须加载道具清单（用户要求了操作）
+        // 重试时必须加载道具清单(用户要求了操作)
         const retrySystemPrompt = needCatalog ? systemPrompt : getSystemPrompt(true);
-        const retryPrompt = retrySystemPrompt + "\n\n【重要提醒】用户刚才要求了操作，但你的回复没有包含操作指令。请重新回复，这次必须在第一行输出对应的操作指令（如 [ITEMSET:...] / [ITEMADD:...] / [ITEMDEL:...] / [ITEMCOLOR:...] / [MOVE:...] / [SNAPSHOT:...] / [COPY:...] / [EMOTE:...]）。不要只用文字描述，必须输出指令。";
+        const retryPrompt = retrySystemPrompt + "\n\n【重要提醒】用户刚才要求了操作,但你的回复没有包含操作指令。请重新回复,这次必须在第一行输出对应的操作指令(如 [ITEMSET:...] / [ITEMADD:...] / [ITEMDEL:...] / [ITEMCOLOR:...] / [MOVE:...] / [SNAPSHOT:...] / [COPY:...] / [EMOTE:...])。不要只用文字描述,必须输出指令。";
         const retryReply = await callLLM(retryPrompt, contextMessages);
         if (retryReply) {
           const retryParsed = parseActionCommands(retryReply);
@@ -2047,46 +2086,6 @@ function unescapeHTML(s) {
         }
       }
 
-      // EMOTE 兜底：检测“气泡/表情”关键词但 LLM 没输出 EMOTE 时，自动提取执行
-      if (executableCommands.length === 0 || !executableCommands.some(c => c.type === 'emote')) {
-        const emoteMatch = content.match(/(?:气泡|表情|状态气泡|emoticon|EMOTE)/i);
-        if (emoteMatch) {
-          // 从内容中提取表情名
-          const exprMap = {
-            'SOS':'SOS','afk':'Afk','brb':'Brb','sleep':'Sleep','hearts':'Hearts','heart':'Hearts','爱心':'Hearts',
-            'tear':'Tear','哭':'Tear','confusion':'Confusion','困惑':'Confusion','annoyed':'Annoyed','不耐烦':'Annoyed',
-            'thumbsup':'ThumbsUp','点赞':'ThumbsUp','thumbsdown':'ThumbsDown','踩':'ThumbsDown',
-            'warning':'Warning','警告':'Warning','brokenheart':'BrokenHeart','心碎':'BrokenHeart',
-            'lightbulb':'Lightbulb','主意':'Lightbulb','coffee':'Coffee','咖啡':'Coffee',
-            'music':'Music','音乐':'Music','gaming':'Gaming','游戏':'Gaming','read':'Read','阅读':'Read',
-            'drawing':'Drawing','画画':'Drawing','coding':'Coding','编程':'Coding','tv':'TV','电视':'TV',
-            'bathing':'Bathing','洗澡':'Bathing','shopping':'Shopping','购物':'Shopping',
-            'work':'Work','工作':'Work','call':'Call','通话':'Call','car':'Car','开车':'Car',
-            'spectator':'Spectator','旁观':'Spectator','raisedhand':'RaisedHand','举手':'RaisedHand',
-            'whisper':'Whisper','耳语':'Whisper','exclamation':'Exclamation','感叹':'Exclamation',
-            'hearing':'Hearing','loverope':'LoveRope','爱绳':'LoveRope','lovegag':'LoveGag','爱口塞':'LoveGag',
-            'lovelock':'LoveLock','爱锁':'LoveLock','wardrobe':'Wardrobe','衣柜':'Wardrobe','fork':'Fork','用餐':'Fork'
-          };
-          let targetExpr = null;
-          for (const [k, v] of Object.entries(exprMap)) {
-            if (new RegExp(k, 'i').test(content)) { targetExpr = v; break; }
-          }
-          if (targetExpr) {
-            // 判断目标："你的"=御坂自己，"我的/给我"=发送者
-            const isSelf = /你的|自己/.test(content) && !/我的|给我/.test(content);
-            const target = isSelf ? Player.MemberNumber : senderNum;
-            console.log(`[MisakaChat] EMOTE 兜底: #${target} -> ${targetExpr}`);
-            const emoteResult = executeEmote(target, targetExpr);
-            if (emoteResult.ok) {
-              const localMsg = `[MisakaChat] 表情气泡已设置: #${target} → ${targetExpr}`;
-              ChatRoomSendLocalMessage(localMsg);
-            } else {
-              ChatRoomSendLocalMessage(`[MisakaChat] EMOTE 兜底失败: ${emoteResult.reason}`);
-            }
-          }
-        }
-      }
-
       // 执行操作
       let commandResult = null;
       if (executableCommands.length > 0) {
@@ -2097,30 +2096,30 @@ function unescapeHTML(s) {
         );
         if (missing?.cmd) {
           const who = displayNameByMemberNumber(missing.cmd.memberNumber);
-          finalReply = `${who}身上没有${missing.cmd.item}，没法改。`;
+          finalReply = `${who}身上没有${missing.cmd.item},没法改。`;
         }
         const failed = (commandResult.failures || [])[0];
         if (!missing && failed) {
           const reason = failed.reason || "操作失败";
-          if (reason === "没有找到快照") finalReply = "我没存过这个快照，绑不回去。";
+          if (reason === "没有找到快照") finalReply = "我没存过这个快照,绑不回去。";
           else if (/未锁道具/.test(reason)) finalReply = "没有可处理的未锁道具。";
-          else if (reason === "locked-item" || /道具被锁/.test(reason)) finalReply = "这个道具锁着呢，我动不了。";
-          else if (reason === "missing-character") finalReply = "没找到这个人，做不了。";
-          else if (reason === "unknown-item") finalReply = "没找到这个道具，不能乱加。";
-          else if (reason === "unknown-color") finalReply = "这个颜色我识别不了，给我个 #RRGGBB 吧。";
-          else if (reason === "set-color-failed") finalReply = "颜色没改成，可能这个部件不能上色。";
-          else if (/找不到/.test(reason)) finalReply = "没找到目标，做不了。";
+          else if (reason === "locked-item" || /道具被锁/.test(reason)) finalReply = "这个道具锁着呢,我动不了。";
+          else if (reason === "missing-character") finalReply = "没找到这个人,做不了。";
+          else if (reason === "unknown-item") finalReply = "没找到这个道具,不能乱加。";
+          else if (reason === "unknown-color") finalReply = "这个颜色我识别不了,给我个 #RRGGBB 吧。";
+          else if (reason === "set-color-failed") finalReply = "颜色没改成,可能这个部件不能上色。";
+          else if (/找不到/.test(reason)) finalReply = "没找到目标,做不了。";
         }
       }
 
-      // 如果只有指令没有文字回复，用默认回复
+      // 如果只有指令没有文字回复,用默认回复
       if (!finalReply && executableCommands.length > 0) {
-        const defaultReplies = ["好了~", "搞定了", "嗯，处理好了", "弄好了~", "已经调好了"];
+        const defaultReplies = ["好了~", "搞定了", "嗯,处理好了", "弄好了~", "已经调好了"];
         finalReply = defaultReplies[Math.floor(Math.random() * defaultReplies.length)];
       }
       if (!finalReply) return;
 
-      // 存语义记忆（有意义的对话才存）
+      // 存语义记忆(有意义的对话才存)
       if (finalReply.length > 3) {
         const memText = `${senderName}: ${content} → 御坂: ${finalReply}`;
         storeSemanticMemory(memText, { sender: senderName, memberNum: senderNum }).catch(() => {});
@@ -2137,14 +2136,14 @@ function unescapeHTML(s) {
       window.__misakaLastSentReplyTime = sentAt;
 
       if (typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom") {
-        // 按换行分割动作和说话（兼容旧 | 格式）
+        // 按换行分割动作和说话(兼容旧 | 格式)
         let parts = finalReply.split(/\n/).map(p => p.trim()).filter(Boolean);
-        // 兼容旧 | 格式：单行含 | 时拆开
+        // 兼容旧 | 格式:单行含 | 时拆开
         if (parts.length === 1 && parts[0].includes("|")) {
           parts = parts[0].split(/\|/).map(p => p.trim()).filter(Boolean);
         }
         if (parts.length >= 2) {
-          // 多段发送（动作/说话）
+          // 多段发送(动作/说话)
           let delay = 0;
           for (const p of parts) {
             if (!p) continue;
@@ -2155,7 +2154,7 @@ function unescapeHTML(s) {
           ElementValue("InputChat", parts[0] || finalReply);
           ChatRoomSendChat();
         }
-        // 不再手动 push——BC 的 ChatRoomMessage hook 会自动处理 self message
+        // 不再手动 push--BC 的 ChatRoomMessage hook 会自动处理 self message
         if (state.recentMessages.length > CONFIG.maxContext) state.recentMessages.shift();
       }
 
@@ -2185,7 +2184,7 @@ function unescapeHTML(s) {
       state.semanticMemories = [];
       state.refinedMemories = [];
       IDB.clearAll();
-      sendLocal("🧹 记忆已清空（含 IndexedDB 语义记忆）");
+      sendLocal("🧹 记忆已清空(含 IndexedDB 语义记忆)");
     }
     else if (sub === "export") {
       IDB.exportAll().then(data => {
@@ -2196,7 +2195,7 @@ function unescapeHTML(s) {
     }
     else if (sub === "import") {
       const blob = window.__misakaExportData;
-      if (!blob) { sendLocal("❌ 没有找到导出数据（先 export）"); }
+      if (!blob) { sendLocal("❌ 没有找到导出数据(先 export)"); }
       else {
         try {
           const data = JSON.parse(blob);
@@ -2233,7 +2232,7 @@ function unescapeHTML(s) {
   // === [Init] 初始化 ===
   function init() {
     if (typeof Player === "undefined" || !Player) { setTimeout(init, 1000); return; }
-    if (Player.MemberNumber !== 194331) { console.log("[MisakaChat] 非御坂账号，跳过"); return; }
+    if (Player.MemberNumber !== 194331) { console.log("[MisakaChat] 非御坂账号,跳过"); return; }
     const savedModel = localStorage.getItem(storageKey("model")) || "";
     if (savedModel) CONFIG.model = savedModel;
 
@@ -2247,7 +2246,7 @@ function unescapeHTML(s) {
 
    window.__misakaOnMessage = onChatRoomMessage;
 
-   // 方案 1: hook ServerSocket.onevent — 在 socket 事件层拦截，最可靠
+   // 方案 1: hook ServerSocket.onevent - 在 socket 事件层拦截,最可靠
    if (isCurrent() && typeof ServerSocket !== "undefined" && ServerSocket.onevent) {
      if (!window.__misakaSocketHooked) {
        const origOnevent = ServerSocket.onevent;
