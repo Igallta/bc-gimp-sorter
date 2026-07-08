@@ -1432,9 +1432,8 @@ ${recentSemantic}`;
       // 推送公屏动作消息
       try {
         const assetDesc = nextItem?.Asset?.Description || itemName;
-        const selfName = CharacterNickname(Player);
         const targetName = (char === Player) ? "自己" : CharacterNickname(char);
-        ServerSend("ChatRoomChat", { Content: `${selfName}把${assetDesc}穿在了${targetName}身上`, Type: "Emote" });
+        ServerSend("ChatRoomChat", { Content: `把${assetDesc}穿在了${targetName}身上`, Type: "Emote" });
       } catch(e) { console.warn("[MisakaChat] publish ItemAdd 失败:", e.message); }
       console.log(`[MisakaChat] 已给 #${memberNumber} 添加 ${itemName} (group: ${targetGroup})`);
       return { ok: true };
@@ -1482,7 +1481,7 @@ ${recentSemantic}`;
       try {
         const selfName = CharacterNickname(Player);
         const targetName = (char === Player) ? "自己" : CharacterNickname(char);
-        ServerSend("ChatRoomChat", { Content: `${selfName}解除了${targetName}身上的${assetDesc}`, Type: "Emote" });
+        ServerSend("ChatRoomChat", { Content: `解除了${targetName}身上的${assetDesc}`, Type: "Emote" });
       } catch(e) { console.warn("[MisakaChat] publish ItemRemove 失败:", e.message); }
       console.log(`[MisakaChat] 已移除 #${memberNumber} 的 ${itemName} (group: ${target.Asset.Group.Name})`);
       return { ok: true };
