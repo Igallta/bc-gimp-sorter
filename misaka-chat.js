@@ -1014,6 +1014,11 @@ ${recentSemantic}`;
     const exact = Asset.find(a => a?.Group?.Name?.startsWith("Item") && a.Name === rawName);
     if (exact) return { group: exact.Group.Name, asset: exact.Name };
 
+    // 去空格模糊匹配（LLM 可能输出 "Ribbon Corset" 但 BC 里是 "RibbonCorset"）
+    const noSpace = rawName.replace(/\s+/g, "");
+    const fuzzy = Asset.find(a => a?.Group?.Name?.startsWith("Item") && (a.Name === noSpace || a.Name.replace(/\s+/g, "") === noSpace));
+    if (fuzzy) return { group: fuzzy.Group.Name, asset: fuzzy.Name };
+
     // 中文/描述匹配(按优先级分组)
     const priorityGroups = [
       "ItemMouth","ItemMouth2","ItemMouth3","ItemHead","ItemHood","ItemEars",
@@ -1035,7 +1040,10 @@ ${recentSemantic}`;
       for (const a of Asset) {
         if (a?.Group?.Name !== g) continue;
         const cn = assetCnName(a);
-        if ((a.Description && a.Description.includes(rawName)) || (cn && cn.includes(rawName)))
+        const aNameNoSpace = a.Name.replace(/\s+/g, "");
+        if ((a.Description && (a.Description.includes(rawName) || a.Description.includes(noSpace))) ||
+            (cn && (cn.includes(rawName) || cn.includes(noSpace))) ||
+            aNameNoSpace.includes(noSpace))
           return { group: g, asset: a.Name };
       }
     }
@@ -2084,6 +2092,7 @@ function unescapeHTML(s) {
       const { commands, cleaned } = parseActionCommands(reply);
       const executableCommands = commands.filter(c => c.type !== "memsearch" && c.type !== "bcequery");
       let finalReply = sanitizeReply(cleaned);
+      let commandResult = null;  // 提前声明,避免 TDZ
 
       // EMOTE 兜底:LLM 没输出 EMOTE 时自动提取执行
       if (!executableCommands.some(c => c.type === 'emote')) {
@@ -2118,7 +2127,6 @@ function unescapeHTML(s) {
       }
 
       // 执行操作
-      let commandResult = null;
       if (executableCommands.length > 0) {
         commandResult = await executeCommands(executableCommands);
         console.log("[MisakaChat] 操作执行:", executableCommands, commandResult);
