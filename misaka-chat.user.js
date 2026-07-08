@@ -1,10 +1,12 @@
 // ==UserScript==
 // @name         BC Misaka Auto Chat
 // @namespace    https://igallta.github.io/bc-gimp-sorter
-// @version      2.3.2
+// @version      2.3.3
 // @description  御坂 BC 自动回复系统 — LLM 驱动 + 语义记忆(IDB) + 房间上下文
 // @match        https://www.bondage-europe.com/R129/BondageClub/*
 // @match        https://www.bondageclub.com/R129/BondageClub/*
+// @updateURL    https://raw.githubusercontent.com/Igallta/bc-gimp-sorter/master/misaka-chat.user.js
+// @downloadURL  https://raw.githubusercontent.com/Igallta/bc-gimp-sorter/master/misaka-chat.user.js
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -25,7 +27,7 @@
   try { window.__GM_getValue = GM_getValue; } catch(e) {}
   try { window.__GM_setValue = GM_setValue; } catch(e) {}
 
-  const SCRIPT_VERSION = "2.3.2";
+  const SCRIPT_VERSION = "2.3.3";
   const BASE_URL = "https://igallta.github.io/bc-gimp-sorter";
 
   function waitForReady(cb, attempts) {
