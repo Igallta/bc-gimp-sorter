@@ -2032,9 +2032,9 @@ function unescapeHTML(s) {
             console.log(`[MisakaChat] EMOTE 兜底: #${target} -> ${targetExpr}`);
             const emoteResult = executeEmote(target, targetExpr);
             if (emoteResult.ok) {
-              ChatRoomSendLocalMessage(`[MisakaChat] 表情气泡已设置: #${target} → ${targetExpr}`);
+              sendLocal(`表情气泡已设置: #${target} → ${targetExpr}`);
             } else {
-              ChatRoomSendLocalMessage(`[MisakaChat] EMOTE 兜底失败: ${emoteResult.reason}`);
+              sendLocal(`EMOTE 兜底失败: ${emoteResult.reason}`);
             }
           }
         }
