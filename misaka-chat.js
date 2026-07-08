@@ -424,10 +424,16 @@ ${recentSemantic}`;
         model: CONFIG.fallbackModel,
         fallbackModel: CONFIG.fallbackModel,
       });
-      if (refined) {
+      if (refined && refined.trim() && !/^(无|没有|none|n\/a)\s*$/i.test(refined.trim())) {
         const ts = Date.now();
         const time = new Date(ts).toLocaleDateString("zh-CN", {month:"2-digit",day:"2-digit"});
         const refinedText = `[${time}] ${refined.slice(0, 100)}`;
+        // 提炼去重:和已有提炼做相似度检查
+        const refDup = await searchMemories(refinedText, 1);
+        if (refDup.length > 0 && refDup[0].score > 0.85) {
+          console.log("[MisakaChat] 提炼记忆去重跳过:", refined.slice(0, 40));
+          return;
+        }
         // 给 refined memory 算 embedding,让语义搜索能命中
         let refinedEmb = null;
         try { refinedEmb = await getEmbedding(refinedText); } catch(e) {}
