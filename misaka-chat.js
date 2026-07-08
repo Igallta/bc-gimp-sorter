@@ -1354,6 +1354,7 @@ ${recentSemantic}`;
     if (!char) { console.log("[MisakaChat] 找不到玩家 #" + memberNumber); return { ok: false, reason: "missing-character" }; }
     const mapping = findItemAsset(itemName);
     if (!mapping) { console.log("[MisakaChat] 找不到道具: " + itemName); return { ok: false, reason: "unknown-item" }; }
+    console.log(`[MisakaChat] findItemAsset → group=${mapping.group} asset=${mapping.asset}`);
     // findItemAsset 返回 { group, asset },需要从 BC Asset 数组里找真正的 Asset 对象
     const realAsset = Asset.find(a => a.Name === mapping.asset && a.Group?.Name === mapping.group);
     if (!realAsset) { console.log("[MisakaChat] 找不到 Asset 对象: " + mapping.asset); return { ok: false, reason: "missing-asset" }; }
@@ -1377,7 +1378,8 @@ ${recentSemantic}`;
 
     const existingItem = char.Appearance.find(a => a.Asset?.Group?.Name === groupName);
     if (!existingItem) {
-      console.log(`[MisakaChat] #${memberNumber} 身上没有 ${itemName},不硬加`);
+      const torsoItems = char.Appearance.filter(a => a.Asset?.Group?.Name?.startsWith("ItemTorso")).map(a => `${a.Asset.Name}(${a.Asset.Group.Name})`);
+      console.log(`[MisakaChat] #${memberNumber} 身上没有 ${itemName}(group=${groupName}),不硬加。身上 Torso 道具: ${torsoItems.join(",") || "无"}`);
       return { ok: false, reason: "missing-item", memberNumber, item: itemName };
     }
 
