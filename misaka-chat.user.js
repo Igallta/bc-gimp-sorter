@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BC Misaka Auto Chat
 // @namespace    https://igallta.github.io/bc-gimp-sorter
-// @version      2.3.1
+// @version      2.3.2
 // @description  御坂 BC 自动回复系统 — LLM 驱动 + 语义记忆(IDB) + 房间上下文
 // @match        https://www.bondage-europe.com/R129/BondageClub/*
 // @match        https://www.bondageclub.com/R129/BondageClub/*
@@ -25,22 +25,29 @@
   try { window.__GM_getValue = GM_getValue; } catch(e) {}
   try { window.__GM_setValue = GM_setValue; } catch(e) {}
 
+  const SCRIPT_VERSION = "2.3.2";
+  const BASE_URL = "https://igallta.github.io/bc-gimp-sorter";
+
   function waitForReady(cb, attempts) {
     attempts = attempts || 0;
-    if (attempts > 60) {
-      console.error("[MisakaChat] 等待游戏超时");
-      return;
-    }
     if (typeof Player !== "undefined" && Player && Player.MemberNumber === 194331 &&
         typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom") {
       cb();
     } else {
+      if (attempts > 0 && attempts % 60 === 0) {
+        console.log("[MisakaChat] 等待进入 ChatRoom 中... " + attempts + "s");
+      }
       setTimeout(() => waitForReady(cb, attempts + 1), 1000);
     }
   }
 
-  function loadScript(url, onload, onerror) {
+  function loadScript(id, url, onload, onerror) {
+    if (document.getElementById(id)) {
+      if (onload) onload();
+      return;
+    }
     const s = document.createElement("script");
+    s.id = id;
     s.src = url;
     s.onload = onload;
     s.onerror = onerror || (() => console.error("[MisakaChat] 加载失败: " + url));
@@ -48,11 +55,16 @@
   }
 
   waitForReady(() => {
+    if (window.__misakaUserLoaderLoaded === SCRIPT_VERSION && window.__misakaInstance) {
+      console.log("[MisakaChat] 已加载，跳过重复注入");
+      return;
+    }
+    window.__misakaUserLoaderLoaded = SCRIPT_VERSION;
     // 加载人设文件
-    loadScript("https://cdn.jsdelivr.net/gh/Igallta/bc-gimp-sorter@latest/misaka-persona.js", () => {
+    loadScript("misaka-persona-script", `${BASE_URL}/misaka-persona.js?v=${SCRIPT_VERSION}`, () => {
       console.log("[MisakaChat] 人设文件已加载");
       // 加载主脚本
-      loadScript("https://cdn.jsdelivr.net/gh/Igallta/bc-gimp-sorter@latest/misaka-chat.js", () => {
+      loadScript("misaka-chat-script", `${BASE_URL}/misaka-chat.js?v=${SCRIPT_VERSION}`, () => {
         console.log("[MisakaChat] 主脚本已加载");
       });
     });
