@@ -51,6 +51,12 @@ window.MisakaPersona = {
     "Belt": "腰带", "Belts": "腰带", "Ring": "环", "Rings": "环",
     "Chain": "链条", "Lock": "锁", "Base": "底座",
     "Shine": "光泽", "Gate": "门栏",
+    "Rivets": "铆钉", "Rivet": "铆钉",
+    "Buckle": "扣环", "Buckles": "扣环",
+    "Laces": "系带", "Lace": "系带",
+    "Studs": "钉饰", "Stud": "钉饰",
+    "Trim": "镶边", "Border": "边框",
+    "Panel": "面板", "Mesh": "网面",
     "LegsClosed": "腿并拢", "LegsSpread": "腿张开",
     "ArmsDown": "手臂下垂", "ArmsYoked": "手臂约束",
     "Custom Text": "自定义文字",
@@ -285,7 +291,7 @@ window.MisakaPersona = {
 道具: 从【可操作道具清单】里选，用英文 Name。用户说中文名时自己找对应英文名。清单没有的不要编造。
 颜色: 除"默认/原色"外必须输出 #RRGGBB，自己根据描述判断好看的 hex。用户给 hex 时原样使用。
 属性: 从清单里选值。振动强度可用 Off/Low/Medium/High/Maximum/Random/Escalate/Tease/Deny/Edge。
-常见 layer 名: Bed=床体, Blanket=毛毯, Inner=内衬, Strap=束带, Frame=框架, Base=底座, Front=正面, Back=背面, Padding=软垫, Sheet=外层布料, Mattress=床垫, Pillow=枕头
+常见 layer 名: Bed=床体, Blanket=毛毯, Inner=内衬, Strap=束带, Frame=框架, Base=底座, Front=正面, Back=背面, Padding=软垫, Sheet=外层布料, Mattress=床垫, Pillow=枕头, Rivets=铆钉, Buckle=扣环, Laces=系带, Studs=钉饰, Trim=镶边, Panel=面板, Mesh=网面
 
 操作要点：
 - 编号从【当前房间角色名单】里找，不要猜测
