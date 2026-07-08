@@ -2139,6 +2139,10 @@ function unescapeHTML(s) {
             finalReply = sanitizeReply(retryParsed.cleaned);
             // 跳过下面的原始指令执行
             commandResult = retryResult;
+            if (!finalReply && retryCmds.length > 0) {
+              const defaults = ["好了~", "搞定了", "嗯,处理好了", "弄好了~", "已经调好了"];
+              finalReply = defaults[Math.floor(Math.random() * defaults.length)];
+            }
             if (finalReply && finalReply.length > 3) {
               const memText = `${senderName}: ${content} → 御坂: ${finalReply}`;
               storeSemanticMemory(memText, { sender: senderName, memberNum: senderNum }).catch(() => {});
