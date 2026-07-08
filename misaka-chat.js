@@ -1,4 +1,4 @@
-// MisakaChat v2.3.1 - BC 御坂自动回复系统
+// MisakaChat v2.3.4 - BC 御坂自动回复系统
 // 模块分区:
 //   [Config]      L15-55   配置 + 状态
 //   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
@@ -13,6 +13,9 @@
 
 (function() {
   "use strict";
+
+  const SCRIPT_VERSION = "2.3.4";
+  window.__misakaScriptVersion = SCRIPT_VERSION;
 
   if (window.__misakaInstance) console.log("[MisakaChat] 杀掉旧实例 #" + window.__misakaInstance);
   window.__misakaInstance = Date.now();
@@ -608,18 +611,27 @@ ${recentSemantic}`;
     return messages.slice(Math.max(0, cutIdx));
   }
 
+  function getApiKeyStatus() {
+    let gmValue = "";
+    if (typeof window.__GM_getValue === "function") {
+      try { gmValue = window.__GM_getValue("misaka_apikey") || ""; } catch(e) {}
+    }
+    const localValue = localStorage.getItem(storageKey("apikey")) || "";
+    return {
+      value: gmValue || localValue,
+      source: gmValue ? "GM" : (localValue ? "localStorage" : "missing"),
+      hasGM: !!gmValue,
+      hasLocal: !!localValue,
+    };
+  }
+
   async function callLLM(systemPrompt, contextMessages, options = {}) {
     // 速率限制检查
     if (!rateLimiter.canCall()) {
       console.warn("[MisakaChat] LLM 速率限制: 1分钟内超过 " + rateLimiter.maxCalls + " 次调用");
       return null;
     }
-    // 优先从 GM_getValue 读 API key
-    let apiKey = "";
-    if (typeof window.__GM_getValue === "function") {
-      apiKey = window.__GM_getValue("misaka_apikey") || "";
-    }
-    if (!apiKey) apiKey = localStorage.getItem(storageKey("apikey")) || "";
+    const apiKey = getApiKeyStatus().value;
     if (!apiKey) { console.warn("[MisakaChat] 未设置 API key"); return null; }
     rateLimiter.record();
     const messages = [{ role: "system", content: systemPrompt }, ...contextMessages];
@@ -2139,7 +2151,8 @@ function unescapeHTML(s) {
     else if (sub === "key" && parts[1]) { localStorage.setItem(storageKey("apikey"), parts[1]); sendLocal("🔑 API key 已保存"); }
     else if (sub === "model" && parts[1]) { localStorage.setItem(storageKey("model"), parts[1]); CONFIG.model = parts[1]; sendLocal("🤖 模型已切换: " + parts[1]); }
     else if (sub === "status") {
-      sendLocal(`状态: ${CONFIG.enabled?"开启":"关闭"} | 语义 ${state.semanticMemories.length} | 提炼 ${state.refinedMemories.length} | 认识 ${Object.keys(loadMemory().profiles||{}).length} 人`);
+      const key = getApiKeyStatus();
+      sendLocal(`状态: ${CONFIG.enabled?"开启":"关闭"} | 版本 ${SCRIPT_VERSION} / loader ${window.__misakaUserLoaderLoaded || "手动"} | key ${key.source} | 模型 ${CONFIG.model} | 语义 ${state.semanticMemories.length} | 提炼 ${state.refinedMemories.length} | 认识 ${Object.keys(loadMemory().profiles||{}).length} 人`);
     } else if (sub === "forget") {
       localStorage.setItem(storageKey("memory"), "{}");
       state.semanticMemories = [];
@@ -2202,7 +2215,7 @@ function unescapeHTML(s) {
     let mod;
     if (existingMod) { console.log("[MisakaChat] mod 已注册"); mod = { hookFunction: () => {} }; }
     else {
-      mod = bcModSdk.registerMod({ name: "MisakaChat", fullName: "Misaka Auto Chat v2", version: "2.0.0", repository: "https://github.com/Igallta/bc-gimp-sorter" });
+      mod = bcModSdk.registerMod({ name: "MisakaChat", fullName: "Misaka Auto Chat v2", version: SCRIPT_VERSION, repository: "https://github.com/Igallta/bc-gimp-sorter" });
     }
 
    window.__misakaOnMessage = onChatRoomMessage;
@@ -2243,8 +2256,8 @@ function unescapeHTML(s) {
       return next(args);
     });
 
-    console.log("[MisakaChat] ✅ 已初始化 v2.0.0");
-    sendLocal("御坂自动回复 v2.0 已加载");
+    console.log(`[MisakaChat] ✅ 已初始化 ${SCRIPT_VERSION}`);
+    sendLocal(`御坂自动回复 ${SCRIPT_VERSION} 已加载`);
     startIdleTimer();
   }
 

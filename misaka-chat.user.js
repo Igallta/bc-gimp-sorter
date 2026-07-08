@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BC Misaka Auto Chat
 // @namespace    https://igallta.github.io/bc-gimp-sorter
-// @version      2.3.3
+// @version      2.3.4
 // @description  御坂 BC 自动回复系统 — LLM 驱动 + 语义记忆(IDB) + 房间上下文
 // @match        https://www.bondage-europe.com/R129/BondageClub/*
 // @match        https://www.bondageclub.com/R129/BondageClub/*
@@ -27,7 +27,7 @@
   try { window.__GM_getValue = GM_getValue; } catch(e) {}
   try { window.__GM_setValue = GM_setValue; } catch(e) {}
 
-  const SCRIPT_VERSION = "2.3.3";
+  const SCRIPT_VERSION = "2.3.4";
   const BASE_URL = "https://igallta.github.io/bc-gimp-sorter";
 
   function waitForReady(cb, attempts) {
@@ -44,12 +44,20 @@
   }
 
   function loadScript(id, url, onload, onerror) {
-    if (document.getElementById(id)) {
-      if (onload) onload();
-      return;
+    const existing = document.getElementById(id);
+    if (existing) {
+      const currentVersion = existing.dataset?.misakaVersion || "";
+      const currentSrc = existing.getAttribute("src") || "";
+      if (currentVersion === SCRIPT_VERSION || currentSrc.includes(`v=${SCRIPT_VERSION}`)) {
+        if (onload) onload();
+        return;
+      }
+      console.log(`[MisakaChat] 替换旧脚本 ${id}: ${currentVersion || currentSrc || "unknown"} -> ${SCRIPT_VERSION}`);
+      existing.remove();
     }
     const s = document.createElement("script");
     s.id = id;
+    s.dataset.misakaVersion = SCRIPT_VERSION;
     s.src = url;
     s.onload = onload;
     s.onerror = onerror || (() => console.error("[MisakaChat] 加载失败: " + url));
