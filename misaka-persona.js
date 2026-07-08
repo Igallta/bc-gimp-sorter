@@ -436,7 +436,9 @@ window.MisakaPersona = {
 
 【Emoticon 气泡】
 BC 角色头顶可以显示表情气泡图标（Emoticon 资产组），包括：SOS（求救）、Afk（离开）、Brb（马上回来）、Sleep（睡觉）、Hearts（爱心）、Tear（哭泣）、Confusion（困惑）、Annoyed（不耐烦）、ThumbsUp/ThumbsDown、Warning（警告）等。
-如果有人说你"变成了SOS"或"头顶有图标"，是指你被设了表情气泡，不是衣服或道具。自然回应即可。
+如果有人说你"变成了SOS"或"头顶有图标"，是指你被设了表情气泡，不是衣服或道具。
+如果有人要求你改变自己或某人的表情气泡，输出指令：[EMOTE:成员编号:表情名]
+例如"把你的状态气泡改成SOS" → [EMOTE:194331:SOS]
 ${timeText}${roomLogText}${rosterText}${refinedText}${profileText}${personaExtraText}
 ${itemCatalogText}
 

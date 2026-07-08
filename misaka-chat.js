@@ -818,6 +818,10 @@ ${recentSemantic}`;
         commands.push({ type: "copyRestraint", sourceNumber: parseInt(src), targetNumber: parseInt(dst) });
         return "";
       })
+      .replace(/\[EMOTE:(\d+):([^\]]+)\]/gi, (m, mn, expr) => {
+        commands.push({ type: "emote", memberNumber: parseInt(mn), expression: expr.trim() });
+        return "";
+      })
 ;
     return { commands, cleaned: cleaned.trim() };
   }
@@ -1569,10 +1573,34 @@ ${recentSemantic}`;
     }
   }
 
+  function executeEmote(memberNumber, expression) {
+    try {
+      const char = (memberNumber === Player.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === memberNumber);
+      if (!char) return { ok: false, reason: "找不到玩家" };
+      const emoteItem = char.Appearance.find(a => a?.Asset?.Group?.Name === "Emoticon");
+      if (!emoteItem) return { ok: false, reason: "没有 Emoticon 槽位" };
+      // 校验 expression 是否在允许列表内
+      const group = AssetGroup.find(g => g?.Name === "Emoticon");
+      const allowed = group?.AllowExpression || [];
+      const expr = allowed.find(e => e.toLowerCase() === expression.toLowerCase());
+      if (!expr) return { ok: false, reason: `未知表情: ${expression}` };
+      emoteItem.Property = emoteItem.Property || {};
+      emoteItem.Property.Expression = expr;
+      ChatRoomCharacterUpdate(char);
+      console.log(`[MisakaChat] EMOTE: #${memberNumber} -> ${expr}`);
+      return { ok: true, msg: `表情改为 ${expr}` };
+    } catch(e) {
+      console.error("[MisakaChat] 表情设置失败:", e.message);
+      return { ok: false, reason: e.message };
+    }
+  }
+
   // Tool Policy: 检测危险操作，通知玩家但不拦截
   function checkToolPolicy(cmd) {
     // 对真人的道具操作和移动视为危险操作
     const selfMn = Player?.MemberNumber;
+    // EMOTE: 无危险，直接放行
+    if (cmd.type === "emote") return { ok: true, dangerous: false };
     // COPY: 检查源和目标
     if (cmd.type === "copyRestraint") {
       const targets = [];
@@ -1636,7 +1664,7 @@ ${recentSemantic}`;
       const policy = checkToolPolicy(cmd);
       if (policy.dangerous) {
         const who = policy.target;
-        const actionDesc = { move:"移动", moveTo:"移动", moveEdge:"移动", itemadd:"添加道具", itemdel:"移除道具", itemdelall:"解除全部", itemcolor:"改色", itemset:"设置属性", snapshotSave:"保存快照", snapshotRestore:"恢复快照", copyRestraint:"复制束缚" }[cmd.type] || cmd.type;
+        const actionDesc = { move:"移动", moveTo:"移动", moveEdge:"移动", itemadd:"添加道具", itemdel:"移除道具", itemdelall:"解除全部", itemcolor:"改色", itemset:"设置属性", snapshotSave:"保存快照", snapshotRestore:"恢复快照", copyRestraint:"复制束缚", emote:"设置表情" }[cmd.type] || cmd.type;
         sendLocal(`⚠️ 御坂即将对真人 ${who} 执行 ${actionDesc} 操作`);
         console.warn(`[MisakaChat] 危险操作通知: ${cmd.type} -> ${who}`);
       }
@@ -1667,6 +1695,9 @@ ${recentSemantic}`;
       } else if (cmd.type === "copyRestraint") {
         console.log(`[MisakaChat] CMD copy #${cmd.sourceNumber} -> #${cmd.targetNumber}`);
         itemOk = record(cmd, executeCopyRestraint(cmd.sourceNumber, cmd.targetNumber)) && itemOk;
+      } else if (cmd.type === "emote") {
+        console.log(`[MisakaChat] CMD emote #${cmd.memberNumber} -> ${cmd.expression}`);
+        itemOk = record(cmd, executeEmote(cmd.memberNumber, cmd.expression)) && itemOk;
       }
     }
     return { moveOk, itemOk, failures };
@@ -1975,7 +2006,7 @@ function unescapeHTML(s) {
       if (executableCommands.length === 0 && actionKeywords.test(content)) {
         // 重试时必须加载道具清单（用户要求了操作）
         const retrySystemPrompt = needCatalog ? systemPrompt : getSystemPrompt(true);
-        const retryPrompt = retrySystemPrompt + "\n\n【重要提醒】用户刚才要求了操作，但你的回复没有包含操作指令。请重新回复，这次必须在第一行输出对应的操作指令（如 [ITEMSET:...] / [ITEMADD:...] / [ITEMDEL:...] / [ITEMCOLOR:...] / [MOVE:...] / [SNAPSHOT:...] / [COPY:...]）。不要只用文字描述，必须输出指令。";
+        const retryPrompt = retrySystemPrompt + "\n\n【重要提醒】用户刚才要求了操作，但你的回复没有包含操作指令。请重新回复，这次必须在第一行输出对应的操作指令（如 [ITEMSET:...] / [ITEMADD:...] / [ITEMDEL:...] / [ITEMCOLOR:...] / [MOVE:...] / [SNAPSHOT:...] / [COPY:...] / [EMOTE:...]）。不要只用文字描述，必须输出指令。";
         const retryReply = await callLLM(retryPrompt, contextMessages);
         if (retryReply) {
           const retryParsed = parseActionCommands(retryReply);
