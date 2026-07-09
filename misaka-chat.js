@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.5.2";
+  const SCRIPT_VERSION = "2.5.3";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
   if (window.__misakaInstance) console.log("[MisakaChat] 杀掉旧实例 #" + window.__misakaInstance);
@@ -709,7 +709,7 @@ ${recentSemantic}`;
 
   // 检测是否需要道具清单
   function needsItemCatalog(content, recentContext) {
-    const itemKeywords = /道具|绑|穿|脱|戴|摘|加|移|换|颜色|改色|跳蛋|振动|绳|口球|束缚|锁|项圈|手铐|脚镣|chain|rope|gag|cuff|collar|blindfold|ITEMADD|ITEMDEL|ITEMSET|ITEMCOLOR|MOVE|SNAPSHOT|COPY/i;
+    const itemKeywords = /道具|绑|穿|脱|戴|摘|加|移|换|颜色|改色|跳蛋|振动|绳|口球|束缚|锁|项圈|手铐|脚镣|放.*出|放开|松开|解开|出来|chain|rope|gag|cuff|collar|blindfold|ITEMADD|ITEMDEL|ITEMSET|ITEMCOLOR|MOVE|SNAPSHOT|COPY/i;
     // 检查触发消息和最近 3 条上下文
     if (itemKeywords.test(content)) return true;
     const recent = recentContext.slice(-3).map(m => m.content || "").join(" ");
