@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.6.5";
+  const SCRIPT_VERSION = "2.6.6";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
   if (window.__misakaInstance) console.log("[MisakaChat] 杀掉旧实例 #" + window.__misakaInstance);
@@ -1020,6 +1020,24 @@ ${recentSemantic}`;
       }
     }
     return null;
+  }
+
+  function selfPronounTargetRequested(content) {
+    const text = String(content || "");
+    if (/(帮我|给我|替我|我的|我身上|把我|为我)/.test(text)) return false;
+    return /(把你|给你|你自己|你的|你身上|你脚|你腿|你手|你嘴|你脖子|你胸|你下体|你窝|你道具)/.test(text);
+  }
+
+  function validateCommandTargets(content, commands) {
+    if (!selfPronounTargetRequested(content)) return null;
+    const selfNumber = Player?.MemberNumber;
+    if (!selfNumber) return null;
+    const targetCommands = commands.filter(c =>
+      c && ["move", "moveTo", "moveEdge", "itemadd", "itemdel", "itemset", "itemcolor", "itemdelall", "snapshotSave", "snapshotRestore", "emote"].includes(c.type)
+    );
+    const bad = targetCommands.find(c => c.memberNumber !== selfNumber);
+    if (!bad) return null;
+    return { ok: false, reason: "target-mismatch", requestedTarget: selfNumber, actualTarget: bad.memberNumber, cmd: bad };
   }
 
   function findItemByPart(char, itemName, part) {
@@ -2191,8 +2209,13 @@ function unescapeHTML(s) {
       }
 
       // 执行操作
-      const partValidation = validateCommandParts(content, executableCommands);
-      if (partValidation) {
+      const targetValidation = validateCommandTargets(content, executableCommands);
+      const partValidation = targetValidation ? null : validateCommandParts(content, executableCommands);
+      if (targetValidation) {
+        commandResult = { moveOk: true, itemOk: false, failures: [targetValidation] };
+        pushDebugTrace({ id: debugId, stage: "validate", executableCommands, commandResult });
+        finalReply = "你说的是我身上,我不乱动别人。";
+      } else if (partValidation) {
         commandResult = { moveOk: true, itemOk: false, failures: [partValidation] };
         pushDebugTrace({ id: debugId, stage: "validate", executableCommands, commandResult });
         const requested = partValidation.requestedPart === "Feet" ? "脚" :
