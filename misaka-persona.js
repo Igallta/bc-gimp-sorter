@@ -282,6 +282,9 @@ window.MisakaPersona = {
 添加道具: [ITEMADD:编号:道具名] 或 [ITEMADD:编号:道具名:部位] 或 [ITEMADD:编号:道具名:部位:#RRGGBB]
 移除道具: [ITEMDEL:编号:道具名] 或 [ITEMDEL:编号:道具名:部位]（指定部位只移除该部位）
 释放全部: [ITEMDEL:编号:all]
+// 玩家说"放我出来"、"放开我"、"松开"、"解开我"、"让我走"等 = 请求移除身上的束缚道具,用 [ITEMDEL:编号:all] 或逐个 [ITEMDEL:编号:道具名] 移除
+// 玩家说"放XXX出来" = 对XXX执行 [ITEMDEL:XXX编号:all]
+// 注意:玩家没穿道具时,自然地告诉对方(如"你身上没有束缚呀"),不要输出空指令
 设置属性: [ITEMSET:编号:道具名:属性:值] 或 [ITEMSET:编号:道具名:部位:属性:值] — 用于调属性(如振动强度/开关/样式),不是改颜色
 改色: [ITEMCOLOR:编号:道具名::#RRGGBB] 或 [ITEMCOLOR:编号:道具名:部件名:#RRGGBB] — 改颜色必须用 ITEMCOLOR,不能用 ITEMSET。部件名是 layer 名(如 Rivets/Inner/Blanket)
 快照: [SNAPSHOT:save:编号] / [SNAPSHOT:restore:编号]
