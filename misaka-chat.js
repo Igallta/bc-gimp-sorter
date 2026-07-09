@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.3.7";
+  const SCRIPT_VERSION = "2.3.9";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
   if (window.__misakaInstance) console.log("[MisakaChat] 杀掉旧实例 #" + window.__misakaInstance);
@@ -1156,14 +1156,7 @@ ${recentSemantic}`;
     return layers;
   }
 
-  // 中文 → 英文 layer 名反查表（LAYER_CN_FALLBACK 的反向）
-  const CN_TO_EN_LAYER = {};
-  if (typeof MisakaPersona !== "undefined" && MisakaPersona.LAYER_CN_FALLBACK) {
-    for (const [en, cn] of Object.entries(MisakaPersona.LAYER_CN_FALLBACK)) {
-      CN_TO_EN_LAYER[cn] = en;
-    }
-  }
-
+  // 只在目标道具的 layer 里做本地匹配，不做全局反查
   function findLayerIndex(asset, layerName) {
     if (!layerName) return undefined;
     const layers = getItemColorLayers(asset);
@@ -1171,16 +1164,18 @@ ${recentSemantic}`;
     const lower = raw.toLowerCase();
     // 1. 精确匹配英文名
     let found = layers.find(l => l.name === raw || l.name?.toLowerCase() === lower);
-    // 2. 中文 → 英文反查
-    if (!found) {
-      const enName = CN_TO_EN_LAYER[raw];
-      if (enName) found = layers.find(l => l.name === enName || l.name?.toLowerCase() === enName.toLowerCase());
-    }
-    // 3. 模糊匹配：layer 的中文名（通过 layerCnName）等于输入
+    // 2. 在本道具内做中文名匹配（layerCnName 逐个比对）
     if (!found) {
       found = layers.find(l => {
-        const cn = MisakaPersona?.layerCnName?.(l) || "";
+        const cn = MisakaPersona?.layerCnName?.({ Name: l.name }) || "";
         return cn === raw || cn.toLowerCase() === lower;
+      });
+    }
+    // 3. 本道具内中文 includes 模糊匹配
+    if (!found) {
+      found = layers.find(l => {
+        const cn = MisakaPersona?.layerCnName?.({ Name: l.name }) || "";
+        return cn && (cn.includes(raw) || raw.includes(cn)) && cn.length > 1;
       });
     }
     return found?.index;
@@ -1397,7 +1392,12 @@ ${recentSemantic}`;
     if (part && !BODY_PART_GROUPS[part]) {
       layerIndex = findLayerIndex(realAsset, part);
       if (layerIndex === undefined) {
-        console.log(`[MisakaChat] 找不到部件 "${part}",可上色部件: ${getItemColorLayers(realAsset).map(l => l.name).join("/")}`);
+        const available = getItemColorLayers(realAsset).map(l => {
+          const cn = MisakaPersona?.layerCnName?.({ Name: l.name }) || "";
+          return cn && cn !== l.name ? `${l.name}(${cn})` : l.name;
+        }).join("/");
+        console.log(`[MisakaChat] 找不到部件 "${part}",可上色部件: ${available}`);
+        return { ok: false, reason: `找不到部件「${part}」,可上色部件: ${available}`, memberNumber, item: itemName };
       }
     }
 
@@ -2174,6 +2174,7 @@ function unescapeHTML(s) {
           else if (reason === "unknown-item") finalReply = "没找到这个道具,不能乱加。";
           else if (reason === "unknown-color") finalReply = "这个颜色我识别不了,给我个 #RRGGBB 吧。";
           else if (reason === "set-color-failed") finalReply = "颜色没改成,可能这个部件不能上色。";
+          else if (/找不到部件/.test(reason)) finalReply = reason; // 直接把可用部件列表告诉玩家
           else if (/找不到/.test(reason)) finalReply = "没找到目标,做不了。";
         }
       }
