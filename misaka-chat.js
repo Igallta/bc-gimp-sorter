@@ -189,14 +189,7 @@
     existing.name = name || existing.name;
     existing.chatCount = (existing.chatCount || 0) + 1;
     existing.lastChat = new Date().toISOString().slice(0, 16).replace("T", " ");
-    if (!existing.notes && content) {
-      const lower = content.toLowerCase();
-      if (/kidnap|绑架/.test(lower)) existing.notes = "喜欢绑架";
-      else if (/hug|抱/.test(lower)) existing.notes = "喜欢抱抱";
-      else if (/pet|宠物/.test(lower)) existing.notes = "当宠物玩";
-      else if (/tie|绑|rope/.test(lower)) existing.notes = "喜欢束缚";
-      else existing.notes = "常客";
-    }
+    if (!existing.notes) existing.notes = "常客";
     mem.profiles[memberNumber] = existing;
     const keys = Object.keys(mem.profiles);
     if (keys.length > CONFIG.maxProfileEntries) {
