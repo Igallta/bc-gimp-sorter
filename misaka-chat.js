@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.6.6";
+  const SCRIPT_VERSION = "2.6.7";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
   if (window.__misakaInstance) console.log("[MisakaChat] 杀掉旧实例 #" + window.__misakaInstance);
@@ -1038,6 +1038,34 @@ ${recentSemantic}`;
     const bad = targetCommands.find(c => c.memberNumber !== selfNumber);
     if (!bad) return null;
     return { ok: false, reason: "target-mismatch", requestedTarget: selfNumber, actualTarget: bad.memberNumber, cmd: bad };
+  }
+
+  function expectedActionTypes(content) {
+    const text = String(content || "");
+    const expected = new Set();
+    if (/(解掉|解开|脱掉|脱下|摘掉|摘下|去掉|取下|松开)/.test(text)) {
+      expected.add("itemdel"); expected.add("itemdelall");
+    }
+    if (/(绑|戴|穿|加|系上|绑上)/.test(text)) expected.add("itemadd");
+    if (/(改色|颜色|换成|染成|变成).*(#[0-9A-Fa-f]{6}|红|蓝|绿|白|黑|粉|紫|黄|橙|灰)|把.*(改成|换成|染成|变成)/.test(text)) {
+      expected.add("itemcolor");
+    }
+    if (/(调|开|关|强度|振动|模式|样式)/.test(text)) expected.add("itemset");
+    if (/(移动|挪|站到|靠|边缘|左边|右边|最左|最右)/.test(text)) {
+      expected.add("move"); expected.add("moveTo"); expected.add("moveEdge");
+    }
+    if (/(表情|气泡|SOS|爱心|哭|点赞|状态)/i.test(text)) expected.add("emote");
+    return expected;
+  }
+
+  function validateCommandTypes(content, commands) {
+    const expected = expectedActionTypes(content);
+    if (expected.size === 0) return null;
+    const executable = commands.filter(c => !["memsearch", "bcequery"].includes(c.type));
+    if (executable.length === 0) return null;
+    const bad = executable.find(c => !expected.has(c.type));
+    if (!bad) return null;
+    return { ok: false, reason: "action-type-mismatch", expected: [...expected], actual: bad.type, cmd: bad };
   }
 
   function findItemByPart(char, itemName, part) {
@@ -2209,9 +2237,14 @@ function unescapeHTML(s) {
       }
 
       // 执行操作
-      const targetValidation = validateCommandTargets(content, executableCommands);
-      const partValidation = targetValidation ? null : validateCommandParts(content, executableCommands);
-      if (targetValidation) {
+      const typeValidation = validateCommandTypes(content, executableCommands);
+      const targetValidation = typeValidation ? null : validateCommandTargets(content, executableCommands);
+      const partValidation = (typeValidation || targetValidation) ? null : validateCommandParts(content, executableCommands);
+      if (typeValidation) {
+        commandResult = { moveOk: false, itemOk: false, failures: [typeValidation] };
+        pushDebugTrace({ id: debugId, stage: "validate", executableCommands, commandResult });
+        finalReply = "我刚才理解错了,这个操作我不乱做。";
+      } else if (targetValidation) {
         commandResult = { moveOk: true, itemOk: false, failures: [targetValidation] };
         pushDebugTrace({ id: debugId, stage: "validate", executableCommands, commandResult });
         finalReply = "你说的是我身上,我不乱动别人。";
