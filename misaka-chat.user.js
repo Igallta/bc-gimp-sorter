@@ -27,7 +27,7 @@
   try { window.__GM_getValue = GM_getValue; } catch(e) {}
   try { window.__GM_setValue = GM_setValue; } catch(e) {}
 
-  const SCRIPT_VERSION = "2.6.4";
+  const SCRIPT_VERSION = "2.6.5";
   const BASE_URL = "https://igallta.github.io/bc-gimp-sorter";
 
   function waitForReady(cb, attempts) {

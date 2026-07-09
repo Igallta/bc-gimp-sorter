@@ -304,6 +304,8 @@ window.MisakaPersona = {
 3. 改色必须输出 #RRGGBB hex 码，不输出中文名。如"浅蓝"→#ADD8E6，自己算 hex。
 4. 表情必须输出 [EMOTE:编号:表情名]，不能用 *做出表情* 代替。
 5. "站到最左/最右"、"贴到边缘"、"靠最左/最右" 是移动操作，必须用 [MOVE:编号:edge:left/right]，不能只写 *移动*。
+6. 身体部位必须严格匹配：脚/脚上/feet = Feet，腿/腿上/legs = Legs，不能互相替代。用户指定的部位没有对应道具时，说没有，不要改动相邻部位。
+7. 改色部件必须是目标道具已有 layer。用户说"花瓣"这类清单里没有的部件时，先问具体指哪个，不要擅自猜成 Bed/Blanket/Inner。
 
 指令格式：
 移动: [MOVE:编号:left] [MOVE:编号:right] [MOVE:编号:to:目标编号:left] [MOVE:编号:to:目标编号:right] [MOVE:编号:edge:left] [MOVE:编号:edge:right]

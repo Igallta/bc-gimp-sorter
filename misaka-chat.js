@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.6.4";
+  const SCRIPT_VERSION = "2.6.5";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
   if (window.__misakaInstance) console.log("[MisakaChat] 杀掉旧实例 #" + window.__misakaInstance);
@@ -982,6 +982,45 @@ ${recentSemantic}`;
     "Vulva": ["ItemVulva", "ItemVulvaPiercings", "ItemButt", "ItemClit"],
     "Devices": ["ItemDevices"],
   };
+
+  function requestedSingleBodyPart(content) {
+    const text = String(content || "");
+    const matches = [];
+    const patterns = [
+      ["Feet", /脚|足|feet|foot/i],
+      ["Legs", /腿|leg|legs/i],
+      ["Hands", /手(?!臂)|hands?|hand/i],
+      ["Arms", /手臂|胳膊|arms?|arm/i],
+      ["Mouth", /嘴|口|mouth|gag/i],
+      ["Head", /头|脸|head|face/i],
+      ["Neck", /脖子|颈|neck/i],
+      ["Torso", /身体|躯干|腰|torso|body|waist/i],
+      ["Pelvis", /骨盆|胯|pelvis/i],
+      ["Breast", /胸|乳|breast|nipple/i],
+      ["Vulva", /下体|阴|vulva|clit|butt/i],
+    ];
+    for (const [part, pattern] of patterns) {
+      if (pattern.test(text)) matches.push(part);
+    }
+    return matches.length === 1 ? matches[0] : "";
+  }
+
+  function validateCommandParts(content, commands) {
+    const requestedPart = requestedSingleBodyPart(content);
+    if (!requestedPart) return null;
+    const bodyPartCommands = commands.filter(c =>
+      c && ["itemadd", "itemdel", "itemset"].includes(c.type)
+    );
+    for (const cmd of bodyPartCommands) {
+      if (!cmd.part) {
+        return { ok: false, reason: "part-missing", requestedPart, cmd };
+      }
+      if (BODY_PART_GROUPS[cmd.part] && cmd.part !== requestedPart) {
+        return { ok: false, reason: "part-mismatch", requestedPart, actualPart: cmd.part, cmd };
+      }
+    }
+    return null;
+  }
 
   function findItemByPart(char, itemName, part) {
     if (!char) return null;
@@ -2152,7 +2191,18 @@ function unescapeHTML(s) {
       }
 
       // 执行操作
-      if (executableCommands.length > 0) {
+      const partValidation = validateCommandParts(content, executableCommands);
+      if (partValidation) {
+        commandResult = { moveOk: true, itemOk: false, failures: [partValidation] };
+        pushDebugTrace({ id: debugId, stage: "validate", executableCommands, commandResult });
+        const requested = partValidation.requestedPart === "Feet" ? "脚" :
+          partValidation.requestedPart === "Legs" ? "腿" : partValidation.requestedPart;
+        const actual = partValidation.actualPart === "Feet" ? "脚" :
+          partValidation.actualPart === "Legs" ? "腿" : (partValidation.actualPart || "其他部位");
+        finalReply = partValidation.reason === "part-missing"
+          ? `你说的是${requested}上,我不乱猜部位。`
+          : `你说的是${requested}上,不是${actual}上,我不乱动。`;
+      } else if (executableCommands.length > 0) {
         commandResult = await executeCommands(executableCommands);
         console.log("[MisakaChat] 操作执行:", executableCommands, commandResult);
         pushDebugTrace({ id: debugId, stage: "execute", executableCommands, commandResult });
