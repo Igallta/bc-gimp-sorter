@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.6.1";
+  const SCRIPT_VERSION = "2.6.2";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
   if (window.__misakaInstance) console.log("[MisakaChat] 杀掉旧实例 #" + window.__misakaInstance);
@@ -952,11 +952,15 @@ ${recentSemantic}`;
         await new Promise(r => setTimeout(r, 400));
       }
       state.lastMoveTime = Date.now();
-      console.log(`[MisakaChat] moveEdge #${memberNumber} ${edge}, ${steps}步, 最终 index=${findIdx(memberNumber)}`);
-      return steps > 0;
+      const finalIdx = findIdx(memberNumber);
+      const reached = edge === "left" ? finalIdx === 0 : finalIdx === lastIdx();
+      console.log(`[MisakaChat] moveEdge #${memberNumber} ${edge}, ${steps}步, 最终 index=${finalIdx}, reached=${reached}`);
+      return reached
+        ? { ok: true, steps, finalIdx }
+        : { ok: false, reason: "move-blocked", steps, finalIdx, edge };
     } catch(e) {
       console.error("[MisakaChat] moveEdge 失败:", e.message);
-      return false;
+      return { ok: false, reason: "move-failed" };
     }
   }
 
@@ -2145,30 +2149,28 @@ function unescapeHTML(s) {
         commandResult = await executeCommands(executableCommands);
         console.log("[MisakaChat] 操作执行:", executableCommands, commandResult);
         pushDebugTrace({ id: debugId, stage: "execute", executableCommands, commandResult });
-        // 操作失败时:只在 LLM 没有自然回复时才用机械回复填充
-        // 如果 LLM 已经有自然回复,保留它(LLM 的回复比机械报错更自然)
+        // 操作失败时必须诚实反馈,不能保留"好了"这类与实际结果相反的自然回复
         const hasNaturalReply = finalReply && finalReply.trim().length > 3;
-        if (!hasNaturalReply) {
-          const missing = (commandResult.failures || []).find(f =>
-            f.reason === "missing-item" || f.reason === "missing-part-item"
-          );
-          if (missing?.cmd) {
-            const who = displayNameByMemberNumber(missing.cmd.memberNumber);
-            finalReply = `${who}身上没有${missing.cmd.item},没法改。`;
-          }
-          const failed = (commandResult.failures || [])[0];
-          if (!missing && failed) {
-            const reason = failed.reason || "操作失败";
-            if (reason === "没有找到快照") finalReply = "我没存过这个快照,绑不回去。";
-            else if (/未锁道具/.test(reason)) finalReply = "没有可处理的未锁道具。";
-            else if (reason === "locked-item" || /道具被锁/.test(reason)) finalReply = "这个道具锁着呢,我动不了。";
-            else if (reason === "missing-character") finalReply = "没找到这个人,做不了。";
-            else if (reason === "unknown-item") finalReply = "没找到这个道具,不能乱加。";
-            else if (reason === "unknown-color") finalReply = "这个颜色我识别不了,给我个 #RRGGBB 吧。";
-            else if (reason === "set-color-failed") finalReply = "颜色没改成,可能这个部件不能上色。";
-            else if (/找不到部件/.test(reason)) finalReply = reason;
-            else if (/找不到/.test(reason)) finalReply = "没找到目标,做不了。";
-          }
+        const missing = (commandResult.failures || []).find(f =>
+          f.reason === "missing-item" || f.reason === "missing-part-item"
+        );
+        const failed = (commandResult.failures || [])[0];
+        if (missing?.cmd) {
+          const who = displayNameByMemberNumber(missing.cmd.memberNumber);
+          finalReply = `${who}身上没有${missing.cmd.item},没法改。`;
+        } else if (failed) {
+          const reason = failed.reason || "操作失败";
+          if (reason === "move-blocked") finalReply = "前面被挡住了,只能挪到这里。";
+          else if (reason === "没有找到快照") finalReply = "我没存过这个快照,绑不回去。";
+          else if (/未锁道具/.test(reason)) finalReply = "没有可处理的未锁道具。";
+          else if (reason === "locked-item" || /道具被锁/.test(reason)) finalReply = "这个道具锁着呢,我动不了。";
+          else if (reason === "missing-character") finalReply = "没找到这个人,做不了。";
+          else if (reason === "unknown-item") finalReply = "没找到这个道具,不能乱加。";
+          else if (reason === "unknown-color") finalReply = "这个颜色我识别不了,给我个 #RRGGBB 吧。";
+          else if (reason === "set-color-failed") finalReply = "颜色没改成,可能这个部件不能上色。";
+          else if (/找不到部件/.test(reason)) finalReply = reason;
+          else if (/找不到/.test(reason)) finalReply = "没找到目标,做不了。";
+          else if (!hasNaturalReply) finalReply = "好像做不到呢。";
         }
       }
 

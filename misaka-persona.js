@@ -78,6 +78,31 @@ window.MisakaPersona = {
     return desc && desc !== groupName ? `${groupName}(${desc})` : groupName;
   },
 
+  itemGroupPart(groupName) {
+    const map = {
+      ItemMouth: "Mouth/嘴", ItemMouth2: "Mouth/嘴2", ItemMouth3: "Mouth/嘴3",
+      ItemHead: "Head/头", ItemHood: "Head/头套", ItemEars: "Ears/耳",
+      ItemNeck: "Neck/脖子", ItemNeckAccessories: "Neck/脖子饰品", ItemNeckRestraints: "Neck/颈部束缚",
+      ItemArms: "Arms/手臂", ItemHands: "Hands/手", ItemFeet: "Feet/脚",
+      ItemLegs: "Legs/腿", ItemBoots: "Feet/靴", ItemTorso: "Torso/躯干",
+      ItemTorso2: "Torso/躯干2", ItemPelvis: "Pelvis/骨盆", ItemBreast: "Breast/胸",
+      ItemNipples: "Breast/乳头", ItemNipplesPiercings: "Breast/乳环",
+      ItemVulva: "Vulva/下体", ItemVulvaPiercings: "Vulva/阴部穿环",
+      ItemButt: "Vulva/肛", ItemDevices: "Devices/设备", ItemClit: "Vulva/阴蒂",
+      ItemHandheld: "Hands/手持"
+    };
+    return map[groupName] || groupName;
+  },
+
+  itemColorSummary(color) {
+    if (!color) return "";
+    const rawColors = (Array.isArray(color) ? color : [color])
+      .filter(c => c && c !== "Default");
+    const unique = [...new Set(rawColors)];
+    if (unique.length === 0) return "";
+    return unique.map(c => `${this.colorName(c)}:${c}`).join("/");
+  },
+
   getColorLayers(asset) {
     if (!Array.isArray(asset?.Layer)) return [];
     const layers = [];
@@ -462,8 +487,10 @@ ${itemCatalogText}
             // 记录具体道具名(中文名+英文名,LLM 操作时需要英文名)
             const itemDesc = a.Asset.Description || a.Asset.Name || "";
             const itemName = a.Asset.Name || "";
+            const partTag = this.itemGroupPart(gName);
+            const colorTag = this.itemColorSummary(a.Color);
             const lockTag = a.Property?.LockedBy ? "[锁]" : "";
-            itemList.push(`${itemDesc}(${itemName})${lockTag}`);
+            itemList.push(`${itemDesc}(${itemName})@${partTag}/${gName}${colorTag ? `[色:${colorTag}]` : ""}${lockTag}`);
             continue;
           }
           // 只保留有视觉意义的穿着
