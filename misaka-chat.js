@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.4.0";
+  const SCRIPT_VERSION = "2.4.1";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
   if (window.__misakaInstance) console.log("[MisakaChat] 杀掉旧实例 #" + window.__misakaInstance);
@@ -1016,17 +1016,24 @@ ${recentSemantic}`;
     return (typeof MisakaPersona !== "undefined" && MisakaPersona.assetCnName) ? MisakaPersona.assetCnName(asset) : (asset?.Description || asset?.Name || "");
   }
 
-  function findItemAsset(itemName) {
+  function findItemAsset(itemName, targetChar) {
     if (!itemName) return null;
     if (typeof Asset === "undefined" || !Array.isArray(Asset)) return null;
     const rawName = String(itemName).trim();
     if (!rawName) return null;
 
-    // 精确匹配英文名（可能有多个同名 asset 在不同 group，优先选玩家身上的）
+    // 检查角色身上穿着的道具（优先 targetChar，再查 Player）
+    const checkWorn = (a) => {
+      const chars = [];
+      if (targetChar && targetChar !== Player) chars.push(targetChar);
+      chars.push(Player);
+      return chars.some(ch => ch.Appearance.some(ap => ap.Asset?.Name === a.Name && ap.Asset?.Group?.Name === a.Group?.Name));
+    };
+
+    // 精确匹配英文名（可能有多个同名 asset 在不同 group，优先选穿着的）
     const candidates = Asset.filter(a => a?.Group?.Name?.startsWith("Item") && a.Name === rawName);
     if (candidates.length > 0) {
-      // 优先选玩家身上穿着的
-      const worn = candidates.find(a => Player.Appearance.some(ap => ap.Asset?.Name === a.Name && ap.Asset?.Group?.Name === a.Group?.Name));
+      const worn = candidates.find(a => checkWorn(a));
       const exact = worn || candidates[0];
       return { group: exact.Group.Name, asset: exact.Name };
     }
@@ -1035,7 +1042,7 @@ ${recentSemantic}`;
     const noSpace = rawName.replace(/\s+/g, "");
     const fuzzyCandidates = Asset.filter(a => a?.Group?.Name?.startsWith("Item") && (a.Name === noSpace || a.Name.replace(/\s+/g, "") === noSpace));
     if (fuzzyCandidates.length > 0) {
-      const worn = fuzzyCandidates.find(a => Player.Appearance.some(ap => ap.Asset?.Name === a.Name && ap.Asset?.Group?.Name === a.Group?.Name));
+      const worn = fuzzyCandidates.find(a => checkWorn(a));
       const fuzzy = worn || fuzzyCandidates[0];
       return { group: fuzzy.Group.Name, asset: fuzzy.Name };
     }
@@ -1356,7 +1363,7 @@ ${recentSemantic}`;
     console.log(`[MisakaChat] 改颜色: #${memberNumber} ${itemName} part=${part} color=${colorName}`);
     const char = (memberNumber === Player.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === memberNumber);
     if (!char) { console.log("[MisakaChat] 找不到玩家 #" + memberNumber); return { ok: false, reason: "missing-character" }; }
-    const mapping = findItemAsset(itemName);
+    const mapping = findItemAsset(itemName, char);
     if (!mapping) { console.log("[MisakaChat] 找不到道具: " + itemName); return { ok: false, reason: "unknown-item" }; }
     console.log(`[MisakaChat] findItemAsset → group=${mapping.group} asset=${mapping.asset}`);
     // findItemAsset 返回 { group, asset },需要从 BC Asset 数组里找真正的 Asset 对象
@@ -1411,7 +1418,7 @@ ${recentSemantic}`;
       const char = (memberNumber === Player.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === memberNumber); if (!char) { console.log("[MisakaChat] 找不到玩家 #" + memberNumber); return { ok: false, reason: "missing-character" }; }
       let target = findItemByPart(char, itemName, part);
       if (!target) {
-        const mapping = findItemAsset(itemName);
+        const mapping = findItemAsset(itemName, char);
         if (mapping) {
           target = char.Appearance.find(a => a?.Asset?.Group?.Name === mapping.group);
           if (!target) {
@@ -1448,9 +1455,10 @@ ${recentSemantic}`;
 
   function executeItemAdd(memberNumber, itemName, part, color) {
     try {
-      const mapping = findItemAsset(itemName);
-      if (!mapping) { console.log("[MisakaChat] 未知道具:", itemName); return { ok: false, reason: "unknown-item", memberNumber, item: itemName }; }
       const char = (memberNumber === Player.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === memberNumber);
+      if (!char) { console.log("[MisakaChat] 找不到玩家 #" + memberNumber); return { ok: false, reason: "missing-character" }; }
+      const mapping = findItemAsset(itemName, char);
+      if (!mapping) { console.log("[MisakaChat] 未知道具:", itemName); return { ok: false, reason: "unknown-item", memberNumber, item: itemName }; }
       if (!char) { console.log("[MisakaChat] 找不到玩家 #" + memberNumber); return { ok: false, reason: "missing-character" }; }
 
       // 找目标 group
@@ -1494,7 +1502,7 @@ ${recentSemantic}`;
 
       // fallback: findItemAsset mapping
       if (!target) {
-        const mapping = findItemAsset(itemName);
+        const mapping = findItemAsset(itemName, char);
         if (mapping) {
           target = char.Appearance.find(a => a?.Asset?.Group?.Name === mapping.group);
           if (!target) {
