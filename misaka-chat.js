@@ -1191,25 +1191,11 @@ ${recentSemantic}`;
   }
 
 
-  // 常见中文颜色名 → hex 兜底表（LLM 应该直接输出 hex，但这作为安全网）
-  const CN_COLOR_MAP = {
-    "白色":"#FFFFFF","黑":"#000000","黑色":"#000000","红":"#FF0000","红色":"#FF0000",
-    "绿":"#00FF00","绿色":"#00FF00","蓝":"#0000FF","蓝色":"#0000FF","黄":"#FFFF00","黄色":"#FFFF00",
-    "紫":"#800080","紫色":"#800080","粉":"#FFC0CB","粉色":"#FFC0CB","粉红":"#FFC0CB","橙":"#FFA500","橙色":"#FFA500",
-    "灰":"#808080","灰色":"#808080","棕":"#8B4513","棕色":"#8B4513","青":"#00FFFF","青色":"#00FFFF",
-    "浅绿":"#77DD77","浅绿色":"#77DD77","浅蓝":"#ADD8E6","浅蓝色":"#ADD8E6","浅红":"#FFB6B6","浅红":"#FFB6B6",
-    "浅粉":"#FFB6C1","浅紫色":"#DDA0DD","深绿":"#006400","深绿色":"#006400","深蓝":"#00008B","深蓝色":"#00008B",
-    "深红":"#8B0000","深红色":"#8B0000","深紫":"#4B0082","深紫色":"#4B0082","金色":"#FFD700","银色":"#C0C0C0",
-    "透明":"#FFFFFF","透明色":"#FFFFFF","米白":"#F5F5DC","咖":"#5D4037","咖啡":"#5D4037","卡其":"#F0E68C",
-  };
   function colorNameToHex(name) {
     if (!name) return null;
     const n = name.trim();
     if (/^#[0-9A-Fa-f]{6}$/.test(n)) return n.toUpperCase();
     if (/默认|Default|原色/.test(n)) return "Default";
-    // 中文颜色名兜底
-    if (CN_COLOR_MAP[n]) return CN_COLOR_MAP[n];
-    if (CN_COLOR_MAP[n.replace(/色$/,"")]) return CN_COLOR_MAP[n.replace(/色$/,"")];
     return null;
   }
 
