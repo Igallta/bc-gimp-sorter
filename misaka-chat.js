@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.6.0";
+  const SCRIPT_VERSION = "2.6.1";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
   if (window.__misakaInstance) console.log("[MisakaChat] 杀掉旧实例 #" + window.__misakaInstance);
@@ -58,6 +58,18 @@
     roomLog: [],          // 进出记录
     snapshots: {},        // 束缚快照 { memberNumber: { items, time } }
   };
+
+  window.__misakaDebugTrace = window.__misakaDebugTrace || [];
+  function pushDebugTrace(entry) {
+    try {
+      const trace = window.__misakaDebugTrace;
+      trace.push({
+        time: new Date().toISOString(),
+        ...entry
+      });
+      while (trace.length > 30) trace.shift();
+    } catch(e) {}
+  }
 
   // 恢复 messageCount(避免刷新后归零导致 refine 不触发)
   try {
@@ -2037,10 +2049,12 @@ function unescapeHTML(s) {
   }
 
   async function handleReply(senderNum, senderName, content) {
+    const debugId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     state.busy = true;
     window.__misakaGlobalBusy = true;
     state.lastReplyTime = Date.now();
     state.lastUserReplyTime[senderNum] = Date.now();
+    pushDebugTrace({ id: debugId, stage: "start", senderNum, senderName, content });
 
     try {
       await new Promise(r => setTimeout(r, CONFIG.replyDelayMs));
@@ -2066,8 +2080,10 @@ function unescapeHTML(s) {
       console.log("[MisakaChat] system prompt 构建完成(含 roster 穿着信息)");
 
       let reply = await callLLM(systemPrompt, contextMessages);
+      pushDebugTrace({ id: debugId, stage: "llm:first", reply });
       if (reply) {
         const firstPass = parseActionCommands(reply);
+        pushDebugTrace({ id: debugId, stage: "parse:first", commands: firstPass.commands, cleaned: firstPass.cleaned });
         const memCommands = firstPass.commands.filter(c => c.type === "memsearch");
         const bceCommands = firstPass.commands.filter(c => c.type === "bcequery");
         // 兜底:用户说"查一下XXX"但 LLM 没输出 BCEQUERY 时,自动提取查询目标
@@ -2103,9 +2119,11 @@ function unescapeHTML(s) {
             }
           }
           reply = await callLLM(systemPrompt + extraContext, contextMessages);
+          pushDebugTrace({ id: debugId, stage: "llm:extra-context", reply });
         }
       }
       if (!reply) { console.warn("[MisakaChat] LLM 返回空,未回复");
+        pushDebugTrace({ id: debugId, stage: "empty-reply" });
         tryEmoteFallback(content, senderNum);
         return;
       }
@@ -2115,6 +2133,7 @@ function unescapeHTML(s) {
       const executableCommands = commands.filter(c => c.type !== "memsearch" && c.type !== "bcequery");
       let finalReply = sanitizeReply(cleaned);
       let commandResult = null;  // 提前声明,避免 TDZ
+      pushDebugTrace({ id: debugId, stage: "parse:final", commands, executableCommands, cleaned, finalReply });
 
       // EMOTE 兜底:LLM 没输出 EMOTE 时自动提取执行
       if (!executableCommands.some(c => c.type === 'emote')) {
@@ -2125,6 +2144,7 @@ function unescapeHTML(s) {
       if (executableCommands.length > 0) {
         commandResult = await executeCommands(executableCommands);
         console.log("[MisakaChat] 操作执行:", executableCommands, commandResult);
+        pushDebugTrace({ id: debugId, stage: "execute", executableCommands, commandResult });
         // 操作失败时:只在 LLM 没有自然回复时才用机械回复填充
         // 如果 LLM 已经有自然回复,保留它(LLM 的回复比机械报错更自然)
         const hasNaturalReply = finalReply && finalReply.trim().length > 3;
@@ -2166,9 +2186,11 @@ function unescapeHTML(s) {
       }
 
       sendReply(finalReply);
+      pushDebugTrace({ id: debugId, stage: "sent", finalReply });
 
     } catch (e) {
       console.error("[MisakaChat] 回复失败:", e.message);
+      pushDebugTrace({ id: debugId, stage: "error", error: e.message });
     } finally {
       state.busy = false;
       window.__misakaGlobalBusy = false;
