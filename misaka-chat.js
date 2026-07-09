@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.5.3";
+  const SCRIPT_VERSION = "2.6.0";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
   if (window.__misakaInstance) console.log("[MisakaChat] 杀掉旧实例 #" + window.__misakaInstance);
@@ -2068,11 +2068,9 @@ function unescapeHTML(s) {
       });
       contextMessages = trimContextByTokenBudget(contextMessages, CONFIG.maxContextTokens);
 
-      // 构建系统 prompt(按需注入道具清单)
-      const needCatalog = needsItemCatalog(content, state.recentMessages.slice(-5));
-      let systemPrompt = getSystemPrompt(needCatalog);
-      if (!needCatalog) console.log("[MisakaChat] 跳过道具清单(日常闲聊)");
-      else console.log("[MisakaChat] 加载道具清单(涉及道具/操作)");
+      // 构建系统 prompt(roster 始终包含穿着信息,不再按需加载完整道具清单)
+      let systemPrompt = getSystemPrompt(false);
+      console.log("[MisakaChat] system prompt 构建完成(含 roster 穿着信息)");
 
       let reply = await callLLM(systemPrompt, contextMessages);
       if (reply) {

@@ -183,7 +183,7 @@ window.MisakaPersona = {
   build(memory = { profiles: {}, roster: "" }, includeCatalog = true) {
     const itemCatalogText = includeCatalog
       ? "\n\n【可操作道具清单】\n" + (memory.itemCatalog || this.buildItemCatalog())
-      : "\n\n【道具操作提示】需要操作道具时，用户会明确要求。日常闲聊不需要输出道具指令。如果用户要求操作道具但你不确定道具英文名，可以说“让我看看”或“等一下”。";
+      : "\n\n【道具操作提示】角色名单里的道具名格式是 中文名(英文名)，操作时直接用英文名输出指令。例如名单里写了 缎带束腰(RibbonCorset)，你就输出 [ITEMDEL:编号:RibbonCorset]。日常闲聊不需要输出道具指令。";
     const profileLines = [];
     for (const [mn, info] of Object.entries(memory.profiles || {})) {
       let line = `- ${info.name} (#${mn}): ${info.notes || "常客"}`;
@@ -458,10 +458,11 @@ ${itemCatalogText}
           if (gName.startsWith("Item")) {
             items++;
             if (a.Property?.LockedBy) locks++;
-            // 记录具体道具名
+            // 记录具体道具名(中文名+英文名,LLM 操作时需要英文名)
             const itemDesc = a.Asset.Description || a.Asset.Name || "";
+            const itemName = a.Asset.Name || "";
             const lockTag = a.Property?.LockedBy ? "[锁]" : "";
-            itemList.push(itemDesc + lockTag);
+            itemList.push(`${itemDesc}(${itemName})${lockTag}`);
             continue;
           }
           // 只保留有视觉意义的穿着
