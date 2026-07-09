@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.6.3";
+  const SCRIPT_VERSION = "2.6.4";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
   if (window.__misakaInstance) console.log("[MisakaChat] 杀掉旧实例 #" + window.__misakaInstance);
@@ -2064,7 +2064,10 @@ function unescapeHTML(s) {
       await new Promise(r => setTimeout(r, CONFIG.replyDelayMs));
 
       // 构建上下文(带时间戳 + 身份标识,帮 LLM 理解对话时间线和说话者)
-      let contextMessages = state.recentMessages.slice(-CONFIG.maxContext).map(m => {
+      const recentForContext = state.recentMessages.slice(-CONFIG.maxContext);
+      const latestIndex = recentForContext.length - 1;
+      let contextMessages = recentForContext.map((m, idx) => {
+        if (idx === latestIndex && !m.isSelf && m.senderMemberNumber === senderNum && m.content === content) return null;
         const t = new Date(m.time || Date.now());
         const hh = String(t.getHours()).padStart(2, '0');
         const mm = String(t.getMinutes()).padStart(2, '0');
@@ -2076,6 +2079,10 @@ function unescapeHTML(s) {
           role: "user",
           content: `[${hh}:${mm}] ${m.senderName}#${m.senderMemberNumber || "?"}: ${m.content}`
         };
+      }).filter(Boolean);
+      contextMessages.push({
+        role: "user",
+        content: `【当前必须处理的最新消息】${senderName}#${senderNum}: ${content}\n只回复并执行这一条。历史消息只作上下文,不要补做旧请求。`
       });
       contextMessages = trimContextByTokenBudget(contextMessages, CONFIG.maxContextTokens);
 
