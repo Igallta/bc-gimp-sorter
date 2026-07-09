@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.6.8";
+  const SCRIPT_VERSION = "2.6.9";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
   if (window.__misakaInstance) console.log("[MisakaChat] 杀掉旧实例 #" + window.__misakaInstance);
@@ -1657,12 +1657,20 @@ ${recentSemantic}`;
   }
 
   // === SNAPSHOT / COPY ===
-  // 提取角色身上所有未锁 Item 类道具的深拷贝
+  function cloneItemForSnapshot(item) {
+    const copy = { ...item, Asset: item.Asset };
+    if (Array.isArray(item.Color)) copy.Color = item.Color.slice();
+    if (item.Property) copy.Property = JSON.parse(JSON.stringify(item.Property));
+    if (item.Craft) copy.Craft = JSON.parse(JSON.stringify(item.Craft));
+    return copy;
+  }
+
+  // 提取角色身上所有未锁 Item 类道具的快照副本
   function extractItems(char) {
     if (!char || !Array.isArray(char.Appearance)) return [];
     return char.Appearance
       .filter(a => a?.Asset?.Group?.Name?.startsWith("Item") && !a.Property?.LockedBy)
-      .map(a => JSON.parse(JSON.stringify(a)));
+      .map(cloneItemForSnapshot);
   }
 
   // 将道具列表直接写入角色 Appearance 并同步
@@ -1673,7 +1681,7 @@ ${recentSemantic}`;
     let count = 0;
     for (const item of items) {
       try {
-        char.Appearance.push(JSON.parse(JSON.stringify(item)));
+        char.Appearance.push(cloneItemForSnapshot(item));
         count++;
       } catch(e) { console.error("[MisakaChat] applyItems push 失败:", e.message); }
     }
