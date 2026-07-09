@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.6.7";
+  const SCRIPT_VERSION = "2.6.8";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
   if (window.__misakaInstance) console.log("[MisakaChat] 杀掉旧实例 #" + window.__misakaInstance);
@@ -806,7 +806,10 @@ ${recentSemantic}`;
         // 如果值是 hex 颜色格式,LLM 用错了指令,自动转成 ITEMCOLOR
         const lastVal = parts[parts.length - 1];
         if (/^#[0-9A-Fa-f]{6}$/.test(lastVal) || /^(默认|Default|原色)$/.test(lastVal)) {
-          if (parts.length >= 4 && BODY_PART_GROUPS[parts[1]]) {
+          if (parts.length >= 4 && parts[1] === "") {
+            // [ITEMSET:编号:道具名::属性:#RRGGBB] → ITEMCOLOR 部位=属性名
+            commands.push({ type: "itemcolor", memberNumber: parseInt(mn), item: parts[0], part: parts[2], color: lastVal });
+          } else if (parts.length >= 4 && BODY_PART_GROUPS[parts[1]]) {
             // [ITEMSET:编号:道具名:部位:属性:#RRGGBB] → ITEMCOLOR 部位=属性名
             commands.push({ type: "itemcolor", memberNumber: parseInt(mn), item: parts[0], part: parts[2], color: lastVal });
           } else if (parts.length >= 3) {
@@ -815,7 +818,9 @@ ${recentSemantic}`;
           }
           return "";
         }
-        if (parts.length >= 4 && BODY_PART_GROUPS[parts[1]]) {
+        if (parts.length >= 4 && parts[1] === "") {
+          commands.push({ type: "itemset", memberNumber: parseInt(mn), item: parts[0], part: "", property: parts[2], value: parts.slice(3).join(":") });
+        } else if (parts.length >= 4 && BODY_PART_GROUPS[parts[1]]) {
           commands.push({ type: "itemset", memberNumber: parseInt(mn), item: parts[0], part: parts[1], property: parts[2], value: parts.slice(3).join(":") });
         } else if (parts.length >= 3) {
           commands.push({ type: "itemset", memberNumber: parseInt(mn), item: parts[0], part: "", property: parts[1], value: parts.slice(2).join(":") });
@@ -1012,7 +1017,7 @@ ${recentSemantic}`;
       c && ["itemadd", "itemdel", "itemset"].includes(c.type)
     );
     for (const cmd of bodyPartCommands) {
-      if (!cmd.part) {
+      if (!cmd.part && cmd.type !== "itemset") {
         return { ok: false, reason: "part-missing", requestedPart, cmd };
       }
       if (BODY_PART_GROUPS[cmd.part] && cmd.part !== requestedPart) {
