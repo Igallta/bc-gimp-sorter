@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.4.1";
+  const SCRIPT_VERSION = "2.5.0";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
   if (window.__misakaInstance) console.log("[MisakaChat] 杀掉旧实例 #" + window.__misakaInstance);
@@ -2128,37 +2128,6 @@ function unescapeHTML(s) {
       // EMOTE 兜底:LLM 没输出 EMOTE 时自动提取执行
       if (!executableCommands.some(c => c.type === 'emote')) {
         tryEmoteFallback(content, senderNum);
-      }
-
-      // 检测"应该有指令但没有":如果用户明确要求操作道具/移动,但 LLM 没输出指令,给第二次机会
-      const actionKeywords = /调|开|关|绑|解|穿|脱|戴|摘|加|移|换|改|颜色|改色|跳蛋|振动|绳|口球|束缚|移动|挪|左边|右边|强度|档|绑法|记住|快照|恢复|复制|按.*样子|气泡|表情|状态/;
-      if (executableCommands.length === 0 && actionKeywords.test(content)) {
-        // 重试时必须加载道具清单(用户要求了操作)
-        const retrySystemPrompt = needCatalog ? systemPrompt : getSystemPrompt(true);
-        const retryPrompt = retrySystemPrompt + "\n\n【重要提醒】用户刚才要求了操作,但你的回复没有包含操作指令。请重新回复,这次必须在第一行输出对应的操作指令(如 [ITEMSET:...] / [ITEMADD:...] / [ITEMDEL:...] / [ITEMCOLOR:...] / [MOVE:...] / [SNAPSHOT:...] / [COPY:...] / [EMOTE:...])。不要只用文字描述,必须输出指令。";
-        const retryReply = await callLLM(retryPrompt, contextMessages);
-        if (retryReply) {
-          const retryParsed = parseActionCommands(retryReply);
-          const retryCmds = retryParsed.commands.filter(c => c.type !== "memsearch" && c.type !== "bcequery");
-          if (retryCmds.length > 0) {
-            reply = retryReply;
-            const retryResult = await executeCommands(retryCmds);
-            console.log("[MisakaChat] 二次指令检测成功:", retryCmds, retryResult);
-            finalReply = sanitizeReply(retryParsed.cleaned);
-            // 跳过下面的原始指令执行
-            commandResult = retryResult;
-            if (!finalReply && retryCmds.length > 0) {
-              const defaults = ["好了~", "搞定了", "嗯,处理好了", "弄好了~", "已经调好了"];
-              finalReply = defaults[Math.floor(Math.random() * defaults.length)];
-            }
-            if (finalReply && finalReply.length > 3) {
-              const memText = `${senderName}: ${content} → 御坂: ${finalReply}`;
-              storeSemanticMemory(memText, { sender: senderName, memberNum: senderNum }).catch(() => {});
-            }
-            sendReply(finalReply);
-            return;
-          }
-        }
       }
 
       // 执行操作
