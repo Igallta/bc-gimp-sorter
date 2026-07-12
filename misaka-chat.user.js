@@ -30,9 +30,10 @@
   try { window.__GM_setValue = GM_setValue; } catch(e) {}
 
   const SCRIPT_VERSION = "2.7.1";
-  // GitHub Pages 部署曾长期卡住并返回 2.5.3。raw.githack 的开发源直接跟随 master，
-  // 同时以 application/javascript 提供文件，可安全用于 <script src>。
-  const BASE_URL = "https://raw.githack.com/Igallta/bc-gimp-sorter/master";
+  // GitHub Pages 部署曾长期卡住并返回 2.5.3。资源钉住本版本对应的 commit，
+  // 避免 Pages/master CDN 缓存让 loader 版本与实际主脚本不一致。
+  const ASSET_REVISION = "ba30f88198605251a946d62fafc3a20c154b22de";
+  const BASE_URL = `https://raw.githack.com/Igallta/bc-gimp-sorter/${ASSET_REVISION}`;
 
   function waitForReady(cb, attempts) {
     attempts = attempts || 0;
