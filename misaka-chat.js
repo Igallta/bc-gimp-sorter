@@ -1,4 +1,4 @@
-// MisakaChat v2.7.0 - BC 御坂自动回复系统
+// MisakaChat v2.8.0 - BC 御坂自动回复系统
 // 模块分区:
 //   [Config]      L15-55   配置 + 状态
 //   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.7.3";
+  const SCRIPT_VERSION = "2.8.0";
   const RELEASE_CHANNEL = "stable";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
@@ -782,20 +782,46 @@ ${recentSemantic}`;
     return text;
   }
 
-  // 检测是否需要道具清单
-  function needsItemCatalog(content, recentContext) {
-    const itemKeywords = /道具|绑|穿|脱|戴|摘|加|移|换|颜色|改色|跳蛋|振动|绳|口球|束缚|锁|项圈|手铐|脚镣|放.*出|放开|松开|解开|出来|chain|rope|gag|cuff|collar|blindfold|ITEMADD|ITEMDEL|ITEMSET|ITEMCOLOR|MOVE|SNAPSHOT|COPY/i;
-    // 检查触发消息和最近 3 条上下文
-    if (itemKeywords.test(content)) return true;
-    const recent = recentContext.slice(-3).map(m => m.content || "").join(" ");
-    return itemKeywords.test(recent);
-  }
-
-  // 只检查当前消息是否明确要求执行操作。用于发现 LLM "嘴上做了、实际没出指令"。
-  function isExplicitActionRequest(content) {
-    const text = String(content || "");
-    if (expectedActionTypes(text).size > 0) return true;
-    return /(保存|恢复).{0,8}(快照|束缚)|复制.{0,8}(束缚|道具)|照着.{0,8}绑|绑成.{0,8}一样/.test(text);
+  // 自然语言操作规划由独立 LLM 调用完成。执行层不再用关键词/正则猜测用户意图。
+  async function planUserRequest(senderNum, senderName, content) {
+    const roster = (typeof MisakaPersona !== "undefined" && Array.isArray(ChatRoomCharacter))
+      ? MisakaPersona.buildCompactRoster(ChatRoomCharacter, Player.MemberNumber)
+      : `御坂#${Player?.MemberNumber || "?"}; ${senderName}#${senderNum}`;
+    const plannerPrompt = `你是 BC 操作请求规划器。只输出一行严格 JSON，不要 markdown，不要回复用户。
+根据最新消息判断是 chat、action 还是 clarify。自然语言含糊但有常见合理解释时仍选 action；只有目标或操作无法安全确定时选 clarify。
+actionTypes 只能从 itemadd,itemdel,itemdelall,itemset,itemcolor,move,moveTo,moveEdge,snapshotSave,snapshotRestore,copyRestraint,emote 中选择。
+把语义相容的类型都列出，例如“绑成某种绑法”通常允许 itemadd 和 itemset；“换个更严格的绑法”也可允许先移除再添加。
+targets 必须使用房间名单中的编号。“我/给我/把我”指说话者#${senderNum}；“你/御坂/你自己”指御坂#${Player?.MemberNumber || "?"}。
+parts 只在用户明确限定单一身体部位时填写标准值 Arms/Hands/Legs/Feet/Mouth/Head/Neck/Torso/Pelvis/Breast/Eyes/Ears/Vulva，否则空数组。
+needsCatalog 表示是否涉及道具、穿着、束缚、属性或颜色；移动/表情/闲聊为 false。
+格式:{"intent":"action|chat|clarify","needsCatalog":true,"operations":[{"types":["itemadd"],"targets":[123],"parts":[]}],"question":""}
+房间名单:${roster}`;
+    const result = await callLLM(plannerPrompt, [{ role: "user", content: `最新消息:${senderName}#${senderNum}: ${content}` }], {
+      thinking: false,
+      maxTokens: 220,
+    });
+    try {
+      const match = String(result || "").match(/\{[\s\S]*\}/);
+      const plan = JSON.parse(match ? match[0] : "");
+      if (!["action", "chat", "clarify"].includes(plan.intent)) throw new Error("invalid intent");
+      const validTypes = new Set(["itemadd","itemdel","itemdelall","itemset","itemcolor","move","moveTo","moveEdge","snapshotSave","snapshotRestore","copyRestraint","emote"]);
+      const validParts = new Set(["Arms","Hands","Legs","Feet","Mouth","Head","Neck","Torso","Pelvis","Breast","Eyes","Ears","Vulva"]);
+      const roomNumbers = new Set((ChatRoomCharacter || []).map(c => Number(c.MemberNumber)));
+      if (Player?.MemberNumber) roomNumbers.add(Number(Player.MemberNumber));
+      plan.operations = (Array.isArray(plan.operations) ? plan.operations : []).map(op => ({
+        types: (Array.isArray(op?.types) ? op.types : []).filter(t => validTypes.has(t)),
+        targets: (Array.isArray(op?.targets) ? op.targets : []).map(Number).filter(n => roomNumbers.has(n)),
+        parts: (Array.isArray(op?.parts) ? op.parts : []).filter(p => validParts.has(p)),
+      })).filter(op => op.types.length > 0 && op.targets.length > 0);
+      if (plan.intent === "action" && plan.operations.length === 0) {
+        plan.intent = "clarify";
+        plan.question = plan.question || "你想让我对谁做什么？";
+      }
+      return plan;
+    } catch (e) {
+      console.warn("[MisakaChat] 请求规划失败:", e.message, result);
+      return { intent: "clarify", needsCatalog: false, operations: [], question: "我没听明白要做什么，能再说具体一点吗？", failed: true };
+    }
   }
 
   function getSystemPrompt(includeCatalog) {
@@ -1065,90 +1091,43 @@ ${recentSemantic}`;
     "Devices": ["ItemDevices"],
   };
 
-  function requestedSingleBodyPart(content) {
-    const text = String(content || "");
-    const matches = [];
-    const patterns = [
-      ["Feet", /脚|足|feet|foot/i],
-      ["Legs", /腿|leg|legs/i],
-      ["Hands", /手(?!臂)|hands?|hand/i],
-      ["Arms", /手臂|胳膊|arms?|arm/i],
-      ["Mouth", /嘴|口|mouth|gag/i],
-      ["Head", /头|脸|head|face/i],
-      ["Neck", /脖子|颈|neck/i],
-      ["Torso", /身体|躯干|腰|torso|body|waist/i],
-      ["Pelvis", /骨盆|胯|pelvis/i],
-      ["Breast", /胸|乳|breast|nipple/i],
-      ["Vulva", /下体|阴|vulva|clit|butt/i],
-    ];
-    for (const [part, pattern] of patterns) {
-      if (pattern.test(text)) matches.push(part);
-    }
-    return matches.length === 1 ? matches[0] : "";
+  function commandPrimaryTarget(cmd) {
+    if (!cmd) return null;
+    if (cmd.type === "copyRestraint") return cmd.targetNumber;
+    return Number.isFinite(cmd.memberNumber) ? cmd.memberNumber : null;
   }
 
-  function validateCommandParts(content, commands) {
-    const requestedPart = requestedSingleBodyPart(content);
-    if (!requestedPart) return null;
-    const bodyPartCommands = commands.filter(c =>
-      c && ["itemadd", "itemdel", "itemset"].includes(c.type)
-    );
-    for (const cmd of bodyPartCommands) {
-      if (!cmd.part && cmd.type !== "itemset") {
-        return { ok: false, reason: "part-missing", requestedPart, cmd };
-      }
-      if (BODY_PART_GROUPS[cmd.part] && cmd.part !== requestedPart) {
-        return { ok: false, reason: "part-mismatch", requestedPart, actualPart: cmd.part, cmd };
-      }
+  function commandMatchesPlannedOperation(cmd, operation) {
+    if (!cmd || !operation) return false;
+    const types = Array.isArray(operation.types) ? operation.types : [];
+    if (!types.includes(cmd.type)) return false;
+    const targets = (Array.isArray(operation.targets) ? operation.targets : []).map(Number);
+    const target = commandPrimaryTarget(cmd);
+    if (targets.length > 0 && target !== null && !targets.includes(target)) return false;
+    const parts = Array.isArray(operation.parts) ? operation.parts : [];
+    if (parts.length > 0 && ["itemadd", "itemdel", "itemset"].includes(cmd.type)) {
+      if (!cmd.part || !parts.includes(cmd.part)) return false;
     }
-    return null;
+    return true;
   }
 
-  function selfPronounTargetRequested(content) {
-    const text = String(content || "");
-    if (/(帮我|给我|替我|我的|我身上|把我|为我)/.test(text)) return false;
-    return /(把你|给你|你自己|你的|你身上|你脚|你腿|你手|你嘴|你脖子|你胸|你下体|你窝|你道具)/.test(text);
-  }
-
-  function validateCommandTargets(content, commands) {
-    if (!selfPronounTargetRequested(content)) return null;
-    const selfNumber = Player?.MemberNumber;
-    if (!selfNumber) return null;
-    const targetCommands = commands.filter(c =>
-      c && ["move", "moveTo", "moveEdge", "itemadd", "itemdel", "itemset", "itemcolor", "itemdelall", "snapshotSave", "snapshotRestore", "emote"].includes(c.type)
-    );
-    const bad = targetCommands.find(c => c.memberNumber !== selfNumber);
-    if (!bad) return null;
-    return { ok: false, reason: "target-mismatch", requestedTarget: selfNumber, actualTarget: bad.memberNumber, cmd: bad };
-  }
-
-  function expectedActionTypes(content) {
-    const text = String(content || "");
-    const expected = new Set();
-    if (/(解掉|解开|脱掉|脱下|摘掉|摘下|去掉|取下|松开)/.test(text)) {
-      expected.add("itemdel"); expected.add("itemdelall");
-    }
-    if (/(绑|戴|穿|加|系上|绑上)/.test(text)) expected.add("itemadd");
-    if (/(改色|颜色|换成|染成|变成).*(#[0-9A-Fa-f]{6}|红|蓝|绿|白|黑|粉|紫|黄|橙|灰)|把.*(改成|换成|染成|变成)/.test(text)) {
-      expected.add("itemcolor");
-    }
-    if (/(调|开|关|强度|振动|模式|样式)/.test(text)) expected.add("itemset");
-    if (/(移动|挪|站到|靠|边缘|左边|右边|最左|最右)/.test(text)) {
-      expected.add("move"); expected.add("moveTo"); expected.add("moveEdge");
-    }
-    if (/(表情|气泡|SOS|爱心|哭|点赞|状态)/i.test(text)) expected.add("emote");
-    return expected;
-  }
-
-  function validateCommandTypes(content, commands) {
-    const expected = expectedActionTypes(content);
-    if (expected.size === 0) return null;
+  // 逐条保留计划内指令，夹带动作单独剔除，不再因一条错误指令拒绝整组操作。
+  function filterCommandsByPlan(plan, commands) {
     const executable = commands.filter(c => !["memsearch", "bcequery"].includes(c.type));
-    if (executable.length === 0) return null;
-    const bad = executable.find(c => !expected.has(c.type));
-    if (!bad) return null;
-    return { ok: false, reason: "action-type-mismatch", expected: [...expected], actual: bad.type, cmd: bad };
+    if (!plan || plan.intent !== "action") {
+      return { allowed: [], rejected: executable.map(cmd => ({ cmd, reason: "not-an-action-plan" })) };
+    }
+    const operations = Array.isArray(plan.operations) ? plan.operations : [];
+    const allowed = [], rejected = [];
+    for (const cmd of executable) {
+      if (operations.some(op => commandMatchesPlannedOperation(cmd, op))) allowed.push(cmd);
+      else rejected.push({ cmd, reason: "outside-plan" });
+    }
+    return { allowed, rejected };
   }
+
+  // 供浏览器现场回归读取；不暴露密钥或底层执行函数。
+  window.__misakaPlanDebug = { filterCommandsByPlan };
 
   function findItemByPart(char, itemName, part) {
     if (!char) return null;
@@ -1836,40 +1815,6 @@ ${recentSemantic}`;
     return true;
   }
 
-  // EMOTE 表情名映射(中英文 → BC 标准名)
-  const EMOTE_EXPR_MAP = {
-    'SOS':'SOS','afk':'Afk','brb':'Brb','sleep':'Sleep','hearts':'Hearts','heart':'Hearts','爱心':'Hearts',
-    'tear':'Tear','哭':'Tear','confusion':'Confusion','困惑':'Confusion','annoyed':'Annoyed','不耐烦':'Annoyed',
-    'thumbsup':'ThumbsUp','点赞':'ThumbsUp','thumbsdown':'ThumbsDown','踩':'ThumbsDown',
-    'warning':'Warning','警告':'Warning','brokenheart':'BrokenHeart','心碎':'BrokenHeart',
-    'lightbulb':'Lightbulb','主意':'Lightbulb','coffee':'Coffee','咖啡':'Coffee',
-    'music':'Music','音乐':'Music','gaming':'Gaming','游戏':'Gaming','read':'Read','阅读':'Read',
-    'drawing':'Drawing','画画':'Drawing','coding':'Coding','编程':'Coding','tv':'TV','电视':'TV',
-    'bathing':'Bathing','洗澡':'Bathing','shopping':'Shopping','购物':'Shopping',
-    'work':'Work','工作':'Work','call':'Call','通话':'Call','car':'Car','开车':'Car',
-    'spectator':'Spectator','旁观':'Spectator','raisedhand':'RaisedHand','举手':'RaisedHand',
-    'whisper':'Whisper','耳语':'Whisper','exclamation':'Exclamation','感叹':'Exclamation',
-    'hearing':'Hearing','loverope':'LoveRope','爱绳':'LoveRope','lovegag':'LoveGag','爱口塞':'LoveGag',
-    'lovelock':'LoveLock','爱锁':'LoveLock','wardrobe':'Wardrobe','衣柜':'Wardrobe','fork':'Fork','用餐':'Fork'
-  };
-
-  // EMOTE 兜底:从消息内容中提取表情名并执行
-  function tryEmoteFallback(content, senderNum) {
-    try {
-      if (!/(?:气泡|表情|状态气泡|emoticon|EMOTE)/i.test(content)) return;
-      let targetExpr = null;
-      for (const [k, v] of Object.entries(EMOTE_EXPR_MAP)) {
-        if (new RegExp(k, 'i').test(content)) { targetExpr = v; break; }
-      }
-      if (!targetExpr) return;
-      const isSelf = /你的|自己/.test(content) && !/我的|给我/.test(content);
-      const target = isSelf ? Player.MemberNumber : senderNum;
-      console.log(`[MisakaChat] EMOTE 兜底: #${target} -> ${targetExpr}`);
-      const result = executeEmote(target, targetExpr);
-      sendLocal(result.ok ? `表情气泡已设置: #${target} → ${targetExpr}` : `EMOTE 兜底失败: ${result.reason}`);
-    } catch(e) { console.error('[MisakaChat] EMOTE 兜底异常:', e.message); }
-  }
-
   function executeEmote(memberNumber, expression) {
     try {
       const char = (memberNumber === Player.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === memberNumber);
@@ -2261,10 +2206,14 @@ function unescapeHTML(s) {
       });
       contextMessages = trimContextByTokenBudget(contextMessages, CONFIG.maxContextTokens);
 
-      // 日常聊天只给当前穿着；涉及道具/操作时注入完整清单，供 LLM 选择可添加的新道具。
-      const needCatalog = needsItemCatalog(content, state.recentMessages.slice(-5));
-      let systemPrompt = getSystemPrompt(needCatalog);
-      console.log(`[MisakaChat] system prompt 构建完成(完整道具清单: ${needCatalog ? "是" : "否"})`);
+      // 独立规划器先理解自然语言；主模型只在规划许可范围内生成具体指令。
+      const requestPlan = await planUserRequest(senderNum, senderName, content);
+      pushDebugTrace({ id: debugId, stage: "plan", requestPlan });
+      const needCatalog = requestPlan.intent === "action" && !!requestPlan.needsCatalog;
+      let systemPrompt = getSystemPrompt(needCatalog) +
+        `\n\n【本轮结构化操作计划】\n${JSON.stringify(requestPlan)}\n` +
+        `只能生成计划 operations 所允许的类型、目标和明确部位。计划外动作一律不要输出；不得自行附加移动、表情或其他操作。intent=clarify 时只追问，intent=chat 时只聊天。`;
+      console.log(`[MisakaChat] system prompt 构建完成(意图: ${requestPlan.intent}, 完整道具清单: ${needCatalog ? "是" : "否"})`);
 
       let reply = await callLLM(systemPrompt, contextMessages);
       pushDebugTrace({ id: debugId, stage: "llm:first", reply });
@@ -2311,15 +2260,14 @@ function unescapeHTML(s) {
       }
       if (!reply) { console.warn("[MisakaChat] LLM 返回空,未回复");
         pushDebugTrace({ id: debugId, stage: "empty-reply" });
-        tryEmoteFallback(content, senderNum);
         return;
       }
 
       // 明确要求执行操作、但首轮没有任何可执行指令时，强制纠错一次。
       // 这比把自然语言“好了”当成功更安全，也覆盖绑第三人和修改第三人道具的场景。
       const initialParsed = parseActionCommands(reply);
-      const initialExecutable = initialParsed.commands.filter(c => c.type !== "memsearch" && c.type !== "bcequery");
-      if (isExplicitActionRequest(content) && initialExecutable.length === 0) {
+      const initialExecutable = filterCommandsByPlan(requestPlan, initialParsed.commands).allowed;
+      if (requestPlan.intent === "action" && initialExecutable.length === 0) {
         pushDebugTrace({ id: debugId, stage: "retry:no-action-command", reply });
         const correctionPrompt = `${systemPrompt}\n\n【本轮强制纠错】\n用户明确要求你执行操作，但你上一稿没有输出任何可执行指令。必须根据当前名单和道具清单，在第一行输出正确的 [ITEMADD:...] / [ITEMDEL:...] / [ITEMSET:...] / [ITEMCOLOR:...] / [MOVE:...] 等指令，然后第二行回复。若目标、部位或道具确实无法确定，只能直接追问，绝不能用动作描写或口头声称已经完成。`;
         const retryReply = await callLLM(correctionPrompt, contextMessages, { thinking: false });
@@ -2331,46 +2279,25 @@ function unescapeHTML(s) {
 
       // 解析操作指令
       const { commands, cleaned } = parseActionCommands(reply);
-      const executableCommands = commands.filter(c => c.type !== "memsearch" && c.type !== "bcequery");
+      const planFiltered = filterCommandsByPlan(requestPlan, commands);
+      const executableCommands = planFiltered.allowed;
       let finalReply = sanitizeReply(cleaned);
       let commandResult = null;  // 提前声明,避免 TDZ
-      pushDebugTrace({ id: debugId, stage: "parse:final", commands, executableCommands, cleaned, finalReply });
+      pushDebugTrace({ id: debugId, stage: "parse:final", commands, executableCommands, rejectedCommands: planFiltered.rejected, cleaned, finalReply });
 
       // 二次纠错仍没有指令时，绝不能把“绑好了/调好了”之类口头成功发出去。
       // 若模型确实在追问则保留追问，否则明确告知本轮没有执行。
-      if (isExplicitActionRequest(content) && executableCommands.length === 0 && !/[？?]/.test(finalReply)) {
+      if (requestPlan.intent === "action" && executableCommands.length === 0 && !/[？?]/.test(finalReply)) {
         pushDebugTrace({ id: debugId, stage: "guard:action-without-command", rejectedReply: finalReply });
         finalReply = "我没确认好具体操作,先不乱动。";
       }
 
-      // EMOTE 兜底:LLM 没输出 EMOTE 时自动提取执行
-      if (!executableCommands.some(c => c.type === 'emote')) {
-        tryEmoteFallback(content, senderNum);
-      }
-
       // 执行操作
-      const typeValidation = validateCommandTypes(content, executableCommands);
-      const targetValidation = typeValidation ? null : validateCommandTargets(content, executableCommands);
-      const partValidation = (typeValidation || targetValidation) ? null : validateCommandParts(content, executableCommands);
-      if (typeValidation) {
-        commandResult = { moveOk: false, itemOk: false, failures: [typeValidation] };
-        pushDebugTrace({ id: debugId, stage: "validate", executableCommands, commandResult });
-        finalReply = "我刚才理解错了,这个操作我不乱做。";
-      } else if (targetValidation) {
-        commandResult = { moveOk: true, itemOk: false, failures: [targetValidation] };
-        pushDebugTrace({ id: debugId, stage: "validate", executableCommands, commandResult });
-        finalReply = "你说的是我身上,我不乱动别人。";
-      } else if (partValidation) {
-        commandResult = { moveOk: true, itemOk: false, failures: [partValidation] };
-        pushDebugTrace({ id: debugId, stage: "validate", executableCommands, commandResult });
-        const requested = partValidation.requestedPart === "Feet" ? "脚" :
-          partValidation.requestedPart === "Legs" ? "腿" : partValidation.requestedPart;
-        const actual = partValidation.actualPart === "Feet" ? "脚" :
-          partValidation.actualPart === "Legs" ? "腿" : (partValidation.actualPart || "其他部位");
-        finalReply = partValidation.reason === "part-missing"
-          ? `你说的是${requested}上,我不乱猜部位。`
-          : `你说的是${requested}上,不是${actual}上,我不乱动。`;
-      } else if (executableCommands.length > 0) {
+      if (planFiltered.rejected.length > 0) {
+        console.warn("[MisakaChat] 已剔除计划外指令:", planFiltered.rejected);
+        pushDebugTrace({ id: debugId, stage: "validate:filtered", rejected: planFiltered.rejected, kept: executableCommands });
+      }
+      if (executableCommands.length > 0) {
         commandResult = await executeCommands(executableCommands);
         console.log("[MisakaChat] 操作执行:", executableCommands, commandResult);
         pushDebugTrace({ id: debugId, stage: "execute", executableCommands, commandResult });
