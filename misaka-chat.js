@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.7.2";
+  const SCRIPT_VERSION = "2.7.3";
   const RELEASE_CHANNEL = "stable";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
@@ -2538,8 +2538,17 @@ function unescapeHTML(s) {
    }
 
     mod.hookFunction("ChatRoomSendChat", 10, (args, next) => {
-      const msg = args[0];
-      if (msg?.startsWith("/misaka")) { if (handleCommand(msg)) return; }
+      // ChatRoomSendChat 通常没有消息参数，BC 会直接从 InputChat 读取文本。
+      // 旧逻辑只看 args[0]，导致 /misaka 被放行给 BC 原生命令系统并报“没有该命令”。
+      let msg = typeof args?.[0] === "string" ? args[0] : "";
+      if (!msg) {
+        try { msg = ElementValue("InputChat") || ""; } catch(e) {}
+      }
+      msg = String(msg || "").trim();
+      if (msg.startsWith("/misaka") && handleCommand(msg)) {
+        try { ElementValue("InputChat", ""); } catch(e) {}
+        return;
+      }
       return next(args);
     });
 
