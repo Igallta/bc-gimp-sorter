@@ -1,4 +1,4 @@
-// MisakaChat v2.3.4 - BC 御坂自动回复系统
+// MisakaChat v2.7.0 - BC 御坂自动回复系统
 // 模块分区:
 //   [Config]      L15-55   配置 + 状态
 //   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
@@ -14,7 +14,8 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.6.10";
+  const SCRIPT_VERSION = "2.7.0";
+  const RELEASE_CHANNEL = "stable";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
   if (window.__misakaInstance) console.log("[MisakaChat] 杀掉旧实例 #" + window.__misakaInstance);
@@ -38,9 +39,22 @@
     moveCooldownMs: 500,  // 移动操作冷却
     idleTimeoutMs: 600000,  // 10 分钟无人说话触发 idle
     idleCheckMs: 60000,  // 每分钟检查一次 idle
-    embeddingBase: "https://api.openai.com/v1/embeddings",
-    embeddingModel: "text-embedding-3-large",
-    embeddingDim: 3072,
+    embeddingProviders: [
+      {
+        name: "OpenRouter Qwen",
+        base: "https://openrouter.ai/api/v1/embeddings",
+        model: "qwen/qwen3-embedding-8b",
+        keyNames: ["misaka_openrouter_key", "misaka_apikey"],
+        dimensions: null,
+      },
+      {
+        name: "OpenAI legacy",
+        base: "https://api.openai.com/v1/embeddings",
+        model: "text-embedding-3-large",
+        keyNames: ["misaka_openai_key"],
+        dimensions: 3072,
+      },
+    ],
     maxMemoryEntries: 5000, // 约 30 天对话量
     memoryRefineInterval: 50,  // 每 N 条消息提炼一次长期记忆
     maxRefinedMemories: 20,  // 保留最近 N 条提炼记忆
@@ -215,58 +229,114 @@
   const embeddingCache = new Map();
   const EMBEDDING_CACHE_MAX = 20;
 
-  // === [Memory] Semantic Memory (Embedding-based) ===
-  // 调用 OpenAI embedding API (text-embedding-3-large)
-  function getEmbeddingKey() {
-    // 优先从 GM_getValue 读(Tampermonkey 存储,BC 脚本读不到)
+  function readStoredSecret(keyName) {
     if (typeof window.__GM_getValue === "function") {
-      const v = window.__GM_getValue("misaka_openai_key");
-      if (v) return v;
+      try {
+        const v = window.__GM_getValue(keyName);
+        if (v) return { value: v, source: "GM:" + keyName };
+      } catch(e) {}
     }
-    return localStorage.getItem("misaka_openai_key") || "";
+    try {
+      const localValue = localStorage.getItem(keyName) || "";
+      if (localValue) return { value: localValue, source: "localStorage:" + keyName };
+    } catch(e) {}
+    return { value: "", source: "missing:" + keyName };
+  }
+
+  // === [Memory] Semantic Memory (Embedding-based) ===
+  // 优先走 OpenRouter Qwen embedding；保留旧 OpenAI key 作为显式 fallback。
+  function getEmbeddingProviderStatus() {
+    for (const provider of CONFIG.embeddingProviders) {
+      for (const keyName of provider.keyNames || []) {
+        const key = readStoredSecret(keyName);
+        if (key.value) return { provider, key };
+      }
+    }
+    return { provider: CONFIG.embeddingProviders[0], key: { value: "", source: "missing" } };
+  }
+
+  function buildEmbeddingBody(provider, text) {
+    const body = { model: provider.model, input: text.slice(0, 2000) };
+    if (provider.dimensions) body.dimensions = provider.dimensions;
+    return JSON.stringify(body);
+  }
+
+  function requestEmbedding(provider, key, text) {
+    const reqBody = buildEmbeddingBody(provider, text);
+    const useGM = typeof window.__GM_xmlhttpRequest !== "undefined";
+    return new Promise((resolve, reject) => {
+      if (useGM) {
+        window.__GM_xmlhttpRequest({
+          method: "POST",
+          url: provider.base,
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + key.value,
+          },
+          data: reqBody,
+          timeout: 15000,
+          onload: (resp) => {
+            if (resp.status === 200) {
+              try { resolve(JSON.parse(resp.responseText)); }
+              catch(e) { reject(new Error(provider.name + " embedding parse error")); }
+            } else {
+              reject(new Error(provider.name + " embedding HTTP " + resp.status));
+            }
+          },
+          onerror: () => reject(new Error(provider.name + " embedding network error")),
+          ontimeout: () => reject(new Error(provider.name + " embedding timeout")),
+        });
+        return;
+      }
+
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", provider.base, true);
+      xhr.setRequestHeader("Content-Type", "application/json");
+      xhr.setRequestHeader("Authorization", "Bearer " + key.value);
+      xhr.timeout = 15000;
+      xhr.ontimeout = () => reject(new Error(provider.name + " embedding timeout"));
+      xhr.onerror = () => reject(new Error(provider.name + " embedding network error"));
+      xhr.onload = () => {
+        if (xhr.status === 200) {
+          try { resolve(JSON.parse(xhr.responseText)); }
+          catch(e) { reject(new Error(provider.name + " embedding parse error")); }
+        } else {
+          reject(new Error(provider.name + " embedding HTTP " + xhr.status));
+        }
+      };
+      xhr.send(reqBody);
+    });
   }
 
   async function getEmbedding(text) {
-    const cacheKey = text.slice(0, 200);
+    const cacheKey = CONFIG.embeddingProviders.map(p => p.model).join("|") + "::" + text.slice(0, 200);
     if (embeddingCache.has(cacheKey)) {
       const cached = embeddingCache.get(cacheKey);
       embeddingCache.delete(cacheKey);
       embeddingCache.set(cacheKey, cached); // LRU: move to end
       return cached;
     }
-    const key = getEmbeddingKey();
-    if (!key) return null;
-    try {
-      const resp = await new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open("POST", CONFIG.embeddingBase, true);
-        xhr.setRequestHeader("Content-Type", "application/json");
-        xhr.setRequestHeader("Authorization", "Bearer " + key);
-        xhr.timeout = 10000;
-        xhr.ontimeout = () => reject(new Error("embedding timeout"));
-        xhr.onerror = () => reject(new Error("embedding network error"));
-        xhr.onload = () => {
-          if (xhr.status === 200) {
-            try { resolve(JSON.parse(xhr.responseText)); }
-            catch(e) { reject(new Error("embedding parse error")); }
-          } else { reject(new Error("embedding HTTP " + xhr.status)); }
-        };
-        xhr.send(JSON.stringify({ model: CONFIG.embeddingModel, input: text.slice(0, 2000), dimensions: CONFIG.embeddingDim }));
-      });
-      if (resp && resp.data && resp.data[0] && resp.data[0].embedding) {
-        const result = resp.data[0].embedding;
-        if (embeddingCache.size >= EMBEDDING_CACHE_MAX) {
-          const firstKey = embeddingCache.keys().next().value;
-          embeddingCache.delete(firstKey);
+    for (const provider of CONFIG.embeddingProviders) {
+      for (const keyName of provider.keyNames || []) {
+        const key = readStoredSecret(keyName);
+        if (!key.value) continue;
+        try {
+          const resp = await requestEmbedding(provider, key, text);
+          if (resp && resp.data && resp.data[0] && resp.data[0].embedding) {
+            const result = resp.data[0].embedding;
+            if (embeddingCache.size >= EMBEDDING_CACHE_MAX) {
+              const firstKey = embeddingCache.keys().next().value;
+              embeddingCache.delete(firstKey);
+            }
+            embeddingCache.set(cacheKey, result);
+            return result;
+          }
+        } catch(e) {
+          console.warn("[MisakaChat] " + provider.name + " 失败(" + key.source + "):", e.message);
         }
-        embeddingCache.set(cacheKey, result);
-        return result;
       }
-      return null;
-    } catch(e) {
-      console.warn("[MisakaChat] embedding 失败:", e.message);
-      return null;
     }
+    return null;
   }
 
   function cosineSim(a, b) {
@@ -2335,10 +2405,12 @@ function unescapeHTML(s) {
     if (sub === "on") { CONFIG.enabled = true; sendLocal("✅ 自动回复已开启"); }
     else if (sub === "off") { CONFIG.enabled = false; sendLocal("⏹ 自动回复已关闭"); }
     else if (sub === "key" && parts[1]) { localStorage.setItem(storageKey("apikey"), parts[1]); sendLocal("🔑 API key 已保存"); }
+    else if (sub === "embedkey" && parts[1]) { localStorage.setItem("misaka_openrouter_key", parts[1]); sendLocal("🔎 OpenRouter embedding key 已保存"); }
     else if (sub === "model" && parts[1]) { localStorage.setItem(storageKey("model"), parts[1]); CONFIG.model = parts[1]; sendLocal("🤖 模型已切换: " + parts[1]); }
     else if (sub === "status") {
       const key = getApiKeyStatus();
-      sendLocal(`状态: ${CONFIG.enabled?"开启":"关闭"} | 版本 ${SCRIPT_VERSION} / loader ${window.__misakaUserLoaderLoaded || "手动"} | key ${key.source} | 模型 ${CONFIG.model} | 语义 ${state.semanticMemories.length} | 提炼 ${state.refinedMemories.length} | 认识 ${Object.keys(loadMemory().profiles||{}).length} 人`);
+      const embed = getEmbeddingProviderStatus();
+      sendLocal(`状态: ${CONFIG.enabled?"开启":"关闭"} | 版本 ${SCRIPT_VERSION} ${RELEASE_CHANNEL} / loader ${window.__misakaUserLoaderLoaded || "手动"} | key ${key.source} | 模型 ${CONFIG.model} | embedding ${embed.provider.name}/${embed.provider.model} via ${embed.key.source} | 语义 ${state.semanticMemories.length} | 提炼 ${state.refinedMemories.length} | 认识 ${Object.keys(loadMemory().profiles||{}).length} 人`);
     } else if (sub === "forget") {
       localStorage.setItem(storageKey("memory"), "{}");
       state.semanticMemories = [];
@@ -2376,7 +2448,7 @@ function unescapeHTML(s) {
       localStorage.setItem(storageKey("persona_extra"), parts.slice(1).join(" "));
       sendLocal("📝 人设附加备注已更新");
     } else {
-      sendLocal("用法: /misaka on|off|key <key>|model <name>|status|forget|memory|persona <text>|export|import");
+      sendLocal("用法: /misaka on|off|key <key>|embedkey <openrouter-key>|model <name>|status|forget|memory|persona <text>|export|import");
     }
     return true;
   }

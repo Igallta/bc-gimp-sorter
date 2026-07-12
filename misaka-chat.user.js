@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BC Misaka Auto Chat
 // @namespace    https://igallta.github.io/bc-gimp-sorter
-// @version      2.6.10
+// @version      2.7.0
 // @description  御坂 BC 自动回复系统 — LLM 驱动 + 语义记忆(IDB) + 房间上下文
 // @match        https://www.bondage-europe.com/R129/BondageClub/*
 // @match        https://www.bondageclub.com/R129/BondageClub/*
@@ -12,6 +12,7 @@
 // @grant        GM_getValue
 // @connect      api.deepseek.com
 // @connect      api.openai.com
+// @connect      openrouter.ai
 // @run-at       document-end
 // ==/UserScript==
 
@@ -20,14 +21,15 @@
 
   // 不再硬编码任何 API key — 通过 BC 控制台手动设置：
   // localStorage.setItem("misaka_apikey", "sk-xxx")
-  // localStorage.setItem("misaka_openai_key", "sk-xxx")
+  // localStorage.setItem("misaka_openrouter_key", "sk-or-v1-xxx")
+  // localStorage.setItem("misaka_openai_key", "sk-xxx") // 旧 OpenAI embedding 兜底
 
   // 把 GM 函数暴露到 window，让注入的脚本能用
   try { window.__GM_xmlhttpRequest = GM_xmlhttpRequest; } catch(e) {}
   try { window.__GM_getValue = GM_getValue; } catch(e) {}
   try { window.__GM_setValue = GM_setValue; } catch(e) {}
 
-  const SCRIPT_VERSION = "2.6.10";
+  const SCRIPT_VERSION = "2.7.0";
   const BASE_URL = "https://igallta.github.io/bc-gimp-sorter";
 
   function waitForReady(cb, attempts) {
