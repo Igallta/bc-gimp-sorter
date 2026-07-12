@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.7.0";
+  const SCRIPT_VERSION = "2.7.1";
   const RELEASE_CHANNEL = "stable";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
@@ -789,6 +789,13 @@ ${recentSemantic}`;
     if (itemKeywords.test(content)) return true;
     const recent = recentContext.slice(-3).map(m => m.content || "").join(" ");
     return itemKeywords.test(recent);
+  }
+
+  // 只检查当前消息是否明确要求执行操作。用于发现 LLM "嘴上做了、实际没出指令"。
+  function isExplicitActionRequest(content) {
+    const text = String(content || "");
+    if (expectedActionTypes(text).size > 0) return true;
+    return /(保存|恢复).{0,8}(快照|束缚)|复制.{0,8}(束缚|道具)|照着.{0,8}绑|绑成.{0,8}一样/.test(text);
   }
 
   function getSystemPrompt(includeCatalog) {
@@ -2254,9 +2261,10 @@ function unescapeHTML(s) {
       });
       contextMessages = trimContextByTokenBudget(contextMessages, CONFIG.maxContextTokens);
 
-      // 构建系统 prompt(roster 始终包含穿着信息,不再按需加载完整道具清单)
-      let systemPrompt = getSystemPrompt(false);
-      console.log("[MisakaChat] system prompt 构建完成(含 roster 穿着信息)");
+      // 日常聊天只给当前穿着；涉及道具/操作时注入完整清单，供 LLM 选择可添加的新道具。
+      const needCatalog = needsItemCatalog(content, state.recentMessages.slice(-5));
+      let systemPrompt = getSystemPrompt(needCatalog);
+      console.log(`[MisakaChat] system prompt 构建完成(完整道具清单: ${needCatalog ? "是" : "否"})`);
 
       let reply = await callLLM(systemPrompt, contextMessages);
       pushDebugTrace({ id: debugId, stage: "llm:first", reply });
@@ -2307,12 +2315,33 @@ function unescapeHTML(s) {
         return;
       }
 
+      // 明确要求执行操作、但首轮没有任何可执行指令时，强制纠错一次。
+      // 这比把自然语言“好了”当成功更安全，也覆盖绑第三人和修改第三人道具的场景。
+      const initialParsed = parseActionCommands(reply);
+      const initialExecutable = initialParsed.commands.filter(c => c.type !== "memsearch" && c.type !== "bcequery");
+      if (isExplicitActionRequest(content) && initialExecutable.length === 0) {
+        pushDebugTrace({ id: debugId, stage: "retry:no-action-command", reply });
+        const correctionPrompt = `${systemPrompt}\n\n【本轮强制纠错】\n用户明确要求你执行操作，但你上一稿没有输出任何可执行指令。必须根据当前名单和道具清单，在第一行输出正确的 [ITEMADD:...] / [ITEMDEL:...] / [ITEMSET:...] / [ITEMCOLOR:...] / [MOVE:...] 等指令，然后第二行回复。若目标、部位或道具确实无法确定，只能直接追问，绝不能用动作描写或口头声称已经完成。`;
+        const retryReply = await callLLM(correctionPrompt, contextMessages, { thinking: false });
+        if (retryReply) {
+          reply = retryReply;
+          pushDebugTrace({ id: debugId, stage: "llm:action-retry", reply });
+        }
+      }
+
       // 解析操作指令
       const { commands, cleaned } = parseActionCommands(reply);
       const executableCommands = commands.filter(c => c.type !== "memsearch" && c.type !== "bcequery");
       let finalReply = sanitizeReply(cleaned);
       let commandResult = null;  // 提前声明,避免 TDZ
       pushDebugTrace({ id: debugId, stage: "parse:final", commands, executableCommands, cleaned, finalReply });
+
+      // 二次纠错仍没有指令时，绝不能把“绑好了/调好了”之类口头成功发出去。
+      // 若模型确实在追问则保留追问，否则明确告知本轮没有执行。
+      if (isExplicitActionRequest(content) && executableCommands.length === 0 && !/[？?]/.test(finalReply)) {
+        pushDebugTrace({ id: debugId, stage: "guard:action-without-command", rejectedReply: finalReply });
+        finalReply = "我没确认好具体操作,先不乱动。";
+      }
 
       // EMOTE 兜底:LLM 没输出 EMOTE 时自动提取执行
       if (!executableCommands.some(c => c.type === 'emote')) {
