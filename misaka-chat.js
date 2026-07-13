@@ -1,4 +1,4 @@
-// MisakaChat v2.10.5 - BC 御坂自动回复系统
+// MisakaChat v2.10.6 - BC 御坂自动回复系统
 // 模块分区:
 //   [Config]      L15-55   配置 + 状态
 //   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.10.5";
+  const SCRIPT_VERSION = "2.10.6";
   const RELEASE_CHANNEL = "stable";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
@@ -872,6 +872,40 @@ ${recentSemantic}`;
     delete state.pendingClarifications[String(Number(senderNum))];
   }
 
+  function normalizeReplacementPlanOperations(plan) {
+    if (!plan?.constraints?.replaceExisting) return plan;
+    const replacementTargets = [...new Set((plan.operations || []).flatMap(op => op.targets || []))];
+    for (const target of replacementTargets) {
+      const char = actionTargetCharacter(target);
+      if (!char) continue;
+      const ops = plan.operations.filter(op => (op.targets || []).includes(target) && op.assets.length > 0);
+      const assetIsWorn = assetName => {
+        const mapping = findItemAsset(assetName, char);
+        return !!mapping && (char.Appearance || []).some(a =>
+          a?.Asset?.Name === mapping.asset && a?.Asset?.Group?.Name === mapping.group);
+      };
+      const hasNewAsset = ops.some(op => op.assets.some(asset => !assetIsWorn(asset)));
+      if (!hasNewAsset) continue;
+      for (const op of ops) {
+        if (op.parts.length === 0) {
+          const inferredParts = [...new Set(op.assets.map(asset => {
+            const mapping = findItemAsset(asset, char);
+            return Object.keys(BODY_PART_GROUPS).find(part =>
+              (BODY_PART_GROUPS[part] || []).includes(mapping?.group)) || "";
+          }).filter(Boolean))];
+          if (inferredParts.length === 1) op.parts = inferredParts;
+        }
+        const newAssets = op.assets.filter(asset => !assetIsWorn(asset));
+        if (newAssets.length === 0 && op.assets.some(assetIsWorn)) {
+          op._replacementDeleteOnly = true;
+        } else if (newAssets.length > 0) {
+          op.assets = newAssets;
+        }
+      }
+    }
+    return plan;
+  }
+
   // 自然语言操作规划由独立 LLM 调用完成。执行层不再用关键词/正则猜测用户意图。
   async function planUserRequest(senderNum, senderName, content, pendingClarification) {
     const roster = (typeof MisakaPersona !== "undefined" && Array.isArray(ChatRoomCharacter))
@@ -946,9 +980,18 @@ ItemDevices 紧凑目录:${deviceCatalog || "不可用"}
         noStack: rawConstraints.noStack === true,
         preserveParts: (Array.isArray(rawConstraints.preserveParts) ? rawConstraints.preserveParts : []).filter(p => validParts.has(p)),
       };
+      // 规划器偶尔会把“删掉当前旧设备”和“添加新设备”拆成两个都含
+      // itemadd/itemset 的 operation。替换场景下，若同一目标同时出现当前已穿
+      // Asset 与未穿 Asset，前者只能是待删除旧物，不能再次添加。
+      normalizeReplacementPlanOperations(plan);
       // 基于规划器已经给出的结构化道具意图补全“添加后调样式”的客观操作族，
       // 不再回头用原始中文关键词猜语义。命名绑法往往同时需要 ITEMADD + ITEMSET。
       for (const op of plan.operations) {
+        if (op._replacementDeleteOnly) {
+          op.types = ["itemdel"];
+          delete op._replacementDeleteOnly;
+          continue;
+        }
         const types = new Set(op.types);
         if (types.has("itemadd")) types.add("itemset");
         if (plan.constraints.replaceExisting || plan.constraints.noStack) {
@@ -1306,8 +1349,64 @@ ItemDevices 紧凑目录:${deviceCatalog || "不可用"}
     return { allowed, rejected };
   }
 
+  function plannedPartForAsset(operation, mapping) {
+    if (operation?.parts?.length) return operation.parts[0];
+    if (!mapping?.group) return "";
+    return Object.keys(BODY_PART_GROUPS).find(part =>
+      (BODY_PART_GROUPS[part] || []).includes(mapping.group)) || "";
+  }
+
+  // 精确替换计划已经包含目标、旧 Asset 与新 Asset 时，不必让聊天模型再次
+  // 猜指令。仅在能生成一组完整且通过同一安全过滤器的 DEL -> ADD 序列时启用。
+  function buildDeterministicExactReplacementReply(plan) {
+    if (plan?.intent !== "action" || !plan?.constraints?.replaceExisting) return "";
+    const deletes = [], adds = [];
+    const seen = new Set();
+    for (const operation of plan.operations || []) {
+      if (!Array.isArray(operation.assets) || operation.assets.length === 0) continue;
+      for (const target of operation.targets || []) {
+        const char = actionTargetCharacter(Number(target));
+        if (!char) continue;
+        for (const assetName of operation.assets) {
+          const mapping = findItemAsset(assetName, char);
+          if (!mapping) continue;
+          const part = plannedPartForAsset(operation, mapping);
+          const worn = (char.Appearance || []).some(a =>
+            a?.Asset?.Name === mapping.asset && a?.Asset?.Group?.Name === mapping.group);
+          if (operation.types?.includes("itemdel") && worn) {
+            const key = `del:${target}:${mapping.asset}:${part}`;
+            if (!seen.has(key)) {
+              seen.add(key);
+              deletes.push({ type: "itemdel", memberNumber: Number(target), item: mapping.asset, part });
+            }
+          }
+          if (operation.types?.includes("itemadd")) {
+            const key = `add:${target}:${mapping.asset}:${part}`;
+            if (!seen.has(key)) {
+              seen.add(key);
+              adds.push({ type: "itemadd", memberNumber: Number(target), item: mapping.asset, part, color: "" });
+            }
+          }
+        }
+      }
+    }
+    if (deletes.length === 0 || adds.length === 0) return "";
+    const commands = [...deletes, ...adds];
+    const filtered = filterCommandsByPlan(plan, commands);
+    if (filtered.allowed.length !== commands.length || filtered.rejected.length > 0) return "";
+    const lines = commands.map(cmd => cmd.type === "itemdel"
+      ? `[ITEMDEL:${cmd.memberNumber}:${cmd.item}${cmd.part ? `:${cmd.part}` : ""}]`
+      : `[ITEMADD:${cmd.memberNumber}:${cmd.item}${cmd.part ? `:${cmd.part}` : ""}]`);
+    return `${lines.join("\n")}\n好了。`;
+  }
+
   // 供浏览器现场回归读取；不暴露密钥或底层执行函数。
-  window.__misakaPlanDebug = { filterCommandsByPlan, parseActionCommands };
+  window.__misakaPlanDebug = {
+    filterCommandsByPlan,
+    parseActionCommands,
+    buildDeterministicExactReplacementReply,
+    normalizeReplacementPlanOperations,
+  };
 
   function buildCurrentAppearanceFacts(plan) {
     const targets = [...new Set((plan?.operations || []).flatMap(op => op.targets || []).map(Number))];
@@ -2857,11 +2956,17 @@ function unescapeHTML(s) {
       if (requestPlan.intent === "action" && initialExecutable.length === 0 &&
           (!initialIsClarifyingQuestion || planHasExactAssets)) {
         pushDebugTrace({ id: debugId, stage: "retry:no-action-command", reply });
-        const correctionPrompt = `${systemPrompt}\n\n【本轮强制纠错】\n用户明确要求你执行操作，但你上一稿没有输出任何可执行指令。必须根据当前名单和道具清单，在第一行输出正确的 [ITEMADD:...] / [ITEMDEL:...] / [ITEMSET:...] / [ITEMCOLOR:...] / [MOVE:...] 等指令，然后第二行回复。若 operations.assets 非空，则具体道具已经确定，必须直接使用其中的精确 Asset，禁止再次追问。只有计划本身没有精确目标、部位或道具时才能追问；绝不能用动作描写或口头声称已经完成。`;
-        const retryReply = await callLLM(correctionPrompt, contextMessages, { thinking: false });
-        if (retryReply) {
-          reply = retryReply;
-          pushDebugTrace({ id: debugId, stage: "llm:action-retry", reply });
+        const deterministicReply = buildDeterministicExactReplacementReply(requestPlan);
+        if (deterministicReply) {
+          reply = deterministicReply;
+          pushDebugTrace({ id: debugId, stage: "deterministic:exact-replacement", reply });
+        } else {
+          const correctionPrompt = `${systemPrompt}\n\n【本轮强制纠错】\n用户明确要求你执行操作，但你上一稿没有输出任何可执行指令。必须根据当前名单和道具清单，在第一行输出正确的 [ITEMADD:...] / [ITEMDEL:...] / [ITEMSET:...] / [ITEMCOLOR:...] / [MOVE:...] 等指令，然后第二行回复。若 operations.assets 非空，则具体道具已经确定，必须直接使用其中的精确 Asset，禁止再次追问。只有计划本身没有精确目标、部位或道具时才能追问；绝不能用动作描写或口头声称已经完成。`;
+          const retryReply = await callLLM(correctionPrompt, contextMessages, { thinking: false });
+          if (retryReply) {
+            reply = retryReply;
+            pushDebugTrace({ id: debugId, stage: "llm:action-retry", reply });
+          }
         }
       } else if (requestPlan.intent === "action" && initialExecutable.length === 0 && initialIsClarifyingQuestion) {
         // 模型已经基于实时道具清单明确说明不可执行并追问时，这就是安全且有用的结果。
