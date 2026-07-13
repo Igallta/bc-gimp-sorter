@@ -1,4 +1,4 @@
-// MisakaChat v2.9.4 - BC 御坂自动回复系统
+// MisakaChat v2.9.5 - BC 御坂自动回复系统
 // 模块分区:
 //   [Config]      L15-55   配置 + 状态
 //   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.9.4";
+  const SCRIPT_VERSION = "2.9.5";
   const RELEASE_CHANNEL = "stable";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
@@ -2459,6 +2459,29 @@ function unescapeHTML(s) {
             finalReply = "替换过程中有一步失败，已经恢复原样。";
             pushDebugTrace({ id: debugId, stage: "execute:rollback", reason: "item-batch-failed" });
           }
+          // 多步请求不只要求“每条已生成指令成功”，还必须完整达到用户目标。
+          // 主模型若漏掉后续子任务，验收器会判 false；此时同样按事务回滚，
+          // 且仍处于 deferredCharacterUpdates 中，只向服务器同步一次恢复后的最终状态。
+          if ((commandResult.failures || []).length === 0) {
+            const postExecutionAppearance = buildCurrentAppearanceFacts(requestPlan);
+            commandResult.outcomeVerdict = await verifyActionOutcome(requestPlan, executableCommands);
+            pushDebugTrace({ id: debugId, stage: "verify:outcome", outcomeVerdict: commandResult.outcomeVerdict, finalAppearance: postExecutionAppearance });
+            if (transactionalReplacement && commandResult.outcomeVerdict.satisfied === false && replacementBackups.size > 0) {
+              for (const [mn, backup] of replacementBackups) {
+                const char = Number(mn) === Number(Player?.MemberNumber)
+                  ? Player
+                  : (ChatRoomCharacter || []).find(c => Number(c.MemberNumber) === Number(mn));
+                if (!char) continue;
+                CharacterAppearanceRestore(char, backup);
+                updateCharacter(char);
+              }
+              commandResult.rolledBack = true;
+              commandResult.rollbackReason = "outcome-unsatisfied";
+              const reason = commandResult.outcomeVerdict.reason ? `（${commandResult.outcomeVerdict.reason}）` : "";
+              finalReply = `操作没有完整达到你要的效果${reason}，已经恢复原样。`;
+              pushDebugTrace({ id: debugId, stage: "execute:rollback", reason: "outcome-unsatisfied", restoredAppearance: buildCurrentAppearanceFacts(requestPlan) });
+            }
+          }
         } finally {
           if (transactionUpdates) {
             deferredCharacterUpdates = null;
@@ -2492,13 +2515,14 @@ function unescapeHTML(s) {
           // 未分类失败也必须覆盖模型原先的“好了”等成功话术。
           else finalReply = `操作没有成功：${String(reason).slice(0, 120)}`;
         }
-        if (commandResult.rolledBack) finalReply = "操作过程中有一步失败，已经恢复原样。";
+        if (commandResult.rolledBack && commandResult.rollbackReason !== "outcome-unsatisfied") finalReply = "操作过程中有一步失败，已经恢复原样。";
         if ((commandResult.failures || []).length === 0) {
-          const outcomeVerdict = await verifyActionOutcome(requestPlan, executableCommands);
-          pushDebugTrace({ id: debugId, stage: "verify:outcome", outcomeVerdict, finalAppearance: buildCurrentAppearanceFacts(requestPlan) });
+          const outcomeVerdict = commandResult.outcomeVerdict || { satisfied: null, reason: "verification-missing" };
           if (outcomeVerdict.satisfied === false) {
-            const reason = outcomeVerdict.reason ? `（${outcomeVerdict.reason}）` : "";
-            finalReply = `操作执行了，但还没完整达到你要的效果${reason}。`;
+            if (!commandResult.rolledBack) {
+              const reason = outcomeVerdict.reason ? `（${outcomeVerdict.reason}）` : "";
+              finalReply = `操作执行了，但还没完整达到你要的效果${reason}。`;
+            }
           } else if (outcomeVerdict.satisfied !== true) {
             finalReply = "操作已经执行，但结果验收没有完成，我先不把它算作成功。";
           }
