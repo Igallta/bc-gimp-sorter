@@ -1,4 +1,4 @@
-// MisakaChat v2.9.3 - BC 御坂自动回复系统
+// MisakaChat v2.9.4 - BC 御坂自动回复系统
 // 模块分区:
 //   [Config]      L15-55   配置 + 状态
 //   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.9.3";
+  const SCRIPT_VERSION = "2.9.4";
   const RELEASE_CHANNEL = "stable";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
@@ -819,7 +819,7 @@ ${recentSemantic}`;
 actionTypes 只能从 itemadd,itemdel,itemdelall,itemset,itemcolor,move,moveTo,moveEdge,snapshotSave,snapshotRestore,copyRestraint,emote 中选择。
 把语义相容的类型都列出，例如“绑成某种绑法”通常允许 itemadd 和 itemset；“换个更严格的绑法”也可允许先移除再添加。
 targets 必须使用房间名单中的编号。“我/给我/把我”指说话者#${senderNum}；“你/御坂/你自己”指御坂#${Player?.MemberNumber || "?"}。
-parts 只在用户明确限定单一身体部位时填写标准值 Arms/Hands/Legs/Feet/Mouth/Head/Neck/Torso/Pelvis/Breast/Eyes/Ears/Vulva，否则空数组。
+parts 只在用户明确限定单一身体部位时填写标准值 Arms/Hands/Legs/Feet/Mouth/Head/Neck/Torso/Pelvis/Breast/Eyes/Ears/Vulva，否则空数组。中文“绑手/把手绑住”通常指整条手臂束缚，规划为 Arms；只有明确说手掌、手腕、手铐时才规划为 Hands。
 needsCatalog 表示是否涉及道具、穿着、束缚、属性或颜色；移动/表情/闲聊为 false。
 goal 用一句短话保留用户真正想达到的最终状态（例如“驷马缚”“更严格但不叠加”），不要只写“操作道具”。
 constraints 只记录用户明确表达的限制：noMove=禁止移动，noAdd=禁止新增，replaceExisting=替换而非叠加，noStack=不要叠加；preserveParts 是明确要求不要碰的部位。
@@ -2413,7 +2413,7 @@ function unescapeHTML(s) {
 
       // 二次纠错仍没有指令时，绝不能把“绑好了/调好了”之类口头成功发出去。
       // 若模型确实在追问则保留追问，否则明确告知本轮没有执行。
-      if (requestPlan.intent === "action" && executableCommands.length === 0 && !/[？?]/.test(finalReply)) {
+      if (requestPlan.intent === "action" && executableCommands.length === 0) {
         pushDebugTrace({ id: debugId, stage: "guard:action-without-command", rejectedReply: finalReply });
         finalReply = "我没确认好具体操作,先不乱动。";
       }
@@ -2424,7 +2424,11 @@ function unescapeHTML(s) {
         pushDebugTrace({ id: debugId, stage: "validate:filtered", rejected: planFiltered.rejected, kept: executableCommands });
       }
       if (executableCommands.length > 0) {
-        const transactionalReplacement = !!(requestPlan.constraints?.replaceExisting || requestPlan.constraints?.noStack);
+        const itemMutationTypes = new Set(["itemadd", "itemdel", "itemdelall", "itemset", "itemcolor", "snapshotRestore", "copyRestraint"]);
+        const itemMutationCount = executableCommands.filter(cmd => itemMutationTypes.has(cmd.type)).length;
+        // 任何多步道具操作都必须原子化。否则“先添加、后设样式”中后一步失败时，
+        // 会留下半成品，却又只能对用户说本轮失败。单步操作无需额外快照。
+        const transactionalReplacement = itemMutationCount > 1 || !!(requestPlan.constraints?.replaceExisting || requestPlan.constraints?.noStack);
         const replacementBackups = new Map();
         if (transactionalReplacement) {
           for (const mn of new Set(executableCommands.map(commandPrimaryTarget).filter(Number.isFinite))) {
@@ -2453,7 +2457,7 @@ function unescapeHTML(s) {
             }
             commandResult.rolledBack = true;
             finalReply = "替换过程中有一步失败，已经恢复原样。";
-            pushDebugTrace({ id: debugId, stage: "execute:rollback", reason: "replacement-failed" });
+            pushDebugTrace({ id: debugId, stage: "execute:rollback", reason: "item-batch-failed" });
           }
         } finally {
           if (transactionUpdates) {
@@ -2488,7 +2492,7 @@ function unescapeHTML(s) {
           // 未分类失败也必须覆盖模型原先的“好了”等成功话术。
           else finalReply = `操作没有成功：${String(reason).slice(0, 120)}`;
         }
-        if (commandResult.rolledBack) finalReply = "替换过程中有一步失败，已经恢复原样。";
+        if (commandResult.rolledBack) finalReply = "操作过程中有一步失败，已经恢复原样。";
         if ((commandResult.failures || []).length === 0) {
           const outcomeVerdict = await verifyActionOutcome(requestPlan, executableCommands);
           pushDebugTrace({ id: debugId, stage: "verify:outcome", outcomeVerdict, finalAppearance: buildCurrentAppearanceFacts(requestPlan) });
