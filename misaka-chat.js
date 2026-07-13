@@ -1,4 +1,4 @@
-// MisakaChat v2.9.2 - BC 御坂自动回复系统
+// MisakaChat v2.9.3 - BC 御坂自动回复系统
 // 模块分区:
 //   [Config]      L15-55   配置 + 状态
 //   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.9.2";
+  const SCRIPT_VERSION = "2.9.3";
   const RELEASE_CHANNEL = "stable";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
@@ -75,6 +75,17 @@
     roomLog: [],          // 进出记录
     snapshots: {},        // 束缚快照 { memberNumber: { items, time } }
   };
+
+  // 事务式替换期间只修改内存中的 Appearance，最后再统一同步一次。
+  // 否则“删除旧道具”和“失败后恢复”会各自异步发包，服务器可能乱序处理。
+  let deferredCharacterUpdates = null;
+  function updateCharacter(char) {
+    if (deferredCharacterUpdates) {
+      deferredCharacterUpdates.set(Number(char?.MemberNumber), char);
+      return;
+    }
+    ChatRoomCharacterUpdate(char);
+  }
 
   window.__misakaDebugTrace = window.__misakaDebugTrace || [];
   function pushDebugTrace(entry) {
@@ -1524,7 +1535,7 @@ ${finalFacts}`;
     const fallbackProperty = PROPERTY_MAP[propName];
     if (fallbackProperty?.type === "direct") {
       item.Property[fallbackProperty.key] = (fallbackProperty.values && Object.prototype.hasOwnProperty.call(fallbackProperty.values, valueName)) ? fallbackProperty.values[valueName] : valueName;
-      ChatRoomCharacterUpdate(char);
+      updateCharacter(char);
       return { ok: true, msg: `已设置 ${item.Asset.Description} ${fallbackProperty.key}=${item.Property[fallbackProperty.key]}` };
     }
 
@@ -1556,14 +1567,14 @@ ${finalFacts}`;
       } else {
         item.Property.TypeRecord[trKey] = match.index;
       }
-      ChatRoomCharacterUpdate(char);
+      updateCharacter(char);
       return { ok: true, msg: `已设置 ${item.Asset.Description} 模块 ${trKey}=${match.index}` };
     }
 
     // 非 Extended 道具 - 直接设 Property
     if (!item.Property) item.Property = {};
     item.Property[propName] = valueName;
-    ChatRoomCharacterUpdate(char);
+    updateCharacter(char);
     return { ok: true, msg: `已设置 ${item.Asset.Description} ${propName}=${valueName}` };
   }
 
@@ -1589,7 +1600,7 @@ ${finalFacts}`;
     const trKey = Object.keys(item.Property.TypeRecord)[0] || "vibrating";
     item.Property.TypeRecord[trKey] = opt.tr;
     Object.assign(item.Property, lockFields);
-    ChatRoomCharacterUpdate(char);
+    updateCharacter(char);
     return { ok: true, msg: `已设置 ${item.Asset.Description} ${opt.name}` };
   }
 
@@ -1617,7 +1628,7 @@ ${finalFacts}`;
         for (const g of groupList) {
           if (directSetColor(char, g, [hex])) ok = true;
         }
-        if (ok) { ChatRoomCharacterUpdate(char); console.log("[MisakaChat] ✅ 颜色已改", part, colorName); }
+        if (ok) { updateCharacter(char); console.log("[MisakaChat] ✅ 颜色已改", part, colorName); }
         return ok ? { ok: true } : { ok: false, reason: "missing-part-item", memberNumber, item: itemName };
       }
     }
@@ -1644,7 +1655,7 @@ ${finalFacts}`;
     }
 
     const ok = directSetColor(char, groupName, [hex], layerIndex);
-    if (ok) { ChatRoomCharacterUpdate(char); console.log("[MisakaChat] ✅ 颜色已改", itemName, part || "全部", colorName); }
+    if (ok) { updateCharacter(char); console.log("[MisakaChat] ✅ 颜色已改", itemName, part || "全部", colorName); }
     return ok ? { ok: true } : { ok: false, reason: "set-color-failed", memberNumber, item: itemName };
   }
 
@@ -1726,7 +1737,7 @@ ${finalFacts}`;
       const existingItem = char.Appearance.find(a => a.Asset?.Group?.Name === targetGroup);
       if (existingItem && colorOverride) directSetColor(char, targetGroup, colorOverride);
       else directSetItem(char, targetGroup, targetAsset, colorOverride);
-      ChatRoomCharacterUpdate(char);
+      updateCharacter(char);
       console.log(`[MisakaChat] 已给 #${memberNumber} 添加 ${itemName} (group: ${targetGroup})`);
       return { ok: true };
     } catch(e) {
@@ -1765,7 +1776,7 @@ ${finalFacts}`;
       const groupName = target.Asset.Group.Name;
       console.log(`[MisakaChat] 准备移除 #${memberNumber} group=${groupName} desc=${target.Asset.Description}`);
       directRemoveItem(char, groupName);
-      ChatRoomCharacterUpdate(char);
+      updateCharacter(char);
       console.log(`[MisakaChat] 已移除 #${memberNumber} 的 ${itemName} (group: ${target.Asset.Group.Name})`);
       return { ok: true };
     } catch(e) {
@@ -1792,7 +1803,7 @@ ${finalFacts}`;
           else console.log("[MisakaChat] itemDelall 移除失败:", groupName);
         } catch(e) { console.error("[MisakaChat] itemDelall 异常:", groupName, e.message); }
       }
-      ChatRoomCharacterUpdate(char);
+      updateCharacter(char);
       console.log(`[MisakaChat] 释放 #${memberNumber} 全部道具: ${count}/${toRemove.length} 件`);
       return count > 0;
     } catch(e) {
@@ -1830,7 +1841,7 @@ ${finalFacts}`;
         count++;
       } catch(e) { console.error("[MisakaChat] applyItems push 失败:", e.message); }
     }
-    ChatRoomCharacterUpdate(char);
+    updateCharacter(char);
     return count;
   }
 
@@ -1915,7 +1926,7 @@ ${finalFacts}`;
       if (!expr) return { ok: false, reason: `未知表情: ${expression}` };
       CharacterSetFacialExpression(char, "Emoticon", expr);
       if (memberNumber === Player.MemberNumber) ChatRoomSyncExpression();
-      ChatRoomCharacterUpdate(char);
+      updateCharacter(char);
       console.log(`[MisakaChat] EMOTE: #${memberNumber} -> ${expr}`);
       return { ok: true, msg: `表情改为 ${expr}` };
     } catch(e) {
@@ -2425,24 +2436,33 @@ function unescapeHTML(s) {
             }
           }
         }
-        commandResult = await executeCommands(executableCommands);
-        console.log("[MisakaChat] 操作执行:", executableCommands, commandResult);
-        pushDebugTrace({ id: debugId, stage: "execute", executableCommands, commandResult });
-        if (transactionalReplacement && (commandResult.failures || []).length > 0 && replacementBackups.size > 0) {
-          for (const [mn, backup] of replacementBackups) {
-            const char = Number(mn) === Number(Player?.MemberNumber)
-              ? Player
-              : (ChatRoomCharacter || []).find(c => Number(c.MemberNumber) === Number(mn));
-            if (!char) continue;
-            CharacterAppearanceRestore(char, backup);
-            ChatRoomCharacterUpdate(char);
+        const transactionUpdates = transactionalReplacement ? new Map() : null;
+        if (transactionUpdates) deferredCharacterUpdates = transactionUpdates;
+        try {
+          commandResult = await executeCommands(executableCommands);
+          console.log("[MisakaChat] 操作执行:", executableCommands, commandResult);
+          pushDebugTrace({ id: debugId, stage: "execute", executableCommands, commandResult });
+          if (transactionalReplacement && (commandResult.failures || []).length > 0 && replacementBackups.size > 0) {
+            for (const [mn, backup] of replacementBackups) {
+              const char = Number(mn) === Number(Player?.MemberNumber)
+                ? Player
+                : (ChatRoomCharacter || []).find(c => Number(c.MemberNumber) === Number(mn));
+              if (!char) continue;
+              CharacterAppearanceRestore(char, backup);
+              updateCharacter(char);
+            }
+            commandResult.rolledBack = true;
+            finalReply = "替换过程中有一步失败，已经恢复原样。";
+            pushDebugTrace({ id: debugId, stage: "execute:rollback", reason: "replacement-failed" });
           }
-          commandResult.rolledBack = true;
-          finalReply = "替换过程中有一步失败，已经恢复原样。";
-          pushDebugTrace({ id: debugId, stage: "execute:rollback", reason: "replacement-failed" });
+        } finally {
+          if (transactionUpdates) {
+            deferredCharacterUpdates = null;
+            // 事务期间的所有子步骤只产生这一轮最终状态同步。
+            for (const char of transactionUpdates.values()) ChatRoomCharacterUpdate(char);
+          }
         }
         // 操作失败时必须诚实反馈,不能保留"好了"这类与实际结果相反的自然回复
-        const hasNaturalReply = finalReply && finalReply.trim().length > 3;
         const missing = (commandResult.failures || []).find(f =>
           f.reason === "missing-item" || f.reason === "missing-part-item"
         );
@@ -2462,9 +2482,11 @@ function unescapeHTML(s) {
           else if (reason === "final-item-missing" || reason === "final-item-still-present") finalReply = "子步骤虽然执行了，但最终状态不对，我没有把它算作完成。";
           else if (reason === "unknown-color") finalReply = "这个颜色我识别不了,给我个 #RRGGBB 吧。";
           else if (reason === "set-color-failed") finalReply = "颜色没改成,可能这个部件不能上色。";
+          else if (/无法识别样式/.test(reason)) finalReply = "我没认出这种道具设置，本轮没有改动。";
           else if (/找不到部件/.test(reason)) finalReply = reason;
           else if (/找不到/.test(reason)) finalReply = "没找到目标,做不了。";
-          else if (!hasNaturalReply) finalReply = "好像做不到呢。";
+          // 未分类失败也必须覆盖模型原先的“好了”等成功话术。
+          else finalReply = `操作没有成功：${String(reason).slice(0, 120)}`;
         }
         if (commandResult.rolledBack) finalReply = "替换过程中有一步失败，已经恢复原样。";
         if ((commandResult.failures || []).length === 0) {
