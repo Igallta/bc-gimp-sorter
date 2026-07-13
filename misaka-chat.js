@@ -1,4 +1,4 @@
-// MisakaChat v2.10.3 - BC 御坂自动回复系统
+// MisakaChat v2.10.4 - BC 御坂自动回复系统
 // 模块分区:
 //   [Config]      L15-55   配置 + 状态
 //   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.10.3";
+  const SCRIPT_VERSION = "2.10.4";
   const RELEASE_CHANNEL = "stable";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
@@ -2779,6 +2779,7 @@ function unescapeHTML(s) {
         `\n\n【本轮结构化操作计划】\n${JSON.stringify(requestPlan)}\n` +
         `${currentAppearanceFacts ? `\n${currentAppearanceFacts}\n` : ""}` +
         `必须以 goal 的最终状态和 constraints 为准。当前实时 Appearance 高于历史对话；不得根据历史声称某道具现在仍存在。` +
+        `operations.assets 若非空，表示规划器已从权威目录解析出的精确 Asset，必须直接使用，不得重新询问同一选择，也不得换成近义道具。` +
         `MOVE 只改变聊天室人物横向站位，绝不能表示进入、躺进、关进或使用设备；这类目标必须通过 ItemDevices 的 ITEMADD/ITEMDEL/ITEMSET 达成。` +
         `ITEMSET 的值必须来自该道具在目标 group 的精确清单，绝不能把 Arms 的样式套到 Legs/Feet。LeatherDeluxeCuffs 只能放 Arms。命名姿势必须真正设置对应样式，不能只加普通绳索或夹带口塞来冒充。` +
         `只能生成计划 operations 所允许的类型、目标和明确部位。复合操作必须按真实执行顺序输出（例如替换必须先 ITEMDEL 再 ITEMADD，随后才能 ITEMSET）。` +
@@ -2839,9 +2840,12 @@ function unescapeHTML(s) {
       const initialExecutable = filterCommandsByPlan(requestPlan, initialParsed.commands).allowed;
       const initialCleaned = sanitizeReply(initialParsed.cleaned);
       const initialIsClarifyingQuestion = /[?？]\s*$/.test(initialCleaned || "");
-      if (requestPlan.intent === "action" && initialExecutable.length === 0 && !initialIsClarifyingQuestion) {
+      const planHasExactAssets = (requestPlan.operations || []).some(op =>
+        Array.isArray(op.assets) && op.assets.length > 0);
+      if (requestPlan.intent === "action" && initialExecutable.length === 0 &&
+          (!initialIsClarifyingQuestion || planHasExactAssets)) {
         pushDebugTrace({ id: debugId, stage: "retry:no-action-command", reply });
-        const correctionPrompt = `${systemPrompt}\n\n【本轮强制纠错】\n用户明确要求你执行操作，但你上一稿没有输出任何可执行指令。必须根据当前名单和道具清单，在第一行输出正确的 [ITEMADD:...] / [ITEMDEL:...] / [ITEMSET:...] / [ITEMCOLOR:...] / [MOVE:...] 等指令，然后第二行回复。若目标、部位或道具确实无法确定，只能直接追问，绝不能用动作描写或口头声称已经完成。`;
+        const correctionPrompt = `${systemPrompt}\n\n【本轮强制纠错】\n用户明确要求你执行操作，但你上一稿没有输出任何可执行指令。必须根据当前名单和道具清单，在第一行输出正确的 [ITEMADD:...] / [ITEMDEL:...] / [ITEMSET:...] / [ITEMCOLOR:...] / [MOVE:...] 等指令，然后第二行回复。若 operations.assets 非空，则具体道具已经确定，必须直接使用其中的精确 Asset，禁止再次追问。只有计划本身没有精确目标、部位或道具时才能追问；绝不能用动作描写或口头声称已经完成。`;
         const retryReply = await callLLM(correctionPrompt, contextMessages, { thinking: false });
         if (retryReply) {
           reply = retryReply;
