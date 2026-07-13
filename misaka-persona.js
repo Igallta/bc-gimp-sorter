@@ -314,6 +314,8 @@ window.MisakaPersona = {
 指令格式：
 移动: [MOVE:编号:left] [MOVE:编号:right] [MOVE:编号:to:目标编号:left] [MOVE:编号:to:目标编号:right] [MOVE:编号:edge:left] [MOVE:编号:edge:right]
 添加道具: [ITEMADD:编号:道具名] 或 [ITEMADD:编号:道具名:部位] 或 [ITEMADD:编号:道具名:部位:#RRGGBB]
+// ITEMADD 第五段只能是颜色（#RRGGBB），绝不能填写 Basic/BoxTie/Hogtied 等样式值。
+// 需要指定绑法/样式时必须分两行：先 ITEMADD，再 [ITEMSET:编号:道具名:部位:样式:值]。
 移除道具: [ITEMDEL:编号:道具名] 或 [ITEMDEL:编号:道具名:部位]（指定部位只移除该部位）
 释放全部: [ITEMDEL:编号:all]
 // 玩家说"放我出来"、"放开我"、"松开"、"解开我"、"让我走"等 = 请求从束缚中解脱
