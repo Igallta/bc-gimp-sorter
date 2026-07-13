@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BC Misaka Auto Chat
 // @namespace    https://igallta.github.io/bc-gimp-sorter
-// @version      2.10.1
+// @version      2.10.2
 // @description  御坂 BC 自动回复系统 — LLM 驱动 + 语义记忆(IDB) + 房间上下文
 // @match        https://www.bondage-europe.com/R129/BondageClub/*
 // @match        https://www.bondageclub.com/R129/BondageClub/*
@@ -29,7 +29,7 @@
   try { window.__GM_getValue = GM_getValue; } catch(e) {}
   try { window.__GM_setValue = GM_setValue; } catch(e) {}
 
-  const SCRIPT_VERSION = "2.10.1";
+  const SCRIPT_VERSION = "2.10.2";
   // GitHub Pages 部署曾长期卡住并返回 2.5.3。资源钉住本版本对应的 commit，
   // 避免 Pages/master CDN 缓存让 loader 版本与实际主脚本不一致。
   const ASSET_REVISION = "1c7dd14";
