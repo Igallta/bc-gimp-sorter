@@ -32,7 +32,7 @@
   const SCRIPT_VERSION = "2.8.2";
   // GitHub Pages 部署曾长期卡住并返回 2.5.3。资源钉住本版本对应的 commit，
   // 避免 Pages/master CDN 缓存让 loader 版本与实际主脚本不一致。
-  const ASSET_REVISION = "cce3f57";
+  const ASSET_REVISION = "493fbda";
   const BASE_URL = `https://raw.githack.com/Igallta/bc-gimp-sorter/${ASSET_REVISION}`;
 
   function waitForReady(cb, attempts) {
