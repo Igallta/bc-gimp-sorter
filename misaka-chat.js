@@ -1,4 +1,4 @@
-// MisakaChat v2.10.4 - BC 御坂自动回复系统
+// MisakaChat v2.10.5 - BC 御坂自动回复系统
 // 模块分区:
 //   [Config]      L15-55   配置 + 状态
 //   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.10.4";
+  const SCRIPT_VERSION = "2.10.5";
   const RELEASE_CHANNEL = "stable";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
@@ -1220,7 +1220,19 @@ ItemDevices 紧凑目录:${deviceCatalog || "不可用"}
     if (targets.length > 0 && target !== null && !targets.includes(target)) return false;
     const parts = Array.isArray(operation.parts) ? operation.parts : [];
     if (parts.length > 0 && ["itemadd", "itemdel", "itemset"].includes(cmd.type)) {
-      if (!cmd.part || !parts.includes(cmd.part)) return false;
+      if (cmd.part) {
+        if (!parts.includes(cmd.part)) return false;
+      } else if (cmd.type === "itemdel") {
+        // ITEMDEL 常省略 part，因为旧道具名称本身已经能唯一解析 group。
+        // 仍用权威 Asset 目录校验它确实属于计划部位，避免借替换操作
+        // 删除目标身上其他无关道具。
+        const mapping = findItemAsset(cmd.item, actionTargetCharacter(target));
+        const matchesPlannedPart = !!mapping?.group && parts.some(part =>
+          (BODY_PART_GROUPS[part] || []).includes(mapping.group));
+        if (!matchesPlannedPart) return false;
+      } else {
+        return false;
+      }
     }
     // assets 是规划器已从权威目录解析出的精确目标道具。添加、设置与改色
     // 必须命中它；替换时的 ITEMDEL 仍允许删除当前旧道具。
