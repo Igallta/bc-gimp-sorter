@@ -1,4 +1,4 @@
-// MisakaChat v2.8.0 - BC 御坂自动回复系统
+// MisakaChat v2.8.1 - BC 御坂自动回复系统
 // 模块分区:
 //   [Config]      L15-55   配置 + 状态
 //   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.8.0";
+  const SCRIPT_VERSION = "2.8.1";
   const RELEASE_CHANNEL = "stable";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
@@ -719,7 +719,9 @@ ${recentSemantic}`;
       const doRequest = (url, model, isFallback) => {
         // thinking 模式:思考进 reasoning_content,回复进 content
         const bodyObj = { model, messages, max_tokens: maxTokens };
-        if (useThinking) bodyObj.thinking = { type: "enabled" };
+        // DeepSeek 默认会启用 thinking。仅仅省略 thinking 参数并不等于关闭；
+        // 小 token 预算的规划器会把额度全部耗在 reasoning_content，最终 content=null。
+        bodyObj.thinking = { type: useThinking ? "enabled" : "disabled" };
         const reqBody = JSON.stringify(bodyObj);
         const useGM = typeof window.__GM_xmlhttpRequest !== "undefined";
 
@@ -2209,6 +2211,15 @@ function unescapeHTML(s) {
       // 独立规划器先理解自然语言；主模型只在规划许可范围内生成具体指令。
       const requestPlan = await planUserRequest(senderNum, senderName, content);
       pushDebugTrace({ id: debugId, stage: "plan", requestPlan });
+      // 规划器自身失败时不要再让主模型自由发挥。否则安全层虽会拦截指令，
+      // 自然语言回复仍可能谎称操作成功。
+      if (requestPlan.failed) {
+        const clarification = requestPlan.question || "我没确认好具体操作，能再说具体一点吗？";
+        pushDebugTrace({ id: debugId, stage: "guard:planner-failed", finalReply: clarification });
+        sendReply(clarification);
+        pushDebugTrace({ id: debugId, stage: "sent", finalReply: clarification });
+        return;
+      }
       const needCatalog = requestPlan.intent === "action" && !!requestPlan.needsCatalog;
       let systemPrompt = getSystemPrompt(needCatalog) +
         `\n\n【本轮结构化操作计划】\n${JSON.stringify(requestPlan)}\n` +
