@@ -1,4 +1,4 @@
-// MisakaChat v2.10.6 - BC 御坂自动回复系统
+// MisakaChat v2.10.7 - BC 御坂自动回复系统
 // 模块分区:
 //   [Config]      L15-55   配置 + 状态
 //   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.10.6";
+  const SCRIPT_VERSION = "2.10.7";
   const RELEASE_CHANNEL = "stable";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
@@ -552,6 +552,33 @@ ${recentSemantic}`;
   // === [Idle] Idle / Heartbeat ===
   let idleTimer = null;
 
+  // BC 会把以 * 开头、又以 * 结尾的整条消息识别成 Action。模型偶尔会生成
+  // “*动作*台词*”这种多一个尾星号的混合格式；sanitizeReply 清掉尾星号后仍会
+  // 留下“*动作*台词”在同一行。这里把动作与台词强制拆开，交给 sendReply 分两条
+  // 发送，确保台词不会被一起吞进 Action。
+  function normalizeIdleReply(reply) {
+    const cleaned = sanitizeReply(reply || "");
+    if (!cleaned) return "";
+    const normalized = [];
+    for (let line of cleaned.split(/\n+/).map(s => s.trim()).filter(Boolean)) {
+      const leadingAction = line.match(/^\*([^*\n]+)\*(.*)$/);
+      if (leadingAction) {
+        normalized.push(`*${leadingAction[1].trim()}*`);
+        const speech = leadingAction[2].replace(/^\*+|\*+$/g, "").trim();
+        if (speech) normalized.push(speech);
+      } else {
+        // 不完整的星号不能留在行首，否则 BC 仍可能按 Action 解析整句。
+        const starCount = (line.match(/\*/g) || []).length;
+        if (starCount % 2 !== 0 || (line.startsWith("*") && !line.endsWith("*"))) {
+          line = line.replace(/\*/g, "").trim();
+        }
+        if (line) normalized.push(line);
+      }
+      if (normalized.length >= 2) break;
+    }
+    return normalized.slice(0, 2).join("\n");
+  }
+
   async function generateIdleLine() {
     try {
       // idle 去重:记录最近发过的 idle 内容
@@ -559,7 +586,7 @@ ${recentSemantic}`;
       const recentIdle = state.recentIdleLines.slice(-3);
       // idle 不需要道具清单,用精简 prompt
       const systemPrompt = getSystemPrompt(false) +
-        "\n\n【当前任务】房间安静了。自然地说一句闲聊或做一个小动作。只输出最终回复本身,不要分析、不要描述你在做什么、不要输出思考过程。直接给出那句话。";
+        "\n\n【当前任务】房间安静了。自然地说一句闲聊或做一个小动作。只输出最终回复本身,不要分析、不要描述你在做什么、不要输出思考过程。若同时包含动作和台词，动作必须单独一行并完整写成 *动作*，台词另起一行且不能带星号；禁止输出 *动作*台词* 这种混合格式。";
       // 扩大到最近 15 条,让 LLM 看到更完整的时间线
       const recent = state.recentMessages.slice(-15).map(m => {
         const t = new Date(m.time || Date.now());
@@ -577,13 +604,13 @@ ${recentSemantic}`;
       const idleGuard = recentIdle.length
         ? `\n最近你已经说过:\n${recentIdle.join("\n")}\n不要重复类似内容。`
         : "";
-      const userPrompt = `最近消息:\n${recent || "暂无消息"}${idleGuard}${idleHint}\n\n直接输出一句自然的闲聊(不超过40字),不要分析,不要解释。`;
+      const userPrompt = `最近消息:\n${recent || "暂无消息"}${idleGuard}${idleHint}\n\n直接输出一句自然的闲聊(不超过40字),不要分析,不要解释。动作与台词不能写在同一行。`;
       const reply = await callLLM(systemPrompt, [{ role: "user", content: userPrompt }], {
         model: CONFIG.fallbackModel,
         fallbackModel: CONFIG.fallbackModel,
         maxTokens: 80,
       });
-      const cleaned = sanitizeReply(reply || "");
+      const cleaned = normalizeIdleReply(reply || "");
       if (!cleaned || cleaned.length < 2) return "";
       // 简易去重:字符集相似度 > 0.7 跳过
       const similarity = (a, b) => {
@@ -644,8 +671,7 @@ ${recentSemantic}`;
           }
           state.lastNonSelfMsgTime = Date.now();  // 重置防再次触发
           if (typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom") {
-            ElementValue("InputChat", line);
-            ChatRoomSendChat();
+            sendReply(line);
             state.recentMessages.push({ senderName: "御搬", content: line, isSelf: true, time: Date.now() });
             if (state.recentMessages.length > 50) state.recentMessages.shift();
           }
@@ -1750,10 +1776,31 @@ ${finalFacts}`;
       const match = String(result || "").match(/\{[\s\S]*\}/);
       const verdict = JSON.parse(match ? match[0] : "");
       if (typeof verdict.satisfied !== "boolean") throw new Error("invalid verdict");
-      return { satisfied: verdict.satisfied, reason: String(verdict.reason || "").slice(0, 200), postconditions, constraints, effects };
+      const semanticReview = {
+        satisfied: verdict.satisfied,
+        reason: String(verdict.reason || "").slice(0, 200),
+      };
+      // 语义验收只作诊断参考。只要实际道具后置条件与用户明确限制都已通过，
+      // 不允许第二个 LLM 因措辞、BC 道具命名或姿势理解差异驳回正确操作并回滚。
+      // 真正的执行失败、最终状态不符、noMove/noAdd/noStack/preserveParts 违反仍会
+      // 在上面的确定性检查中返回 false。
+      if (!semanticReview.satisfied) {
+        console.warn("[MisakaChat] 语义验收有异议（仅记录，不驳回）:", semanticReview.reason);
+      }
+      return {
+        satisfied: true,
+        reason: semanticReview.satisfied
+          ? "确定性后置条件与限制均满足，语义复核通过"
+          : "确定性后置条件与限制均满足，忽略语义复核异议",
+        semanticReview,
+        postconditions,
+        constraints,
+        effects,
+      };
     } catch (e) {
       console.warn("[MisakaChat] 最终状态语义验收失败:", e.message, result);
-      return { satisfied: null, reason: "verifier-failed", postconditions, constraints, effects };
+      // 验收模型异常也不能推翻已经通过的确定性状态检查。
+      return { satisfied: true, reason: "确定性后置条件与限制均满足，语义复核不可用", semanticReview: null, postconditions, constraints, effects };
     }
   }
 
@@ -3036,9 +3083,8 @@ function unescapeHTML(s) {
             finalReply = "这次没弄成，我已经恢复原样了。";
             pushDebugTrace({ id: debugId, stage: "execute:rollback", reason: "action-failed", details: commandResult.rollbackDetails });
           }
-          // 多步请求不只要求“每条已生成指令成功”，还必须完整达到用户目标。
-          // 主模型若漏掉后续子任务，验收器会判 false；此时同样按事务回滚，
-          // 且仍处于 deferredCharacterUpdates 中，只向服务器同步一次恢复后的最终状态。
+          // 子指令成功后继续核对客观后置条件与明确限制；只有这些确定性检查
+          // 失败才会回滚。LLM 语义复核只写入 debug，不再拥有驳回权。
           if ((commandResult.failures || []).length === 0) {
             const postExecutionAppearance = buildCurrentAppearanceFacts(requestPlan);
             commandResult.outcomeVerdict = await verifyActionOutcome(requestPlan, executableCommands, actionBaseline);
