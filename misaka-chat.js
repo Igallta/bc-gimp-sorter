@@ -579,22 +579,6 @@ ${recentSemantic}`;
     return normalized.slice(0, 2).join("\n");
   }
 
-  // 小输出预算配合 thinking 时，模型偶尔会在修饰词或介词后耗尽 token，留下
-  // “视线扫过安静的”“拍了拍裙子上不存在的”这类语法悬空的半句话。
-  // 即使服务端没有返回可靠的 finish_reason，也不要把明显残句发进公共聊天室。
-  function isIncompleteIdleReply(reply) {
-    const lines = String(reply || "").split(/\n+/).map(s => s.trim()).filter(Boolean);
-    if (lines.length === 0) return true;
-    return lines.some(line => {
-      const plain = line
-        .replace(/^\*|\*$/g, "")
-        .replace(/[\s，。！？!?～~….,;；:：、"“”'‘’）)】》」』]+$/g, "")
-        .trim();
-      if (!plain) return true;
-      return /(?:的|地|得|把|被|向|从|对|给|在|与|和|或|及|为|像|比|跟|朝|往|将|让|使|替|沿着|关于|因为|所以)$/.test(plain);
-    });
-  }
-
   async function generateIdleLine() {
     try {
       // idle 去重:记录最近发过的 idle 内容
@@ -624,15 +608,12 @@ ${recentSemantic}`;
       const reply = await callLLM(systemPrompt, [{ role: "user", content: userPrompt }], {
         model: CONFIG.fallbackModel,
         fallbackModel: CONFIG.fallbackModel,
-        maxTokens: 80,
-        // idle 只需要一句短文本；关闭 thinking，避免推理吃完小额输出预算。
-        thinking: false,
+        // thinking 与最终回复共享输出预算；80 token 会偶发截断在半句话中。
+        // 最终可见文本仍由 prompt 的 40 字要求和 sanitizeReply 的 120 字上限约束。
+        maxTokens: 1024,
       });
       const cleaned = normalizeIdleReply(reply || "");
-      if (!cleaned || cleaned.length < 2 || isIncompleteIdleReply(cleaned)) {
-        if (cleaned) console.warn("[MisakaChat] idle 检测到疑似截断残句,改用 fallback:", cleaned);
-        return "";
-      }
+      if (!cleaned || cleaned.length < 2) return "";
       // 简易去重:字符集相似度 > 0.7 跳过
       const similarity = (a, b) => {
         if (!a || !b) return 0;
