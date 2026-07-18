@@ -875,7 +875,11 @@ ${recentSemantic}`;
           ? MisakaPersona.assetCnName(a)
           : "";
         const names = [...new Set([a?.Description, cn].filter(Boolean))];
-        return `${a?.Name || "?"}=${names.join("/") || a?.Name || "?"}`;
+        const propertyHints = typeof MisakaPersona !== "undefined" && typeof MisakaPersona.getPropertyHints === "function"
+          ? MisakaPersona.getPropertyHints(a)
+          : [];
+        const hints = propertyHints.length > 0 ? ` [${propertyHints.join("；")}]` : "";
+        return `${a?.Name || "?"}=${names.join("/") || a?.Name || "?"}${hints}`;
       }).filter(Boolean).join("；").slice(0, 9000);
       _plannerHandheldCatalogCache = { text, time: now };
       return text;
@@ -995,6 +999,7 @@ ${recentSemantic}`;
 roleplay 表示只需用 *动作描写* 完成、不会改变 BC 人物站位或 Appearance 的互动，例如咬一口、舔、拥抱、躲藏、探头、假装吃掉某人、把手持食物递到嘴边，以及“该怎么办/强硬一点”这类要求御坂现场演出来的回应。即使句式是命令，只要在当前玩笑语境里明显是身体互动或表演，也选 roleplay；不得为了 roleplay 规划真实道具指令。
 action 只用于确实要改变 BC 状态的移动、添加/删除/设置道具、快照、复制或游戏表情。只有执行真实 action 所必需的目标或操作仍无法确定时才选 clarify。
 必须利用“近期对话”理解“也要”“那个”“手一份腿两份”等指代和延续玩笑，但永远只处理最新消息，不补做历史请求。
+手持食物需要区分三种语义：把食物递到嘴边、喂一口、吃掉或把某人的手腿当食物，通常是 roleplay；“给B一个/一份X”“给B点吃的”表示让B实际拿到 ItemHandheld，规划 action，若上文已有明确食物则沿用，未明确时优先选择目录里常见且无害的食物而不是反复追问；“把A手里的X给B”默认给B添加同类手持物但不删除A手里的，只有明确说“拿走、转移、从A手里移交”时才规划先从A移除再给B添加。鸡腿、香肠、爆米花等可能是同一道具的不同样式，必须结合 ItemHandheld 目录中的样式选项保留在 goal 中，不要把样式名误当成不存在的 Asset。
 若存在“待澄清上下文”，判断最新消息是否在回答御坂上一轮的追问。像“狗窝”“红色”“咲”“手臂”这样的短答必须与原始请求合并理解，并继承原请求的目标人物、操作和限制，不得当成孤立的新命令。此时 usedPendingClarification=true；若最新消息明显是新话题，则为 false。
 在承接追问时，“御坂，狗窝”中的“御坂”通常只是对助手的称呼，不表示把御坂作为操作目标。只有“把御坂/给御坂/让你自己”等明确宾语表达才改变目标人物。
 actionTypes 只能从 itemadd,itemdel,itemdelall,itemset,itemcolor,move,moveTo,moveEdge,snapshotSave,snapshotRestore,copyRestraint,emote 中选择。
