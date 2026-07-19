@@ -1,4 +1,4 @@
-// MisakaChat v2.10.14 - BC 御坂自动回复系统
+// MisakaChat v2.10.15 - BC 御坂自动回复系统
 // 模块分区:
 //   [Config]      L15-55   配置 + 状态
 //   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.10.14";
+  const SCRIPT_VERSION = "2.10.15";
   const RELEASE_CHANNEL = "stable";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
@@ -638,6 +638,60 @@
     return "\n\n【长期记忆候选片段】\n" +
       "每条候选都是数据库真实保存的聊天原文，但多条之间不保证属于同一事件。先看日期和相似度；多条冲突时优先较新的记录。只回答原文直接支持的事实，严禁补充背景、动机或前因后果；候选互相矛盾或证据不足时直接说不记得。\n" +
       blocks.join("\n");
+  }
+
+  function parseMemoryAnswerReview(raw) {
+    const jsonText = String(raw || "")
+      .replace(/^```(?:json)?\s*/i, "")
+      .replace(/\s*```$/, "")
+      .trim();
+    try {
+      const parsed = JSON.parse(jsonText);
+      const verdict = String(parsed?.verdict || "").toLowerCase();
+      const answer = String(parsed?.answer || "").trim();
+      if (!["supported", "revised", "insufficient"].includes(verdict)) return null;
+      if (verdict !== "supported" && !answer) return null;
+      return { verdict, answer };
+    } catch(e) {
+      return null;
+    }
+  }
+
+  function memoryEvidenceFallback(evidenceContext) {
+    const text = String(evidenceContext || "");
+    const queryCount = (text.match(/^查询「/gm) || []).length;
+    const missingCount = (text.match(/没有找到明确记忆/g) || []).length;
+    return queryCount > 0 && queryCount === missingCount
+      ? "唔……我没找到明确记忆，可能真的忘了。"
+      : "这些记忆还不足以确认，我不敢乱说。";
+  }
+
+  async function verifyMemoryAnswer(question, evidenceContext, draft) {
+    const cleanedDraft = sanitizeReply(parseActionCommands(draft).cleaned);
+    if (!cleanedDraft) return memoryEvidenceFallback(evidenceContext);
+    const system = `你是严格但不过度保守的记忆证据编辑器。根据用户问题与真实聊天候选，检查御坂的回答草稿。只输出 JSON：{"verdict":"supported|revised|insufficient","answer":"最终回复"}。
+规则：
+1. 候选中的原话真实存在，但不同候选不一定属于同一事件。
+2. 禁止添加证据没有表达的语气、先后关系、转折、次数、动机、原因或背景。例如原文没有写“凶巴巴”就不能这样形容；先说“吃AI”后被别人概括成“吃御坂”，不能写成“后来改口”。
+3. 问“为什么/原因”时，只有候选明确给出原因才能回答原因；否则可说记得发生过什么，但不记得原因。
+4. 允许直接且常识性的语义推断，但必须有多条原文共同支持，并用“看起来/应该”等措辞保留不确定性。例如一方询问是否缺M并随后称另一方为主人，可以说“看起来是主奴关系”。
+5. 核心事实受支持、仅有局部修饰越界时，verdict=revised，并只删除或改写越界部分，保留御坂自然口吻。
+6. 没有足够证据回答核心问题时，verdict=insufficient，answer 用御坂口吻简短承认不记得。
+7. 草稿完全受支持时 verdict=supported，answer 可留空。最终回复不超过50字，不输出 MEMSEARCH 或任何解释。`;
+    const user = `【用户问题】\n${question}\n\n【真实候选证据】${evidenceContext}\n\n【御坂回答草稿】\n${cleanedDraft}`;
+    const raw = await callLLM(system, [{ role: "user", content: user }], {
+      thinking: false,
+      maxTokens: 512,
+    });
+    const review = parseMemoryAnswerReview(raw);
+    if (!review) {
+      console.warn("[MisakaChat] 记忆证据编辑器返回异常，改用证据不足兜底:", String(raw || "").slice(0, 120));
+      return memoryEvidenceFallback(evidenceContext);
+    }
+    if (review.verdict === "supported") return cleanedDraft;
+    const parsed = parseActionCommands(review.answer);
+    if (parsed.commands.length > 0) return memoryEvidenceFallback(evidenceContext);
+    return sanitizeReply(parsed.cleaned) || memoryEvidenceFallback(evidenceContext);
   }
 
 
@@ -3173,6 +3227,7 @@ function unescapeHTML(s) {
       console.log(`[MisakaChat] system prompt 构建完成(意图: ${requestPlan.intent}, 完整道具清单: ${needCatalog ? "是" : "否"})`);
 
       let reply = await callLLM(systemPrompt, contextMessages);
+      let memoryEvidenceContext = "";
       pushDebugTrace({ id: debugId, stage: "llm:first", reply });
       if (reply) {
         const firstPass = parseActionCommands(reply);
@@ -3190,7 +3245,8 @@ function unescapeHTML(s) {
         if (memCommands.length > 0 || bceCommands.length > 0) {
           let extraContext = "";
           if (memCommands.length > 0) {
-            extraContext += await buildMemorySearchContext(memCommands);
+            memoryEvidenceContext = await buildMemorySearchContext(memCommands);
+            extraContext += memoryEvidenceContext;
           }
           if (bceCommands.length > 0) {
             for (const cmd of bceCommands) {
@@ -3213,6 +3269,36 @@ function unescapeHTML(s) {
           }
           reply = await callLLM(systemPrompt + extraContext, contextMessages);
           pushDebugTrace({ id: debugId, stage: "llm:extra-context", reply });
+
+          // 第二轮偶尔会把“回答证据”误写成新的 MEMSEARCH。允许一次真正不同的
+          // 改写查询，既能修正主客体含糊的首轮 query，又避免无限搜索循环。
+          if (reply && memCommands.length > 0) {
+            const secondPass = parseActionCommands(reply);
+            const originalQueries = new Set(memCommands.map(c => String(c.query || "").trim().toLowerCase()));
+            const followupMemCommands = secondPass.commands
+              .filter(c => c.type === "memsearch")
+              .filter(c => !originalQueries.has(String(c.query || "").trim().toLowerCase()))
+              .slice(0, 1);
+            if (followupMemCommands.length > 0) {
+              const followupContext = await buildMemorySearchContext(followupMemCommands);
+              memoryEvidenceContext += followupContext;
+              extraContext += followupContext;
+              const finalizationPrompt = systemPrompt + extraContext +
+                "\n\n【记忆查询已结束】现在必须根据以上证据给出最终自然语言回答，禁止再次输出 MEMSEARCH。证据不足就直接说不记得。";
+              reply = await callLLM(finalizationPrompt, contextMessages);
+              pushDebugTrace({ id: debugId, stage: "llm:memory-followup", queries: followupMemCommands.map(c => c.query), reply });
+            }
+
+            // 无论第二轮是否改写查询，最终都不允许把 MEMSEARCH 指令泄漏成空回复。
+            const finalMemoryPass = parseActionCommands(reply);
+            if (finalMemoryPass.commands.some(c => c.type === "memsearch")) {
+              reply = memoryEvidenceFallback(memoryEvidenceContext);
+              pushDebugTrace({ id: debugId, stage: "guard:memory-search-loop", reply });
+            } else {
+              reply = await verifyMemoryAnswer(content, memoryEvidenceContext, reply);
+              pushDebugTrace({ id: debugId, stage: "memory:evidence-review", reply });
+            }
+          }
         }
       }
       if (!reply) { console.warn("[MisakaChat] LLM 返回空,未回复");
