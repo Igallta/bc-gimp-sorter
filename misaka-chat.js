@@ -1,4 +1,4 @@
-// MisakaChat v2.10.13 - BC 御坂自动回复系统
+// MisakaChat v2.10.14 - BC 御坂自动回复系统
 // 模块分区:
 //   [Config]      L15-55   配置 + 状态
 //   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.10.13";
+  const SCRIPT_VERSION = "2.10.14";
   const RELEASE_CHANNEL = "stable";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
@@ -636,7 +636,7 @@
       }
     }
     return "\n\n【长期记忆候选片段】\n" +
-      "以下内容只是语义召回候选，不保证属于同一事件。先看日期和相似度；多条冲突时优先较新的记录。相似度不高、候选互相矛盾或证据不足时，直接说不记得，严禁补全或编造。\n" +
+      "每条候选都是数据库真实保存的聊天原文，但多条之间不保证属于同一事件。先看日期和相似度；多条冲突时优先较新的记录。只回答原文直接支持的事实，严禁补充背景、动机或前因后果；候选互相矛盾或证据不足时直接说不记得。\n" +
       blocks.join("\n");
   }
 
