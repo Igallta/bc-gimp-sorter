@@ -662,8 +662,19 @@
     const queryCount = (text.match(/^查询「/gm) || []).length;
     const missingCount = (text.match(/没有找到明确记忆/g) || []).length;
     return queryCount > 0 && queryCount === missingCount
-      ? "唔……我没找到明确记忆，可能真的忘了。"
-      : "这些记忆还不足以确认，我不敢乱说。";
+      ? "唔……这件事我真的不记得了。"
+      : "唔……我记得不太清，不敢乱说。";
+  }
+
+  function normalizeMemoryReviewedReply(raw) {
+    const cleaned = sanitizeReply(raw);
+    if (!cleaned) return "";
+    const lines = cleaned.split(/\n+/).map(s => s.trim()).filter(Boolean).slice(0, 2);
+    if (lines.length === 1) {
+      const mixed = lines[0].match(/^(\*[^*\n]+\*)\s*(\S[\s\S]*)$/);
+      if (mixed) return `${mixed[1]}\n${mixed[2]}`;
+    }
+    return lines.join("\n");
   }
 
   async function verifyMemoryAnswer(question, evidenceContext, draft) {
@@ -675,9 +686,11 @@
 2. 禁止添加证据没有表达的语气、先后关系、转折、次数、动机、原因或背景。例如原文没有写“凶巴巴”就不能这样形容；先说“吃AI”后被别人概括成“吃御坂”，不能写成“后来改口”。
 3. 问“为什么/原因”时，只有候选明确给出原因才能回答原因；否则可说记得发生过什么，但不记得原因。
 4. 允许直接且常识性的语义推断，但必须有多条原文共同支持，并用“看起来/应该”等措辞保留不确定性。例如一方询问是否缺M并随后称另一方为主人，可以说“看起来是主奴关系”。
-5. 核心事实受支持、仅有局部修饰越界时，verdict=revised，并只删除或改写越界部分，保留御坂自然口吻。
-6. 没有足够证据回答核心问题时，verdict=insufficient，answer 用御坂口吻简短承认不记得。
-7. 草稿完全受支持时 verdict=supported，answer 可留空。最终回复不超过50字，不输出 MEMSEARCH 或任何解释。`;
+5. 用户问题本身不是事实证据。候选没有证明某件事发生过时，不得说“只记得发生过”；应直接说不记得这件事。
+6. 当前正在做的动作、此刻的情绪和不含历史事实的新鲜玩笑不需要候选支持。例如现在晃脑袋、说“管理员不是用来吃的”可以保留；但不能把它们写成过去发生过的动作或态度。
+7. 核心事实受支持、仅有局部历史修饰越界时，verdict=revised，并只删除或改写越界部分，保留御坂自然口吻。
+8. 没有足够证据回答核心问题时，verdict=insufficient，answer 用御坂口吻简短承认不记得。不要说“候选、证据、记录、相关记忆”等技术词。
+9. 草稿完全受支持时 verdict=supported，answer 可留空。最终回复不超过50字，不输出 MEMSEARCH 或任何解释。若包含动作，必须使用两行格式：第一行只能是 *动作*，第二行只能是台词；绝不能把动作和台词放在同一行。`;
     const user = `【用户问题】\n${question}\n\n【真实候选证据】${evidenceContext}\n\n【御坂回答草稿】\n${cleanedDraft}`;
     const raw = await callLLM(system, [{ role: "user", content: user }], {
       thinking: false,
@@ -689,9 +702,10 @@
       return memoryEvidenceFallback(evidenceContext);
     }
     if (review.verdict === "supported") return cleanedDraft;
+    if (review.verdict === "insufficient") return memoryEvidenceFallback(evidenceContext);
     const parsed = parseActionCommands(review.answer);
     if (parsed.commands.length > 0) return memoryEvidenceFallback(evidenceContext);
-    return sanitizeReply(parsed.cleaned) || memoryEvidenceFallback(evidenceContext);
+    return normalizeMemoryReviewedReply(parsed.cleaned) || memoryEvidenceFallback(evidenceContext);
   }
 
 
