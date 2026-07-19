@@ -1,4 +1,4 @@
-// MisakaChat v2.10.12 - BC 御坂自动回复系统
+// MisakaChat v2.10.13 - BC 御坂自动回复系统
 // 模块分区:
 //   [Config]      L15-55   配置 + 状态
 //   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.10.12";
+  const SCRIPT_VERSION = "2.10.13";
   const RELEASE_CHANNEL = "stable";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
@@ -64,6 +64,9 @@
     memoryRefineInterval: 50,  // 每 N 条消息提炼一次长期记忆
     maxRefinedMemories: 20,  // 保留最近 N 条提炼记忆
     topKMemories: 3,  // 查询时返回最相似的 K 条记忆
+    memoryRecallMinCosine: 0.48, // 原始语义相似度低于此值时宁可承认不记得
+    memoryContextWindowMs: 5 * 60 * 1000, // 强命中前后只补取同一小段对话
+    memoryContextNeighbors: 1, // 最高命中前后各补一条相邻记忆
   };
 
   let state = {
@@ -538,30 +541,74 @@
     ];
     for (const { list, source } of sources) {
       if (!Array.isArray(list)) continue;
-      for (const m of list) {
+      for (let index = 0; index < list.length; index++) {
+        const m = list[index];
         const text = typeof m === "string" ? m : m?.text;
         const emb = typeof m === "string" ? null : m?.embedding;
         if (!text) continue;
         if (emb) {
-          const decayed = cosineSim(qEmb, emb) * Math.max(0.3, 1 - ((now - (m.time || 0)) / 86400000) / 90);
-          if (decayed > 0.3) results.push({ text, score: decayed, source });
+          const cosine = cosineSim(qEmb, emb);
+          // 原始 cosine 决定“是否相关”；时间只参与候选排序。
+          // 这样老但准确的记忆不会被时间衰减误判为无关，新但牵强的片段也进不来。
+          if (cosine < CONFIG.memoryRecallMinCosine) continue;
+          const recency = Math.max(0.3, 1 - ((now - (m.time || 0)) / 86400000) / 90);
+          results.push({
+            text,
+            time: Number(m.time) || 0,
+            cosine,
+            score: cosine * recency,
+            source,
+            index,
+          });
         } else {
           // 关键词 fallback(无 embedding 的旧条目)
           const q = query.toLowerCase(), lower = text.toLowerCase();
           const terms = q.split(/[\s,,、。.!!??;;::]+/).filter(t => t.length >= 2);
-          let kw = lower.includes(q) ? 3 : 0;
-          for (const t of terms) if (lower.includes(t)) kw++;
-          if (kw > 0) results.push({ text, score: kw, source: source + "-keyword" });
+          const matchedTerms = terms.filter(t => lower.includes(t)).length;
+          const exact = q.length >= 2 && lower.includes(q);
+          // 无向量旧条目只接受完整短语或至少两个关键词命中，避免单词碰巧相同。
+          if (exact || matchedTerms >= Math.min(2, terms.length || 2)) {
+            results.push({
+              text,
+              time: Number(m?.time) || 0,
+              cosine: null,
+              score: exact ? 3 : matchedTerms,
+              source: source + "-keyword",
+              index,
+            });
+          }
         }
       }
     }
 
-    // 去重 + 排序 + 截断
+    // 先排序再去重，重复文本保留更相关/更新的那条。
     const seen = new Set();
-    return results
-      .filter(r => r.text && !seen.has(r.text) && seen.add(r.text))
+    const hits = results
       .sort((a, b) => b.score - a.score)
+      .filter(r => r.text && !seen.has(r.text) && seen.add(r.text))
       .slice(0, topK);
+
+    // 只围绕最高命中补取少量相邻对话，帮助还原上下文，又避免候选数量失控。
+    const best = hits[0];
+    if (best && best.source === "semantic" && Number.isInteger(best.index)) {
+      const list = state.semanticMemories || [];
+      const context = [];
+      for (let offset = -CONFIG.memoryContextNeighbors; offset <= CONFIG.memoryContextNeighbors; offset++) {
+        if (offset === 0) continue;
+        const adjacent = list[best.index + offset];
+        if (!adjacent?.text || adjacent.text === best.text) continue;
+        const timeGap = Math.abs((Number(adjacent.time) || 0) - (Number(best.time) || 0));
+        if (timeGap > CONFIG.memoryContextWindowMs) continue;
+        context.push({
+          text: adjacent.text,
+          time: Number(adjacent.time) || 0,
+          relation: offset < 0 ? "上文" : "下文",
+        });
+      }
+      best.context = context;
+    }
+
+    return hits;
   }
 
   async function buildMemorySearchContext(memCommands) {
@@ -571,15 +618,26 @@
     for (const query of queries) {
       const found = await searchLongTermMemories(query, CONFIG.topKMemories);
       if (found.length > 0) {
-        blocks.push(`查询「${query}」:\n` + found.map(m => {
+        const lines = found.map((m, index) => {
           const t = m.time ? new Date(m.time).toLocaleString("zh-CN", {month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}) : "";
-          return `- [${t}] ${m.text}`;
-        }).join("\n"));
+          const confidence = Number.isFinite(m.cosine) ? `相似度 ${m.cosine.toFixed(2)}` : "关键词匹配";
+          let line = `- 候选${index + 1} [${t || "时间未知"}｜${confidence}] ${m.text}`;
+          if (index === 0 && Array.isArray(m.context) && m.context.length > 0) {
+            line += "\n" + m.context.map(c => {
+              const ct = c.time ? new Date(c.time).toLocaleString("zh-CN", {month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}) : "时间未知";
+              return `  - 相邻${c.relation} [${ct}] ${c.text}`;
+            }).join("\n");
+          }
+          return line;
+        });
+        blocks.push(`查询「${query}」:\n` + lines.join("\n"));
       } else {
         blocks.push(`查询「${query}」: 没有找到明确记忆`);
       }
     }
-    return "\n\n【长期记忆搜索结果】\n" + blocks.join("\n");
+    return "\n\n【长期记忆候选片段】\n" +
+      "以下内容只是语义召回候选，不保证属于同一事件。先看日期和相似度；多条冲突时优先较新的记录。相似度不高、候选互相矛盾或证据不足时，直接说不记得，严禁补全或编造。\n" +
+      blocks.join("\n");
   }
 
 
