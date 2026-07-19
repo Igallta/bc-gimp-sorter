@@ -1,4 +1,4 @@
-// MisakaChat v2.10.11 - BC 御坂自动回复系统
+// MisakaChat v2.10.12 - BC 御坂自动回复系统
 // 模块分区:
 //   [Config]      L15-55   配置 + 状态
 //   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.10.11";
+  const SCRIPT_VERSION = "2.10.12";
   const RELEASE_CHANNEL = "stable";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
@@ -491,6 +491,25 @@
     return !/(?:VibeModeAction|Chat(?:Other|Self)-Item[A-Za-z]+-|OrgasmFailSurrender\d*|TriggerShock[12]|ActionActivateSafewordRelease)/i.test(text);
   }
 
+  function parseRefinementResult(raw) {
+    const text = String(raw || "").trim();
+    if (!text || /^(无|没有|none|n\/a)$/i.test(text)) return null;
+    const jsonText = text
+      .replace(/^```(?:json)?\s*/i, "")
+      .replace(/\s*```$/, "")
+      .trim();
+    try {
+      const parsed = JSON.parse(jsonText);
+      const category = String(parsed?.category || "").toLowerCase();
+      const allowed = new Set(["relationship", "preference", "boundary", "identity", "ongoing_status"]);
+      const memory = String(parsed?.memory || "").trim();
+      if (!allowed.has(category) || !memory) return null;
+      return { category, memory };
+    } catch(e) {
+      return null;
+    }
+  }
+
   async function findRefinedDuplicate(candidateText, candidateEmbedding) {
     const normalized = refinedContent(candidateText).toLowerCase();
     if (!normalized) return null;
@@ -585,7 +604,18 @@
 
       const existingRefined = (state.refinedMemories || []).map(m => m.text).join("\n");
 
-      const prompt = `从以下 BC 聊天记录中,只提炼【一条新的】长期有价值信息(人际关系变化、明确偏好、重要事件、约束关系),不超过100字,用中文。
+      const prompt = `从以下 BC 聊天记录中,只提炼【一条新的、跨多次对话仍有价值的稳定事实】。
+
+只允许以下分类:
+- relationship: 明确的人际关系或关系变化
+- preference: 当事人明确说出的稳定偏好/厌恶
+- boundary: 明确且持续适用的互动边界
+- identity: 稳定身份、长期称呼或角色归属
+- ongoing_status: 明确会持续一段时间的状态
+
+严格输出 JSON，不要 markdown:
+{"category":"relationship|preference|boundary|identity|ongoing_status","memory":"不超过100字的完整中文句子"}
+没有符合条件的新事实则只回复"无"。
 
 已有的概括记忆(不要重复这些内容,只提炼增量):
 ${existingRefined || "(空)"}
@@ -598,6 +628,7 @@ ${existingRefined || "(空)"}
 - 不要推断原因和细节,只提炼明确说出的内容。
 - 区分说话者:用户说的提炼为事实,御坂说的只提炼御坂自身偏好。
 - 游戏动作、道具操作、临时玩笑、技术讨论、开发计划和测试对白都不是长期记忆。
+- 一次性行为、普通聊天、影视观感、临时情绪、安装/导入/设置故障和未经本人确认的评价都不是长期记忆。
 - 输出必须是一个语义完整的句子，不要加日期、项目符号或标题。
 
 人物档案:
@@ -605,13 +636,14 @@ ${profiles}
 
 记忆片段:
 ${recentSemantic}`;
-      const refined = await callLLM("你是记忆提炼助手。只提炼有明确证据的长期信息,禁止把操作请求推断成偏好。", [{role:"user", content: prompt}], {
+      const refined = await callLLM("你是严格的长期记忆提炼器。只输出指定 JSON 或‘无’，禁止把一次性事件、操作请求或技术问题保存为长期记忆。", [{role:"user", content: prompt}], {
         model: CONFIG.fallbackModel,
         fallbackModel: CONFIG.fallbackModel,
       });
-      if (refined && refined.trim() && !/^(无|没有|none|n\/a)\s*$/i.test(refined.trim())) {
+      const parsedRefinement = parseRefinementResult(refined);
+      if (parsedRefinement) {
         const ts = Date.now();
-        const refinedText = formatRefinedMemory(refined, ts, 100);
+        const refinedText = formatRefinedMemory(parsedRefinement.memory, ts, 100);
         if (!refinedText) {
           console.log("[MisakaChat] 提炼记忆格式不完整，跳过:", refined.slice(0, 60));
           return;
@@ -633,6 +665,8 @@ ${recentSemantic}`;
         await IDB.clearRefined();
         await Promise.all(state.refinedMemories.map(m => IDB.putRefinedOne(m)));
         console.log("[MisakaChat] 长期记忆提炼完成:", refined.slice(0, 50));
+      } else if (refined && !/^(无|没有|none|n\/a)\s*$/i.test(refined.trim())) {
+        console.log("[MisakaChat] 提炼结果不符合结构或分类，跳过:", refined.slice(0, 80));
       }
     } catch(e) {
       console.warn("[MisakaChat] 记忆提炼失败:", e.message);
