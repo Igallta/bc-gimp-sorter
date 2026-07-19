@@ -1,4 +1,4 @@
-// MisakaChat v2.10.9 - BC 御坂自动回复系统
+// MisakaChat v2.10.10 - BC 御坂自动回复系统
 // 模块分区:
 //   [Config]      L15-55   配置 + 状态
 //   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.10.9";
+  const SCRIPT_VERSION = "2.10.10";
   const RELEASE_CHANNEL = "stable";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 

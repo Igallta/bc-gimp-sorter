@@ -1,11 +1,11 @@
-// GimpSorter v1.6.4 — BC Gimp Doll 自动排序 mod
+// GimpSorter v1.6.5 — BC Gimp Doll 自动排序 mod
 // 通过 bcModSdk.registerMod 注册，掉线重连后由油猴自动重新加载
 // 排序规则：所有 GIMP 娃娃按编号从小到大排在房间最前面
 // 策略：只使用 MoveLeft，行为更稳定可预测
 (function() {
   "use strict";
 
-  const version = "1.6.4";
+  const version = "1.6.5";
   if (window.__GimpSorterLoaded) {
     console.log("[GimpSorter] already loaded: " + window.__GimpSorterLoaded);
     return;
