@@ -1,4 +1,4 @@
-// MisakaChat v2.10.10 - BC 御坂自动回复系统
+// MisakaChat v2.10.11 - BC 御坂自动回复系统
 // 模块分区:
 //   [Config]      L15-55   配置 + 状态
 //   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.10.10";
+  const SCRIPT_VERSION = "2.10.11";
   const RELEASE_CHANNEL = "stable";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
@@ -39,7 +39,8 @@
     replyHardTimeoutMs: 180000,
     replyDelayMs: 800,
     clarificationTtlMs: 120000, // 同一发送者回答上一轮追问的承接窗口
-    maxProfileEntries: 20,
+    maxProfileEntries: 100, // 本地保留更多熟人，避免 20 人房间中反复“重新认识”
+    maxPromptProfileEntries: 20, // 每轮只注入最相关的 20 人，控制提示词体积
     moveCooldownMs: 500,  // 移动操作冷却
     idleTimeoutMs: 600000,  // 10 分钟无人说话触发 idle
     idleCheckMs: 60000,  // 每分钟检查一次 idle
@@ -221,6 +222,33 @@
     catch (e) { console.error("[MisakaChat] 保存记忆失败:", e.message); }
   }
 
+  function profileRetentionScore(profile, now = Date.now()) {
+    const lastChat = Date.parse(profile?.lastChat || "") || 0;
+    const ageDays = lastChat ? Math.max(0, (now - lastChat) / 86400000) : 365;
+    const recency = Math.max(0, 60 - ageDays);
+    const frequency = Math.log2(1 + Math.max(0, Number(profile?.chatCount) || 0)) * 12;
+    const hasNotes = profile?.notes && profile.notes !== "常客" ? 20 : 0;
+    return recency + frequency + hasNotes;
+  }
+
+  function selectPromptProfiles(profiles, limit = CONFIG.maxPromptProfileEntries) {
+    const entries = Object.entries(profiles || {});
+    if (entries.length <= limit) return Object.fromEntries(entries);
+    const roomMembers = new Set(
+      (typeof ChatRoomCharacter !== "undefined" && Array.isArray(ChatRoomCharacter)
+        ? ChatRoomCharacter : [])
+        .map(c => String(c?.MemberNumber || ""))
+        .filter(Boolean)
+    );
+    entries.sort((a, b) => {
+      const aRoom = roomMembers.has(String(a[0])) ? 1 : 0;
+      const bRoom = roomMembers.has(String(b[0])) ? 1 : 0;
+      if (aRoom !== bRoom) return bRoom - aRoom;
+      return profileRetentionScore(b[1]) - profileRetentionScore(a[1]);
+    });
+    return Object.fromEntries(entries.slice(0, limit));
+  }
+
   function updateProfile(memberNumber, name, content) {
     const mem = loadMemory();
     if (!mem.profiles) mem.profiles = {};
@@ -235,8 +263,8 @@
     mem.profiles[memberNumber] = existing;
     const keys = Object.keys(mem.profiles);
     if (keys.length > CONFIG.maxProfileEntries) {
-      keys.sort((a, b) => new Date(mem.profiles[a].lastChat || 0) - new Date(mem.profiles[b].lastChat || 0));
-      delete mem.profiles[keys[0]];
+      keys.sort((a, b) => profileRetentionScore(mem.profiles[a]) - profileRetentionScore(mem.profiles[b]));
+      for (const key of keys.slice(0, keys.length - CONFIG.maxProfileEntries)) delete mem.profiles[key];
     }
     saveMemory(mem);
   }
@@ -427,6 +455,58 @@
     return scored.slice(0, topK).filter(s => s.score > 0.3);
   }
 
+  function refinedContent(text) {
+    return String(text || "")
+      .replace(/^(?:\s*[-*•]\s*)+/, "")
+      .replace(/^(?:\s*\[\d{1,2}[/-]\d{1,2}\]\s*)+/, "")
+      .replace(/^(?:\s*[-*•]\s*)+/, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function formatRefinedMemory(raw, ts = Date.now(), maxLength = 100) {
+    const date = new Date(ts).toLocaleDateString("zh-CN", {month:"2-digit", day:"2-digit"});
+    const prefix = `[${date}] `;
+    let content = refinedContent(raw);
+    if (!content || /^(无|没有|none|n\/a)$/i.test(content)) return "";
+    const maxContent = Math.max(1, maxLength - prefix.length);
+    if (content.length > maxContent) {
+      const window = content.slice(0, maxContent + 1);
+      const boundary = Math.max(
+        window.lastIndexOf("。"), window.lastIndexOf("！"), window.lastIndexOf("？"),
+        window.lastIndexOf("；"), window.lastIndexOf("."), window.lastIndexOf("!"),
+        window.lastIndexOf("?"), window.lastIndexOf(";")
+      );
+      // 宁可丢弃一条过长且无法完整收尾的提炼，也不把残句当成长期事实。
+      if (boundary < Math.floor(maxContent * 0.45)) return "";
+      content = window.slice(0, boundary + 1).trim();
+    }
+    return prefix + content;
+  }
+
+  function isRefinementSourceMemory(memory) {
+    const text = String(memory?.text || "");
+    if (!text) return false;
+    if (["Activity", "Action"].includes(memory?.messageType)) return false;
+    return !/(?:VibeModeAction|Chat(?:Other|Self)-Item[A-Za-z]+-|OrgasmFailSurrender\d*|TriggerShock[12]|ActionActivateSafewordRelease)/i.test(text);
+  }
+
+  async function findRefinedDuplicate(candidateText, candidateEmbedding) {
+    const normalized = refinedContent(candidateText).toLowerCase();
+    if (!normalized) return null;
+    let best = null;
+    for (const memory of state.refinedMemories || []) {
+      const existing = refinedContent(memory?.text).toLowerCase();
+      if (!existing) continue;
+      let score = existing === normalized || existing.includes(normalized) || normalized.includes(existing) ? 1 : 0;
+      if (candidateEmbedding && Array.isArray(memory?.embedding)) {
+        score = Math.max(score, cosineSim(candidateEmbedding, memory.embedding));
+      }
+      if (!best || score > best.score) best = { memory, score };
+    }
+    return best && best.score >= 0.85 ? best : null;
+  }
+
   async function searchLongTermMemories(query, topK = CONFIG.topKMemories) {
     const qEmb = await getEmbedding(query);
     if (!qEmb) return [];
@@ -494,13 +574,18 @@
     if (state.messageCount === 0) return;
     try {
       const mem = loadMemory();
-      const profiles = Object.entries(mem.profiles || {}).map(([mn, info]) =>
+      const profiles = Object.entries(selectPromptProfiles(mem.profiles || {})).map(([mn, info]) =>
         `#${mn} ${info.name}: ${info.notes || ""} (${info.chatCount || 0}次互动)`).join("\n");
-      const recentSemantic = (state.semanticMemories || []).slice(-20).map(m => m.text).join("\n");
+      const recentSemantic = (state.semanticMemories || [])
+        .slice(-80)
+        .filter(isRefinementSourceMemory)
+        .slice(-20)
+        .map(m => m.text)
+        .join("\n");
 
       const existingRefined = (state.refinedMemories || []).map(m => m.text).join("\n");
 
-      const prompt = `从以下 BC 聊天记录中,提炼出【新的】长期有价值信息(人际关系变化、明确偏好、重要事件、约束关系),不超过100字,用中文。
+      const prompt = `从以下 BC 聊天记录中,只提炼【一条新的】长期有价值信息(人际关系变化、明确偏好、重要事件、约束关系),不超过100字,用中文。
 
 已有的概括记忆(不要重复这些内容,只提炼增量):
 ${existingRefined || "(空)"}
@@ -512,6 +597,8 @@ ${existingRefined || "(空)"}
 - 御坂自我描述的外貌不一定准确,不要把御坂的自我介绍当作外貌事实。
 - 不要推断原因和细节,只提炼明确说出的内容。
 - 区分说话者:用户说的提炼为事实,御坂说的只提炼御坂自身偏好。
+- 游戏动作、道具操作、临时玩笑、技术讨论、开发计划和测试对白都不是长期记忆。
+- 输出必须是一个语义完整的句子，不要加日期、项目符号或标题。
 
 人物档案:
 ${profiles}
@@ -524,24 +611,27 @@ ${recentSemantic}`;
       });
       if (refined && refined.trim() && !/^(无|没有|none|n\/a)\s*$/i.test(refined.trim())) {
         const ts = Date.now();
-        const time = new Date(ts).toLocaleDateString("zh-CN", {month:"2-digit",day:"2-digit"});
-        const refinedText = `[${time}] ${refined.slice(0, 100)}`;
-        // 提炼去重:和已有提炼做相似度检查
-        const refDup = await searchMemories(refinedText, 1);
-        if (refDup.length > 0 && refDup[0].score > 0.85) {
+        const refinedText = formatRefinedMemory(refined, ts, 100);
+        if (!refinedText) {
+          console.log("[MisakaChat] 提炼记忆格式不完整，跳过:", refined.slice(0, 60));
+          return;
+        }
+        // 候选只与 refined_mem 比较，避免误接到原始 semantic_mem。
+        let refinedEmb = null;
+        try { refinedEmb = await getEmbedding(refinedContent(refinedText)); } catch(e) {}
+        const refDup = await findRefinedDuplicate(refinedText, refinedEmb);
+        if (refDup) {
           console.log("[MisakaChat] 提炼记忆去重跳过:", refined.slice(0, 40));
           return;
         }
-        // 给 refined memory 算 embedding,让语义搜索能命中
-        let refinedEmb = null;
-        try { refinedEmb = await getEmbedding(refinedText); } catch(e) {}
         const entry = { text: refinedText, embedding: refinedEmb, time: ts };
         state.refinedMemories.push(entry);
         if (state.refinedMemories.length > CONFIG.maxRefinedMemories) {
           state.refinedMemories.shift();
         }
         // refined 最多 20 条,先 clear 再全量写,避免 autoIncrement 重复堆积
-        IDB.clearRefined().then(() => Promise.all(state.refinedMemories.map(m => IDB.putRefinedOne(m))));
+        await IDB.clearRefined();
+        await Promise.all(state.refinedMemories.map(m => IDB.putRefinedOne(m)));
         console.log("[MisakaChat] 长期记忆提炼完成:", refined.slice(0, 50));
       }
     } catch(e) {
@@ -1113,6 +1203,7 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
       }
     }
     mem.roster = roster;
+    mem.profiles = selectPromptProfiles(mem.profiles || {});
     if (includeCatalog !== false) mem.itemCatalog = getItemCatalog();
 
 
@@ -2734,8 +2825,8 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
       state.recentMessages.push({ senderName: "御搬", content: readableContent, isSelf: true, time: now });
       if (state.recentMessages.length > CONFIG.maxContext) state.recentMessages.shift();
       // 御坂自己的消息也存语义记忆
-      if (readableContent.length >= 15) {
-        storeSemanticMemory(`御搬: ${readableContent}`, { sender: "御搬", memberNum: Player.MemberNumber, isSelf: true }).catch(() => {});
+      if (readableContent.length >= 15 && !["Activity", "Action"].includes(data.Type)) {
+        storeSemanticMemory(`御搬: ${readableContent}`, { sender: "御搬", memberNum: Player.MemberNumber, isSelf: true, messageType: data.Type }).catch(() => {});
       }
       return;
     }
@@ -2749,22 +2840,25 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
     // 垃圾消息:不进上下文、不推动 messageCount
     if (noise) return;
 
-    updateProfile(senderNum, senderName, readableContent);
+    const durableConversation = !["Activity", "Action"].includes(data.Type);
+    if (durableConversation) updateProfile(senderNum, senderName, readableContent);
     state.recentMessages.push({ senderName: senderName, content: readableContent, senderMemberNumber: senderNum, isSelf: false, time: now });
     if (state.recentMessages.length > CONFIG.maxContext) state.recentMessages.shift();
     state.lastNonSelfMsgTime = now;
 
     // 所有非噪音消息都存语义记忆(不只是触发回复的)
-    if (readableContent.length >= 15) {
-      storeSemanticMemory(`${senderName}: ${readableContent}`, { sender: senderName, memberNum: senderNum }).catch(() => {});
+    if (readableContent.length >= 15 && durableConversation) {
+      storeSemanticMemory(`${senderName}: ${readableContent}`, { sender: senderName, memberNum: senderNum, messageType: data.Type }).catch(() => {});
     }
 
-    state.messageCount++;
-    try { localStorage.setItem("misaka_msg_count", String(state.messageCount)); } catch(e) {}
+    if (durableConversation) {
+      state.messageCount++;
+      try { localStorage.setItem("misaka_msg_count", String(state.messageCount)); } catch(e) {}
+    }
 
 
     // 触发长期记忆提炼
-    if (state.messageCount % CONFIG.memoryRefineInterval === 0) {
+    if (durableConversation && state.messageCount % CONFIG.memoryRefineInterval === 0) {
       maybeRefineMemory().catch(e => console.warn("[MisakaChat] refine error:", e.message));
     }
 
