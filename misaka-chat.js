@@ -1,4 +1,4 @@
-// MisakaChat v2.10.16 - BC 御坂自动回复系统
+// MisakaChat v2.10.17 - BC 御坂自动回复系统
 // 模块分区:
 //   [Config]      L15-55   配置 + 状态
 //   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.10.16";
+  const SCRIPT_VERSION = "2.10.17";
   const RELEASE_CHANNEL = "stable";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
@@ -65,6 +65,7 @@
     maxRefinedMemories: 20,  // 保留最近 N 条提炼记忆
     topKMemories: 3,  // 查询时返回最相似的 K 条记忆
     memoryRecallMinCosine: 0.48, // 原始语义相似度低于此值时宁可承认不记得
+    memoryRecallExcludeRecentMs: 2 * 60 * 1000, // 近期消息由对话上下文负责，避免当前问题抢占长期召回
     memoryContextWindowMs: 5 * 60 * 1000, // 强命中前后只补取同一小段对话
     memoryContextNeighbors: 1, // 最高命中前后各补一条相邻记忆
   };
@@ -529,6 +530,17 @@
     return best && best.score >= 0.85 ? best : null;
   }
 
+  function isSyntheticDialogueMemory(text) {
+    return /\s→\s御坂\s*:/.test(String(text || ""));
+  }
+
+  function isHistoricalPromptMemory(text, memory) {
+    const content = String(text || "").replace(/^[^:\n]{1,80}:\s*/, "");
+    if (memory?.addressedToBot === true) return isExplicitPastQuestion(content);
+    const addressesMisaka = /(?:misaka|御搬|御坂|搬运工)/i.test(content);
+    return addressesMisaka && isExplicitPastQuestion(content);
+  }
+
   async function searchLongTermMemories(query, topK = CONFIG.topKMemories) {
     const qEmb = await getEmbedding(query);
     if (!qEmb) return [];
@@ -549,17 +561,25 @@
         const text = typeof m === "string" ? m : m?.text;
         const emb = typeof m === "string" ? null : m?.embedding;
         if (!text) continue;
+        if (source === "semantic") {
+          // 旧版保存的“问题 → 御坂回复”是重复合成文本，不是聊天原文；
+          // 当前问题与刚发生的对话则应由 recentMessages 负责，不能抢占旧事召回 Top K。
+          if (isSyntheticDialogueMemory(text) || isHistoricalPromptMemory(text, m)) continue;
+          const memoryTime = Number(m?.time) || 0;
+          if (memoryTime > 0 && now - memoryTime < CONFIG.memoryRecallExcludeRecentMs) continue;
+        }
         if (emb) {
           const cosine = cosineSim(qEmb, emb);
           // 原始 cosine 决定“是否相关”；时间只参与候选排序。
           // 这样老但准确的记忆不会被时间衰减误判为无关，新但牵强的片段也进不来。
           if (cosine < CONFIG.memoryRecallMinCosine) continue;
           const recency = Math.max(0.3, 1 - ((now - (m.time || 0)) / 86400000) / 90);
+          const reliability = m.isSelf === true ? 0.9 : 1;
           results.push({
             text,
             time: Number(m.time) || 0,
             cosine,
-            score: cosine * recency,
+            score: cosine * recency * reliability,
             source,
             index,
             sender: String(m.sender || ""),
@@ -608,6 +628,9 @@
         if (offset === 0) continue;
         const adjacent = list[best.index + offset];
         if (!adjacent?.text || adjacent.text === best.text) continue;
+        if (isSyntheticDialogueMemory(adjacent.text) || isHistoricalPromptMemory(adjacent.text, adjacent)) continue;
+        const adjacentTime = Number(adjacent.time) || 0;
+        if (adjacentTime > 0 && Date.now() - adjacentTime < CONFIG.memoryRecallExcludeRecentMs) continue;
         const timeGap = Math.abs((Number(adjacent.time) || 0) - (Number(best.time) || 0));
         if (timeGap > CONFIG.memoryContextWindowMs) continue;
         context.push({
@@ -680,12 +703,36 @@
     return lines.join("\n");
   }
 
+  function minimizeBinaryMemoryReply(reply, question, status) {
+    if (status !== "supported" || !/(?:是不是|是否|有没有|有无|对不对|吗[？?]?\s*$)/.test(String(question || ""))) {
+      return reply;
+    }
+    const lines = String(reply || "").split("\n");
+    const index = lines.length - 1;
+    const firstClause = lines[index].split(/[，,；;]/, 1)[0].trim();
+    // 只有首分句本身已经形成完整回答时才收口，避免把“嗯，”之类语气词当答案。
+    if (firstClause.length >= 6 && /[\p{L}\p{N}]/u.test(firstClause)) {
+      lines[index] = /[。！？~～]$/.test(firstClause) ? firstClause : `${firstClause}。`;
+    }
+    return lines.join("\n");
+  }
+
   function buildPlannerMemoryQuery(plan, senderName, content) {
+    const original = String(content || "").trim();
+    const lower = original.toLowerCase();
+    const sender = String(senderName || "").trim().toLowerCase();
+    const botNames = new Set(["misaka", "御搬", "御坂", "搬运工"]);
     const entities = [...new Set((plan?.memoryEntities || [])
       .map(v => String(v || "").trim())
-      .filter(Boolean))].slice(0, 4);
-    if (entities.length === 0) entities.push(String(senderName || "说话者"));
-    return `${entities.join(" ")}｜${String(content || "").trim()}`.slice(0, 500);
+      .filter(Boolean))]
+      .filter(entity => {
+        const plain = entity.replace(/#\d+$/, "").trim();
+        const normalized = plain.toLowerCase();
+        if (!normalized || normalized === sender || botNames.has(normalized)) return false;
+        return !lower.includes(normalized);
+      })
+      .slice(0, 4);
+    return `${entities.length ? `${entities.join(" ")}｜` : ""}${original}`.slice(0, 500);
   }
 
   async function answerMemoryQuestion(plan, senderName, content) {
@@ -703,11 +750,14 @@
 5. 用户问题不是证据。候选没有证明问题中的事件发生过时，status=insufficient。
 6. 候选相互矛盾且没有明确的关系变化时，status=conflict，并自然说明前后说法不一致，建议询问本人。
 7. 足以回答时 status=supported；无法回答核心问题时 status=insufficient。不要提“候选、证据、数据库、记录、相似度”等技术词。
-8. answer 不超过50字，不输出 MEMSEARCH、操作指令或解释。若包含动作，第一行只能是 *动作*，第二行只能是台词。`;
+8. 只要任一候选直接回答了用户所问的人物或事件，就应使用该事实，不要因为其他候选无关而判为 insufficient。
+9. 没有原文明确支持时，不得补充“开玩笑”“凶巴巴”“改口”“后来原谅了”“看谁辛苦”等评价或后续；不得把陈述改写成提问、把推测改写成确认，或改变原话的说话方式。
+10. answer 只回答用户所问的最小核心事实；用户只问“是不是/谁”时，不要顺带复述其他候选。answer 不超过50字，不输出 MEMSEARCH、操作指令或解释。若包含动作，第一行只能是 *动作*，第二行只能是台词。`;
     const user = `【用户问题】\n${senderName}: ${content}\n\n${evidence.context}`;
     const raw = await callLLM(system, [{ role: "user", content: user }], {
       thinking: false,
-      maxTokens: 512,
+      temperature: 0,
+      maxTokens: 256,
     });
     const result = parseMemoryFinalAnswer(raw);
     if (!result) {
@@ -718,7 +768,11 @@
     if (parsed.commands.length > 0 || result.status === "insufficient") {
       return { reply: "唔……我记得不太清，不敢乱说。", query, status: "insufficient", hitCount: evidence.hits.length };
     }
-    const reply = normalizeMemoryFinalReply(parsed.cleaned);
+    const reply = minimizeBinaryMemoryReply(
+      normalizeMemoryFinalReply(parsed.cleaned),
+      content,
+      result.status,
+    );
     return {
       reply: reply || "唔……我记得不太清，不敢乱说。",
       query,
@@ -1032,6 +1086,7 @@ ${recentSemantic}`;
       const doRequest = (url, model, isFallback) => {
         // thinking 模式:思考进 reasoning_content,回复进 content
         const bodyObj = { model, messages, max_tokens: maxTokens };
+        if (Number.isFinite(options.temperature)) bodyObj.temperature = options.temperature;
         // DeepSeek 默认会启用 thinking。仅仅省略 thinking 参数并不等于关闭；
         // 小 token 预算的规划器会把额度全部耗在 reasoning_content，最终 content=null。
         bodyObj.thinking = { type: useThinking ? "enabled" : "disabled" };
@@ -1172,7 +1227,7 @@ ${recentSemantic}`;
     const text = String(content || "").trim();
     if (!text) return false;
     const asks = /[?？]|(?:吗|呢|什么|谁|怎么回事|为什么|记得|发生过|说过|做过)/.test(text);
-    const past = /(?:还记得|记不记得|之前|以前|上次|昨天|前天|前几天|上周|当时|后来|曾经|过去)/.test(text);
+    const past = /(?:还记得|记不记得|之前|以前|上次|昨天|前天|前几天|上周|当时|当初|后来|曾经|过去|来着)/.test(text);
     return asks && past;
   }
 
@@ -3054,6 +3109,13 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
     // 垃圾消息:不进上下文、不推动 messageCount
     if (noise) return;
 
+    // 先标记是否直接对御坂说话。此类消息仍保留为上下文，但不应在未来
+    // 作为“过去事实”的主证据参与向量召回。
+    const triggers = ["misaka","御搬","御坂","misaki的","搬运工"];
+    const lower = content.toLowerCase();
+    const readableLower = readableContent.toLowerCase();
+    const triggered = triggers.some(t => lower.includes(t.toLowerCase()) || readableLower.includes(t.toLowerCase()));
+
     const durableConversation = !["Activity", "Action"].includes(data.Type);
     if (durableConversation) updateProfile(senderNum, senderName, readableContent);
     state.recentMessages.push({ senderName: senderName, content: readableContent, senderMemberNumber: senderNum, isSelf: false, time: now });
@@ -3062,7 +3124,12 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
 
     // 所有非噪音消息都存语义记忆(不只是触发回复的)
     if (readableContent.length >= 15 && durableConversation) {
-      storeSemanticMemory(`${senderName}: ${readableContent}`, { sender: senderName, memberNum: senderNum, messageType: data.Type }).catch(() => {});
+      storeSemanticMemory(`${senderName}: ${readableContent}`, {
+        sender: senderName,
+        memberNum: senderNum,
+        messageType: data.Type,
+        addressedToBot: triggered,
+      }).catch(() => {});
     }
 
     if (durableConversation) {
@@ -3077,11 +3144,6 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
     }
 
 
-    // trigger 检测用原始 content 和可读 content 都匹配
-    const triggers = ["misaka","御搬","御坂","misaki的","搬运工"];
-    const lower = content.toLowerCase();
-    const readableLower = readableContent.toLowerCase();
-    const triggered = triggers.some(t => lower.includes(t.toLowerCase()) || readableLower.includes(t.toLowerCase()));
     if (!triggered) return;
     if (state.busy || window.__misakaGlobalBusy || window.__misakaReplyInProgress) return;
 
@@ -3287,10 +3349,6 @@ function unescapeHTML(s) {
         const memoryResult = await answerMemoryQuestion(requestPlan, senderName, content);
         const finalReply = memoryResult.reply;
         pushDebugTrace({ id: debugId, stage: "memory:answer", ...memoryResult });
-        if (finalReply.length > 3) {
-          const memText = `${senderName}: ${content} → 御坂: ${finalReply}`;
-          storeSemanticMemory(memText, { sender: senderName, memberNum: senderNum }).catch(() => {});
-        }
         sendReply(finalReply);
         pushDebugTrace({ id: debugId, stage: "sent", finalReply });
         return;
@@ -3512,12 +3570,6 @@ function unescapeHTML(s) {
         finalReply = defaultReplies[Math.floor(Math.random() * defaultReplies.length)];
       }
       if (!finalReply) return;
-
-      // 存语义记忆(有意义的对话才存)
-      if (finalReply.length > 3) {
-        const memText = `${senderName}: ${content} → 御坂: ${finalReply}`;
-        storeSemanticMemory(memText, { sender: senderName, memberNum: senderNum }).catch(() => {});
-      }
 
       sendReply(finalReply);
       pushDebugTrace({ id: debugId, stage: "sent", finalReply });
