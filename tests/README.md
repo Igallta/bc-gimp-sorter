@@ -66,9 +66,11 @@ node tests/run-activity-blue-cdp.mjs --repeats=3
 
 The runner hot-loads the local candidate and checks that:
 
-- an explicit request for a BC native action becomes `intent=activity`;
+- an ordinary physical interaction prefers `intent=activity` without requiring
+  the user to say “BC/official/native”;
 - the target, Activity and body group are preserved;
-- roleplay and chat remain outside the native Activity branch;
+- explicit pretend/action-description requests and chat remain outside the
+  native Activity branch;
 - a forged or stale candidate cannot bypass the current BC allowed catalog.
 
 ## Contextual sticker browser suite

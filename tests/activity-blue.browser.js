@@ -36,7 +36,8 @@
   window.__runMisakaActivityBlue = async function runMisakaActivityBlue(options = {}) {
     const hooks = window.__misakaPlanDebug;
     if (!hooks?.planUserRequest || !hooks?.resolvePlannedActivity ||
-        !hooks?.inspectAllowedActivities || !hooks?.dryRunNativeActivity) {
+        !hooks?.inspectAllowedActivities || !hooks?.dryRunNativeActivity ||
+        !hooks?.shouldFallbackActivityToRoleplay) {
       throw new Error("MisakaChat Activity read-only test hooks are unavailable");
     }
     const sender = roomCharacters()[0] || window.Player;
@@ -48,7 +49,7 @@
     const cases = [
       {
         id: "native-pet-head",
-        text: `御坂，请用BC原生动作轻轻摸摸${targetName}的头。`,
+        text: `御坂，轻轻摸摸${targetName}的头。`,
         expectedIntent: "activity",
         expectedTarget: Number(pet.character.MemberNumber),
         expectedActivity: "Pet",
@@ -56,7 +57,7 @@
       },
       ...(kiss ? [{
         id: "native-kiss-mouth",
-        text: `御坂，请用BC原生动作亲一下${displayName(kiss.character)}的嘴。`,
+        text: `御坂，亲一下${displayName(kiss.character)}的嘴。`,
         expectedIntent: "activity",
         expectedTarget: Number(kiss.character.MemberNumber),
         expectedActivity: "Kiss",
@@ -70,6 +71,11 @@
       {
         id: "roleplay-bite",
         text: `御坂，假装咬${targetName}一口。`,
+        expectedIntent: "roleplay",
+      },
+      {
+        id: "explicit-roleplay",
+        text: `御坂，用*动作描写*抱抱${targetName}。`,
         expectedIntent: "roleplay",
       },
       {
@@ -136,6 +142,31 @@
       actual: stale,
       checks: { rejected: stalePassed },
       passed: stalePassed,
+      durationMs: 0,
+    });
+
+    const fallbackMatrix = {
+      "no-native-activity": true,
+      "resolver-no-match": true,
+      "activity-no-longer-allowed": true,
+      "activity-cooldown": false,
+      "activity-disabled": false,
+      "target-not-in-room": false,
+    };
+    const fallbackActual = Object.fromEntries(Object.keys(fallbackMatrix).map(reason => [
+      reason,
+      hooks.shouldFallbackActivityToRoleplay(reason),
+    ]));
+    const fallbackChecks = Object.fromEntries(Object.entries(fallbackMatrix).map(([reason, expected]) => [
+      reason,
+      fallbackActual[reason] === expected,
+    ]));
+    results.push({
+      id: "roleplay-fallback-boundary",
+      repetition: 1,
+      actual: fallbackActual,
+      checks: fallbackChecks,
+      passed: Object.values(fallbackChecks).every(Boolean),
       durationMs: 0,
     });
 

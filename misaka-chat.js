@@ -1,4 +1,4 @@
-// MisakaChat v2.11.0 - BC 御坂自动回复系统
+// MisakaChat v2.11.1 - BC 御坂自动回复系统
 // 模块分区:
 //   [Config]      L15-55   配置 + 状态
 //   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.11.0";
+  const SCRIPT_VERSION = "2.11.1";
   const RELEASE_CHANNEL = "stable";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
@@ -1427,8 +1427,8 @@ ${recentSemantic}`;
     const stickerCatalog = compactStickerCatalog();
     const plannerPrompt = `你是 BC 请求规划器。只输出一行严格 JSON，不要 markdown，不要回复用户。
 根据最新消息判断是 chat、roleplay、activity、friendship、action 还是 clarify。自然语言含糊但有常见合理解释时不要急着 clarify。
-roleplay 表示只需用 *动作描写* 完成、不会改变 BC 人物站位或 Appearance 的互动，例如咬一口、舔、拥抱、躲藏、探头、假装吃掉某人、把手持食物递到嘴边，以及“该怎么办/强硬一点”这类要求御坂现场演出来的回应。即使句式是命令，只要在当前玩笑语境里明显是身体互动或表演，也选 roleplay；不得为了 roleplay 规划真实道具指令。
-activity 表示用户明确要求御坂实际调用 BC 原生 Activity 与房间内某人互动，例如“用BC动作摸摸她的头”“用原生动作亲一下Rin”。activity 必须指定房间内真实目标，activity.target 填目标编号，activity.request 用短句保留动作与身体部位。用户只是要求动作描写、假装、躲藏、表演，或没有明确要求调用 BC 原生动作时，仍选 roleplay。
+activity 是对房间内真实人物进行身体互动时的默认优先选择，例如摸头、拥抱、亲吻、舔、咬、拍打、挠痒等；不要求用户明确说“BC/官方/原生动作”。activity 必须指定房间内真实目标，activity.target 填目标编号，activity.request 用短句保留动作与身体部位。执行层会从 BC 当下允许的原生 Activity 目录中选择语义吻合项；没有合适原生动作时再安全降级为 *动作描写*。
+roleplay 只用于用户明确要求文字/星号动作描写、假装、表演、躲藏、探头、虚构当前无法作为房间人物定位的动作，或把手持食物递到嘴边、把某人的手腿当食物、“该怎么办/强硬一点”这类现场演出。不得因为用户没说“BC/官方/原生”就选 roleplay，也不得为了 roleplay 规划真实道具指令。
 friendship 只表示房间成员本人明确要求御坂把自己加为 BC 好友，例如“御坂加我好友”“可以把我加进好友吗”。friendship.target 必须等于当前说话者编号，friendship.explicit=true。第三人要求御坂添加别人、泛泛说“我们是朋友”、夸赞某人或普通友好聊天都不是 friendship；不得替目标本人作出好友请求。
 action 只用于确实要改变 BC 状态的移动、添加/删除/设置道具、快照、复制或游戏表情。只有执行真实 action 所必需的目标或操作仍无法确定时才选 clarify。
 必须利用“近期对话”理解“也要”“那个”“手一份腿两份”等指代和延续玩笑，但永远只处理最新消息，不补做历史请求。
@@ -2355,6 +2355,7 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
     })),
     resolvePlannedActivity,
     dryRunNativeActivity: selection => executeNativeActivity(selection, { dryRun: true }),
+    shouldFallbackActivityToRoleplay,
     inspectStickerCatalog: getStickerCatalog,
     inspectStickerCooldown: stickerCooldownStatus,
     dryRunSticker: stickerId => sendSticker(stickerId, { dryRun: true }),
@@ -3600,7 +3601,7 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
 1. 只选择目录中的编号，不得发明 Activity、部位或道具。
 2. 保留动作对象和身体部位；“摸头”不能改成摸胸，“亲脸/亲嘴”不能改成亲腿。
 3. 用户未指定身体部位时，选择最日常、最少冒犯的可用部位；不得自行升级为私密部位。
-4. 用户只是要求假装、躲藏、表演或描述动作时不应进入本选择器；若已经进入，只选择与请求直接相符的原生动作。
+4. 用户明确要求假装、躲藏、表演或文字动作描写时不应进入本选择器；若已经进入，只选择与请求直接相符的原生动作。
 5. 若没有语义相符项，输出 {"index":-1,"reason":"no-match"}。`;
     const user = `说话者：${senderName}\n原始请求：${content}\n规划目标：${request}\n目标：${target.Nickname || target.Name}#${targetNumber}\n允许目录：\n${compactActivityCatalog(catalog)}`;
     const raw = await callLLM(system, [{ role: "user", content: user }], {
@@ -3643,6 +3644,11 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
       (now - (state.lastActivityByTarget[targetNumber] || 0));
     const remainingMs = Math.max(globalRemaining, targetRemaining, 0);
     return { ready: remainingMs <= 0, remainingMs };
+  }
+
+  function shouldFallbackActivityToRoleplay(reason) {
+    return ["no-native-activity", "resolver-no-match", "activity-no-longer-allowed"]
+      .includes(String(reason || ""));
   }
 
   function executeNativeActivity(selection, options = {}) {
@@ -4185,34 +4191,56 @@ function unescapeHTML(s) {
         return;
       }
 
-      // BC 原生 Activity 由独立分支完成。规划器只保留目标和自然语言意图，
-      // 选择器只能从 BC 当下允许目录中选择；执行前还会重新枚举一次目录，
-      // 避免姿势、距离、道具或权限在规划期间变化后绕过原生校验。
+      // 房间内身体互动默认优先尝试 BC 原生 Activity。规划器只保留目标和
+      // 自然语言意图，选择器只能从 BC 当下允许目录中选择；执行前还会重新
+      // 枚举一次目录，避免姿势、距离、道具或权限变化后绕过原生校验。
+      // 目录为空、没有语义吻合项，或候选在执行前已失效时，才降级成
+      // *动作描写*；冷却、功能关闭和 API 故障不伪装成“已经做了”。
       if (requestPlan.intent === "activity") {
         const selection = await resolvePlannedActivity(requestPlan, senderName, content);
         pushDebugTrace({ id: debugId, stage: "activity:selection", selection });
         if (!selection.ok) {
-          const finalReply = selection.reason === "target-not-in-room"
-            ? "没找到这个人，做不了。"
-            : "现在没有合适的 BC 动作，我先不乱来。";
-          sendReply(finalReply);
-          pushDebugTrace({ id: debugId, stage: "sent", finalReply });
-          return;
-        }
-        const activityResult = executeNativeActivity(selection);
-        pushDebugTrace({ id: debugId, stage: "activity:result", activityResult });
-        if (!activityResult.ok) {
-          let finalReply = "这个动作现在做不了，我先不乱来。";
-          if (activityResult.reason === "activity-disabled") finalReply = "原生互动现在关着呢。";
-          else if (activityResult.reason === "activity-cooldown") {
-            finalReply = "慢一点啦，刚刚才互动过呢。";
-          } else if (activityResult.reason === "target-not-in-room") {
-            finalReply = "没找到这个人，做不了。";
+          if (shouldFallbackActivityToRoleplay(selection.reason)) {
+            requestPlan.intent = "roleplay";
+            requestPlan.stickerId = "";
+            pushDebugTrace({
+              id: debugId,
+              stage: "activity:fallback-roleplay",
+              reason: selection.reason,
+            });
+          } else {
+            const finalReply = selection.reason === "target-not-in-room"
+              ? "没找到这个人，做不了。"
+              : "这个原生动作现在做不了。";
+            sendReply(finalReply);
+            pushDebugTrace({ id: debugId, stage: "sent", finalReply });
+            return;
           }
-          sendReply(finalReply);
-          pushDebugTrace({ id: debugId, stage: "sent", finalReply });
+        } else {
+          const activityResult = executeNativeActivity(selection);
+          pushDebugTrace({ id: debugId, stage: "activity:result", activityResult });
+          if (activityResult.ok) return;
+          if (shouldFallbackActivityToRoleplay(activityResult.reason)) {
+            requestPlan.intent = "roleplay";
+            requestPlan.stickerId = "";
+            pushDebugTrace({
+              id: debugId,
+              stage: "activity:fallback-roleplay",
+              reason: activityResult.reason,
+            });
+          } else {
+            let finalReply = "这个动作现在做不了，我先不乱来。";
+            if (activityResult.reason === "activity-disabled") finalReply = "原生互动现在关着呢。";
+            else if (activityResult.reason === "activity-cooldown") {
+              finalReply = "慢一点啦，刚刚才互动过呢。";
+            } else if (activityResult.reason === "target-not-in-room") {
+              finalReply = "没找到这个人，做不了。";
+            }
+            sendReply(finalReply);
+            pushDebugTrace({ id: debugId, stage: "sent", finalReply });
+            return;
+          }
         }
-        return;
       }
 
       const needCatalog = requestPlan.intent === "action" && !!requestPlan.needsCatalog;
