@@ -68,7 +68,28 @@
     memoryRecallExcludeRecentMs: 2 * 60 * 1000, // 近期消息由对话上下文负责，避免当前问题抢占长期召回
     memoryContextWindowMs: 5 * 60 * 1000, // 强命中前后只补取同一小段对话
     memoryContextNeighbors: 1, // 最高命中前后各补一条相邻记忆
+    activityEnabled: true,
+    activityCooldownMs: 15000,
+    activityPerTargetCooldownMs: 60000,
+    // 正式表情包目录尚未由用户提供；保留机制但默认关闭，避免空目录
+    // 被误认为已经上线。
+    stickerEnabled: false,
+    stickerCooldownMs: 2 * 60 * 1000,
+    stickerRepeatCooldownMs: 30 * 60 * 1000,
+    stickerDailyLimit: 12,
+    // 自主修改真人关系属于高影响能力，首次发布默认关闭；通过
+    // /misaka friend on 明确启用后才会评估或执行。
+    autoFriendEnabled: false,
+    autoFriendMinInteractions: 20,
+    autoFriendMinDirectMessages: 5,
+    autoFriendDailyLimit: 2,
+    autoFriendCooldownMs: 6 * 60 * 60 * 1000,
+    autoFriendReviewCooldownMs: 7 * 24 * 60 * 60 * 1000,
   };
+
+  // 只允许模型选择固定 ID，绝不让模型生成网址。附加表情可以通过
+  // misaka_sticker_catalog 注入，但仍须通过相同的 HTTPS 图片 URL 校验。
+  const BUILTIN_STICKER_CATALOG = Object.freeze([]);
 
   let state = {
     recentMessages: [],
@@ -77,6 +98,14 @@
     messageCount: 0,
     busy: false,
     lastMoveTime: 0,  // 移动操作冷却
+    lastActivityTime: 0,
+    lastActivityByTarget: {},
+    lastStickerTime: 0,
+    lastStickerById: {},
+    stickerDaily: { date: "", count: 0 },
+    lastAutoFriendTime: 0,
+    autoFriendDaily: { date: "", count: 0 },
+    autoFriendInFlight: {},
     lastNonSelfMsgTime: 0,  // 上次非自己消息时间(idle 检测用)
     roomLog: [],          // 进出记录
     snapshots: {},        // 束缚快照 { memberNumber: { items, time } }
@@ -95,14 +124,33 @@
   }
 
   window.__misakaDebugTrace = window.__misakaDebugTrace || [];
+  function persistCapabilityTrace(entry) {
+    if (!/^(activity|sticker|friend):/.test(String(entry?.stage || ""))) return;
+    try {
+      const clean = JSON.parse(JSON.stringify(entry, (key, value) => {
+        if (["itemActivity", "embedding", "messages"].includes(key)) return undefined;
+        if (typeof value === "string" && value.length > 500) return value.slice(0, 500);
+        return value;
+      }));
+      const key = storageKey("capability_trace");
+      const existing = JSON.parse(localStorage.getItem(key) || "[]");
+      const records = Array.isArray(existing) ? existing : [];
+      records.push(clean);
+      while (records.length > 100) records.shift();
+      localStorage.setItem(key, JSON.stringify(records));
+    } catch (e) {}
+  }
+
   function pushDebugTrace(entry) {
     try {
       const trace = window.__misakaDebugTrace;
-      trace.push({
+      const record = {
         time: new Date().toISOString(),
         ...entry
-      });
+      };
+      trace.push(record);
       while (trace.length > 30) trace.shift();
+      persistCapabilityTrace(record);
     } catch(e) {}
   }
 
@@ -728,7 +776,10 @@
       .filter(entity => {
         const plain = entity.replace(/#\d+$/, "").trim();
         const normalized = plain.toLowerCase();
-        if (!normalized || normalized === sender || botNames.has(normalized)) return false;
+        // 规划器偶尔会把 MemberNumber 当作人物名返回。纯数字前缀会污染
+        // embedding 查询，却不提供任何语义信息，应直接丢弃。
+        if (!normalized || /^\d+$/.test(normalized) ||
+            normalized === sender || botNames.has(normalized)) return false;
         return !lower.includes(normalized);
       })
       .slice(0, 4);
@@ -1228,7 +1279,26 @@ ${recentSemantic}`;
     if (!text) return false;
     const asks = /[?？]|(?:吗|呢|什么|谁|怎么回事|为什么|记得|发生过|说过|做过)/.test(text);
     const past = /(?:还记得|记不记得|之前|以前|上次|昨天|前天|前几天|上周|当时|当初|后来|曾经|过去|来着)/.test(text);
-    return asks && past;
+    // “Rin为什么老说你笨”没有显式时间词，但仍是在追问跨多轮互动形成的
+    // 历史原因。只对已知人物或御坂本人启用这条窄护栏，避免把
+    // “猫为什么总是睡觉”一类常识问题误送进记忆检索。
+    const habitual = /(?:为什么.*(?:老是|总是|一直|经常)|(?:老是|总是|一直|经常).*(?:说|叫|做|对|给))/.test(text);
+    let mentionsKnownPerson = /(?:misaka|御搬|御坂|搬运工)/i.test(text);
+    if (!mentionsKnownPerson) {
+      const names = new Set();
+      for (const character of ChatRoomCharacter || []) {
+        for (const value of [character?.Name, character?.Nickname]) {
+          const name = String(value || "").trim();
+          if (name.length >= 2) names.add(name);
+        }
+      }
+      for (const profile of Object.values(loadMemory()?.profiles || {})) {
+        const name = String(profile?.name || "").trim();
+        if (name.length >= 2) names.add(name);
+      }
+      mentionsKnownPerson = [...names].some(name => text.includes(name));
+    }
+    return asks && (past || (habitual && mentionsKnownPerson));
   }
 
   function getPendingClarification(senderNum) {
@@ -1328,9 +1398,12 @@ ${recentSemantic}`;
     const recentContext = buildPlannerRecentContext(10);
     const refinedFacts = (state.refinedMemories || []).slice(-CONFIG.maxRefinedMemories)
       .map(m => String(m?.text || m || "").trim()).filter(Boolean).join("\n").slice(-4000);
+    const stickerCatalog = compactStickerCatalog();
     const plannerPrompt = `你是 BC 请求规划器。只输出一行严格 JSON，不要 markdown，不要回复用户。
-根据最新消息判断是 chat、roleplay、action 还是 clarify。自然语言含糊但有常见合理解释时不要急着 clarify。
+根据最新消息判断是 chat、roleplay、activity、friendship、action 还是 clarify。自然语言含糊但有常见合理解释时不要急着 clarify。
 roleplay 表示只需用 *动作描写* 完成、不会改变 BC 人物站位或 Appearance 的互动，例如咬一口、舔、拥抱、躲藏、探头、假装吃掉某人、把手持食物递到嘴边，以及“该怎么办/强硬一点”这类要求御坂现场演出来的回应。即使句式是命令，只要在当前玩笑语境里明显是身体互动或表演，也选 roleplay；不得为了 roleplay 规划真实道具指令。
+activity 表示用户明确要求御坂实际调用 BC 原生 Activity 与房间内某人互动，例如“用BC动作摸摸她的头”“用原生动作亲一下Rin”。activity 必须指定房间内真实目标，activity.target 填目标编号，activity.request 用短句保留动作与身体部位。用户只是要求动作描写、假装、躲藏、表演，或没有明确要求调用 BC 原生动作时，仍选 roleplay。
+friendship 只表示房间成员本人明确要求御坂把自己加为 BC 好友，例如“御坂加我好友”“可以把我加进好友吗”。friendship.target 必须等于当前说话者编号，friendship.explicit=true。第三人要求御坂添加别人、泛泛说“我们是朋友”、夸赞某人或普通友好聊天都不是 friendship；不得替目标本人作出好友请求。
 action 只用于确实要改变 BC 状态的移动、添加/删除/设置道具、快照、复制或游戏表情。只有执行真实 action 所必需的目标或操作仍无法确定时才选 clarify。
 必须利用“近期对话”理解“也要”“那个”“手一份腿两份”等指代和延续玩笑，但永远只处理最新消息，不补做历史请求。
 手持食物需要区分三种语义：把食物递到嘴边、喂一口、吃掉或把某人的手腿当食物，通常是 roleplay；“给B一个/一份X”“给B点吃的”表示让B实际拿到 ItemHandheld，规划 action，若上文已有明确食物则沿用，未明确时优先选择目录里常见且无害的食物而不是反复追问；“把A手里的X给B”默认给B添加同类手持物但不删除A手里的，只有明确说“拿走、转移、从A手里移交”时才规划先从A移除再给B添加。鸡腿、香肠、爆米花等可能是同一道具的不同样式，必须结合 ItemHandheld 目录中的样式选项保留在 goal 中，不要把样式名误当成不存在的 Asset。
@@ -1353,14 +1426,20 @@ constraints 只记录用户明确表达的限制：noMove=禁止移动，noAdd=�
 - 当前时间、当前房间、当前穿着/道具、普通闲聊、观点提问、角色扮演、真实操作，以及概括记忆已经明确回答的问题应为 false。
 - 不要因为问题听起来虚构就跳过查询；只要它在询问过去是否发生过，也应查询后再判断没有记忆。
 - memoryEntities 只列问题涉及的人名；“我/我以前”加入说话者 ${senderName}，“你/御坂”加入御坂。保留原问题里的主客体，不改写事件。
-- memorySearch 与 action/roleplay/clarify 不并用；这些意图下必须为 false。
-格式:{"intent":"action|chat|roleplay|clarify","memorySearch":false,"memoryEntities":[],"usedPendingClarification":false,"needsCatalog":true,"goal":"最终目标","constraints":{"noMove":false,"noAdd":false,"replaceExisting":false,"noStack":false,"preserveParts":[]},"operations":[{"types":["itemadd"],"targets":[123],"parts":[],"assets":["LowCage"]}],"question":""}
+- memorySearch 与 activity/friendship/action/roleplay/clarify 不并用；这些意图下必须为 false。
+表情包规则：
+- stickerId 只能从“御坂表情包目录”的 ID 中选择，或者为空字符串。绝不能输出网址或发明 ID。
+- 只在 chat 或 roleplay 中出现清晰、强烈且与目录高度匹配的情绪时选择；普通对话、记忆回答、activity、action、clarify 一律为空。
+- 表情包是偶尔的情绪补充，不是每轮必发。只能根据目录中的 label 和 tags 判断匹配。
+- “突然！送你一份意想不到的礼物”“吓你一跳”是可直接回应的 chat/roleplay，不需要执行真实操作，也不得选 clarify。
+格式:{"intent":"activity|friendship|action|chat|roleplay|clarify","memorySearch":false,"memoryEntities":[],"stickerId":"","usedPendingClarification":false,"needsCatalog":false,"goal":"最终目标","activity":{"target":123,"request":"摸摸她的头"},"friendship":{"target":123,"explicit":true},"constraints":{"noMove":false,"noAdd":false,"replaceExisting":false,"noStack":false,"preserveParts":[]},"operations":[],"question":""}
 房间名单:${roster}
 说话者当前实时道具:${senderItems}
 ItemDevices 紧凑目录:${deviceCatalog || "不可用"}
 ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
 近期对话:${recentContext || "无"}
 概括记忆:${refinedFacts || "无"}
+御坂表情包目录:${stickerCatalog || "无"}
 待澄清上下文:${pendingClarification?.context || "无"}
 当前实时道具高于历史对话。调整/收紧/替换现有道具时，以这里是否存在为准；存在则应规划 action，不存在才 clarify。`;
     const result = await callLLM(plannerPrompt, [{ role: "user", content: `最新消息:${senderName}#${senderNum}: ${content}` }], {
@@ -1372,11 +1451,15 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
     try {
       const match = String(result || "").match(/\{[\s\S]*\}/);
       const plan = JSON.parse(match ? match[0] : "");
-      if (!["action", "chat", "roleplay", "clarify"].includes(plan.intent)) throw new Error("invalid intent");
+      if (!["action", "activity", "friendship", "chat", "roleplay", "clarify"].includes(plan.intent)) throw new Error("invalid intent");
       plan.memoryEntities = (Array.isArray(plan.memoryEntities) ? plan.memoryEntities : [])
         .map(v => String(v || "").trim().slice(0, 80))
         .filter(Boolean)
         .slice(0, 4);
+      const validStickerIds = new Set(getStickerCatalog().map(sticker => sticker.id));
+      plan.stickerId = validStickerIds.has(String(plan.stickerId || ""))
+        ? String(plan.stickerId)
+        : "";
       // 规划器是主判定；这条极窄的确定性护栏只防止显式过去式问句被随机漏判。
       // 即使答案已在概括记忆里，多做一次检索也比绕过证据后直接编造更安全。
       const explicitPastNeedsSearch = plan.intent === "chat" && isExplicitPastQuestion(content);
@@ -1386,6 +1469,47 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
       const validParts = new Set(["Arms","Hands","Legs","Feet","Mouth","Head","Neck","Torso","Pelvis","Breast","Eyes","Ears","Vulva","Devices"]);
       const roomNumbers = new Set((ChatRoomCharacter || []).map(c => Number(c.MemberNumber)));
       if (Player?.MemberNumber) roomNumbers.add(Number(Player.MemberNumber));
+      const activityTarget = Number(plan?.activity?.target);
+      plan.activity = {
+        target: roomNumbers.has(activityTarget) ? activityTarget : null,
+        request: String(plan?.activity?.request || plan.goal || "").trim().slice(0, 160),
+      };
+      const friendTarget = Number(plan?.friendship?.target);
+      plan.friendship = {
+        target: roomNumbers.has(friendTarget) ? friendTarget : null,
+        explicit: plan?.friendship?.explicit === true,
+      };
+      // 关系请求不能误入 Activity 或道具操作。模型偶尔会把
+      // “把某人加为好友”理解成对该人物执行动作；这里仅识别明确的
+      // “加好友”请求，并把第三方请求收口为边界说明。
+      const asksToAddFriend = /(?:加|添加).{0,8}(?:好友|朋友)|(?:好友|朋友).{0,8}(?:加|添加)/.test(content);
+      const explicitSelfFriendRequest = asksToAddFriend && (
+        /(?:把|将)?我(?:加|添加)(?:为|成)?(?:好友|朋友)/.test(content) ||
+        /(?:加|添加)(?:我|本人)(?:为|成)?(?:好友|朋友)/.test(content) ||
+        /(?:和|跟)我(?:加个|成为|做)?(?:好友|朋友)/.test(content) ||
+        /我们(?:加个|成为|做)?(?:好友|朋友)/.test(content)
+      );
+      if (explicitSelfFriendRequest) {
+        // 明确的本人请求不需要继续赌规划器的随机分类；这是一个可由文本与
+        // senderNum 完全确定的边界。
+        plan.intent = "friendship";
+        plan.memorySearch = false;
+        plan.stickerId = "";
+        plan.operations = [];
+        plan.friendship = { target: Number(senderNum), explicit: true };
+      } else if (asksToAddFriend) {
+        plan.intent = "clarify";
+        plan.memorySearch = false;
+        plan.stickerId = "";
+        plan.operations = [];
+        plan.question = "好友关系要由本人提出哦。";
+      }
+      if (plan.intent === "friendship" && !explicitSelfFriendRequest) {
+        // “想成为朋友/我们是朋友”属于社交表达，不等价于修改 BC 好友名单。
+        // 只有上面的显式“加/添加好友”文本可以进入原生关系写入。
+        plan.intent = "chat";
+        plan.friendship = { target: null, explicit: false };
+      }
       plan.operations = (Array.isArray(plan.operations) ? plan.operations : []).map(op => ({
         types: (Array.isArray(op?.types) ? op.types : []).filter(t => validTypes.has(t)),
         targets: (Array.isArray(op?.targets) ? op.targets : []).map(Number).filter(n => roomNumbers.has(n)),
@@ -1407,7 +1531,8 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
         noStack: rawConstraints.noStack === true,
         preserveParts: (Array.isArray(rawConstraints.preserveParts) ? rawConstraints.preserveParts : []).filter(p => validParts.has(p)),
       };
-      if (plan.intent === "chat" || plan.intent === "roleplay") {
+      if (plan.intent === "chat" || plan.intent === "roleplay" ||
+          plan.intent === "activity" || plan.intent === "friendship") {
         plan.needsCatalog = false;
         plan.operations = [];
       }
@@ -1415,6 +1540,7 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
         plan.memorySearch = false;
         plan.memoryEntities = [];
       }
+      if (!["chat", "roleplay"].includes(plan.intent) || plan.memorySearch) plan.stickerId = "";
       // 规划器偶尔会把“删掉当前旧设备”和“添加新设备”拆成两个都含
       // itemadd/itemset 的 operation。替换场景下，若同一目标同时出现当前已穿
       // Asset 与未穿 Asset，前者只能是待删除旧物，不能再次添加。
@@ -1440,6 +1566,15 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
       if (plan.intent === "action" && plan.operations.length === 0) {
         plan.intent = "clarify";
         plan.question = plan.question || "你想让我对谁做什么？";
+      }
+      if (plan.intent === "activity" && (!plan.activity.target || !plan.activity.request)) {
+        plan.intent = "clarify";
+        plan.question = plan.question || "你想让我用 BC 动作对谁做什么？";
+      }
+      if (plan.intent === "friendship" &&
+          (!plan.friendship.explicit || Number(plan.friendship.target) !== Number(senderNum))) {
+        plan.intent = "clarify";
+        plan.question = "好友关系要由本人提出哦。";
       }
       return plan;
     } catch (e) {
@@ -2177,6 +2312,36 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
     captureActionBaseline,
     verifyPlanConstraints,
     normalizeRoleplayReply,
+    inspectAllowedActivities: memberNumber => buildAllowedActivityCatalog(memberNumber).map(candidate => ({
+      key: activityCandidateKey(candidate),
+      activityName: candidate.activityName,
+      groupName: candidate.groupName,
+      itemAsset: candidate.itemAsset,
+      itemGroup: candidate.itemGroup,
+      label: candidate.label,
+    })),
+    resolvePlannedActivity,
+    dryRunNativeActivity: selection => executeNativeActivity(selection, { dryRun: true }),
+    inspectStickerCatalog: getStickerCatalog,
+    inspectStickerCooldown: stickerCooldownStatus,
+    dryRunSticker: stickerId => sendSticker(stickerId, { dryRun: true }),
+    inspectFriendEligibility: friendRelationshipStatus,
+    inspectFriendEvidence: buildAutoFriendEvidence,
+    inspectFriendAudit: loadFriendAudit,
+    classifyFriendEvidence,
+    dryRunNativeFriend: memberNumber => addNativeFriend(
+      memberNumber,
+      { mode: "test", reason: "dry-run", evidence: [] },
+      { dryRun: true, ignoreFeatureSwitch: true, ignoreRateLimit: true },
+    ),
+    inspectCapabilityTrace: () => {
+      try {
+        const parsed = JSON.parse(localStorage.getItem(storageKey("capability_trace")) || "[]");
+        return Array.isArray(parsed) ? parsed : [];
+      } catch (e) {
+        return [];
+      }
+    },
   });
 
   function findItemByPart(char, itemName, part) {
@@ -2874,6 +3039,407 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
     return true;
   }
 
+  function isAllowedStickerUrl(value) {
+    try {
+      const url = new URL(String(value || ""));
+      return url.protocol === "https:" &&
+        /\.(?:png|jpe?g|gif|webp)$/i.test(url.pathname);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function getStickerCatalog() {
+    const byId = new Map(BUILTIN_STICKER_CATALOG.map(sticker => [sticker.id, { ...sticker }]));
+    try {
+      const extra = JSON.parse(localStorage.getItem(storageKey("sticker_catalog")) || "[]");
+      for (const raw of Array.isArray(extra) ? extra : []) {
+        const id = String(raw?.id || "").trim();
+        const url = String(raw?.url || "").trim();
+        if (!/^[a-z0-9_-]{2,40}$/i.test(id) || !isAllowedStickerUrl(url) || byId.has(id)) continue;
+        byId.set(id, {
+          id,
+          url,
+          label: String(raw?.label || id).trim().slice(0, 60),
+          tags: (Array.isArray(raw?.tags) ? raw.tags : [])
+            .map(tag => String(tag || "").trim().slice(0, 30))
+            .filter(Boolean)
+            .slice(0, 12),
+        });
+      }
+    } catch (e) {
+      pushDebugTrace({ stage: "sticker:catalog-invalid", reason: e.message });
+    }
+    return [...byId.values()];
+  }
+
+  function compactStickerCatalog() {
+    return getStickerCatalog()
+      .map(sticker => `${sticker.id}=${sticker.label}(${sticker.tags.join("、")})`)
+      .join("; ");
+  }
+
+  function stickerDailyKey(now = new Date()) {
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  }
+
+  function stickerCooldownStatus(stickerId) {
+    const now = Date.now();
+    const today = stickerDailyKey(new Date(now));
+    const dailyCount = state.stickerDaily.date === today ? state.stickerDaily.count : 0;
+    const globalRemaining = CONFIG.stickerCooldownMs - (now - state.lastStickerTime);
+    const repeatRemaining = CONFIG.stickerRepeatCooldownMs -
+      (now - (state.lastStickerById[stickerId] || 0));
+    return {
+      ready: globalRemaining <= 0 && repeatRemaining <= 0 && dailyCount < CONFIG.stickerDailyLimit,
+      globalRemaining: Math.max(0, globalRemaining),
+      repeatRemaining: Math.max(0, repeatRemaining),
+      dailyRemaining: Math.max(0, CONFIG.stickerDailyLimit - dailyCount),
+    };
+  }
+
+  function resolveSticker(stickerId) {
+    const id = String(stickerId || "").trim();
+    if (!id) return { ok: false, reason: "sticker-not-requested" };
+    const sticker = getStickerCatalog().find(item => item.id === id);
+    if (!sticker) return { ok: false, reason: "sticker-unknown", stickerId: id };
+    if (!CONFIG.stickerEnabled) return { ok: false, reason: "sticker-disabled", stickerId: id };
+    const cooldown = stickerCooldownStatus(id);
+    if (!cooldown.ready) return { ok: false, reason: "sticker-cooldown", stickerId: id, cooldown };
+    return { ok: true, sticker };
+  }
+
+  function sendSticker(stickerId, options = {}) {
+    const resolved = resolveSticker(stickerId);
+    if (!resolved.ok) return resolved;
+    if (options.dryRun === true) return { ok: true, dryRun: true, sticker: resolved.sticker };
+    try {
+      if (typeof CurrentScreen === "undefined" || CurrentScreen !== "ChatRoom") {
+        return { ok: false, reason: "not-in-chatroom" };
+      }
+      const now = Date.now();
+      const today = stickerDailyKey(new Date(now));
+      if (state.stickerDaily.date !== today) state.stickerDaily = { date: today, count: 0 };
+      ElementValue("InputChat", `( ${resolved.sticker.url} )`);
+      ChatRoomSendChat();
+      state.lastStickerTime = now;
+      state.lastStickerById[resolved.sticker.id] = now;
+      state.stickerDaily.count += 1;
+      const result = {
+        ok: true,
+        stickerId: resolved.sticker.id,
+        url: resolved.sticker.url,
+        dailyCount: state.stickerDaily.count,
+      };
+      pushDebugTrace({ stage: "sticker:sent", ...result });
+      return result;
+    } catch (e) {
+      pushDebugTrace({ stage: "sticker:send-failed", stickerId, reason: e.message });
+      return { ok: false, reason: e.message || "sticker-send-failed" };
+    }
+  }
+
+  function scheduleStickerAfterReply(reply, stickerId, debugId) {
+    const resolved = resolveSticker(stickerId);
+    pushDebugTrace({ id: debugId, stage: "sticker:planned", stickerId, resolved });
+    if (!resolved.ok) return false;
+    const messageCount = String(reply || "").split(/\n|\|/).map(v => v.trim()).filter(Boolean).length;
+    const delay = Math.max(900, messageCount * 650 + 250);
+    setTimeout(() => {
+      if (!isCurrent()) return;
+      const result = sendSticker(stickerId);
+      pushDebugTrace({ id: debugId, stage: "sticker:result", result });
+    }, delay);
+    return true;
+  }
+
+  function loadFriendAudit() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(storageKey("friend_audit")) || "{}");
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function saveFriendAudit(audit) {
+    try {
+      localStorage.setItem(storageKey("friend_audit"), JSON.stringify(audit || {}));
+    } catch (e) {
+      pushDebugTrace({ stage: "friend:audit-save-failed", reason: e.message });
+    }
+  }
+
+  function friendRelationshipStatus(memberNumber) {
+    const mn = Number(memberNumber);
+    const target = characterByMemberNumber(mn);
+    if (!target) return { eligible: false, reason: "target-not-in-room", memberNumber: mn };
+    const name = target.Nickname || target.Name || `#${mn}`;
+    if (!Number.isInteger(mn) || mn < 0 || mn === Number(Player?.MemberNumber)) {
+      return { eligible: false, reason: "invalid-target", memberNumber: mn, name };
+    }
+    if (/^gimp\s*\d+/i.test(name)) {
+      return { eligible: false, reason: "automated-doll", memberNumber: mn, name };
+    }
+    const inList = list => Array.isArray(list) && list.map(Number).includes(mn);
+    if (typeof Player?.HasOnFriendlist === "function" && Player.HasOnFriendlist(mn)) {
+      return { eligible: false, reason: "already-friend", memberNumber: mn, name };
+    }
+    if (inList(Player?.FriendList)) return { eligible: false, reason: "already-friend", memberNumber: mn, name };
+    if (inList(Player?.BlackList)) return { eligible: false, reason: "blacklisted", memberNumber: mn, name };
+    if (inList(Player?.GhostList)) return { eligible: false, reason: "ghosted", memberNumber: mn, name };
+    return { eligible: true, memberNumber: mn, name, target };
+  }
+
+  function friendDailyKey(now = new Date()) {
+    return stickerDailyKey(now);
+  }
+
+  function loadFriendRateState() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(storageKey("friend_rate")) || "{}");
+      return {
+        lastTime: Math.max(0, Number(parsed?.lastTime) || 0),
+        daily: {
+          date: String(parsed?.daily?.date || ""),
+          count: Math.max(0, Number(parsed?.daily?.count) || 0),
+        },
+      };
+    } catch (e) {
+      return { lastTime: 0, daily: { date: "", count: 0 } };
+    }
+  }
+
+  function saveFriendRateState() {
+    try {
+      localStorage.setItem(storageKey("friend_rate"), JSON.stringify({
+        lastTime: state.lastAutoFriendTime,
+        daily: state.autoFriendDaily,
+      }));
+    } catch (e) {
+      pushDebugTrace({ stage: "friend:rate-save-failed", reason: e.message });
+    }
+  }
+
+  function friendRateLimitStatus() {
+    const now = Date.now();
+    const today = friendDailyKey(new Date(now));
+    const dailyCount = state.autoFriendDaily.date === today ? state.autoFriendDaily.count : 0;
+    const remainingMs = CONFIG.autoFriendCooldownMs - (now - state.lastAutoFriendTime);
+    return {
+      ready: remainingMs <= 0 && dailyCount < CONFIG.autoFriendDailyLimit,
+      remainingMs: Math.max(0, remainingMs),
+      dailyRemaining: Math.max(0, CONFIG.autoFriendDailyLimit - dailyCount),
+    };
+  }
+
+  function addNativeFriend(memberNumber, meta = {}, options = {}) {
+    if (!CONFIG.autoFriendEnabled && options.ignoreFeatureSwitch !== true) {
+      return { ok: false, reason: "friend-disabled" };
+    }
+    const relationship = friendRelationshipStatus(memberNumber);
+    if (!relationship.eligible) return { ok: false, ...relationship };
+    const useAutoRateLimit = options.ignoreRateLimit !== true;
+    const rateLimit = friendRateLimitStatus();
+    if (useAutoRateLimit && !rateLimit.ready) {
+      return { ok: false, reason: "friend-rate-limit", rateLimit };
+    }
+    if (options.dryRun === true) {
+      return {
+        ok: true,
+        dryRun: true,
+        memberNumber: relationship.memberNumber,
+        name: relationship.name,
+        mode: meta.mode || "unknown",
+      };
+    }
+    if (typeof ChatRoomListUpdate !== "function" || typeof ServerPlayerRelationsSync !== "function") {
+      return { ok: false, reason: "friend-api-unavailable" };
+    }
+    try {
+      ChatRoomListUpdate(Player.FriendList, true, relationship.memberNumber, "FriendRequest", false);
+      ServerPlayerRelationsSync();
+      if (typeof ServerSend === "function") ServerSend("AccountQuery", { Query: "OnlineFriends" });
+      const now = Date.now();
+      if (useAutoRateLimit) {
+        const today = friendDailyKey(new Date(now));
+        if (state.autoFriendDaily.date !== today) state.autoFriendDaily = { date: today, count: 0 };
+        state.lastAutoFriendTime = now;
+        state.autoFriendDaily.count += 1;
+        saveFriendRateState();
+      }
+      const audit = loadFriendAudit();
+      audit[relationship.memberNumber] = {
+        status: "added",
+        time: new Date(now).toISOString(),
+        name: relationship.name,
+        mode: meta.mode || "unknown",
+        reason: String(meta.reason || "").slice(0, 240),
+        evidence: (Array.isArray(meta.evidence) ? meta.evidence : [])
+          .map(value => String(value || "").slice(0, 300))
+          .slice(0, 5),
+      };
+      saveFriendAudit(audit);
+      const result = {
+        ok: true,
+        memberNumber: relationship.memberNumber,
+        name: relationship.name,
+        mode: meta.mode || "unknown",
+        dailyCount: useAutoRateLimit ? state.autoFriendDaily.count : null,
+      };
+      pushDebugTrace({ stage: "friend:added", ...result, reason: meta.reason || "" });
+      return result;
+    } catch (e) {
+      pushDebugTrace({ stage: "friend:add-failed", memberNumber, reason: e.message });
+      return { ok: false, reason: e.message || "friend-add-failed" };
+    }
+  }
+
+  function buildAutoFriendEvidence(memberNumber, currentContent = "") {
+    const mn = Number(memberNumber);
+    const profile = loadMemory()?.profiles?.[mn] || {};
+    const candidates = state.semanticMemories
+      .filter(memory => Number(memory?.memberNum) === mn && !memory?.isSelf)
+      .sort((a, b) => Number(b?.time || 0) - Number(a?.time || 0))
+      .slice(0, 20);
+    const seen = new Set();
+    const messages = [];
+    for (const memory of candidates) {
+      const text = String(memory?.text || "").trim();
+      if (!text || seen.has(text)) continue;
+      seen.add(text);
+      messages.push({
+        text: text.slice(0, 300),
+        time: Number(memory?.time || 0),
+        addressedToBot: memory?.addressedToBot === true,
+      });
+      if (messages.length >= 10) break;
+    }
+    const current = String(currentContent || "").trim();
+    if (current && !messages.some(message => message.text.endsWith(current))) {
+      messages.unshift({ text: current.slice(0, 300), time: Date.now(), addressedToBot: true });
+    }
+    return {
+      interactionCount: Number(profile?.chatCount || 0),
+      directCount: messages.filter(message => message.addressedToBot).length,
+      messages,
+    };
+  }
+
+  function parseFriendDecision(raw) {
+    try {
+      const text = String(raw || "").replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+      const parsed = JSON.parse(text);
+      return {
+        decision: parsed?.decision === "add" ? "add" : "skip",
+        confidence: Math.max(0, Math.min(1, Number(parsed?.confidence) || 0)),
+        evidence: (Array.isArray(parsed?.evidence) ? parsed.evidence : [])
+          .map(Number).filter(Number.isInteger).slice(0, 5),
+        reason: String(parsed?.reason || "").trim().slice(0, 240),
+      };
+    } catch (e) {
+      return { decision: "skip", confidence: 0, evidence: [], reason: "parse-failed" };
+    }
+  }
+
+  async function classifyFriendEvidence(memberNumber, senderName, evidence) {
+    const numbered = evidence.messages
+      .map((message, index) => `${index}. ${message.addressedToBot ? "[直接对御坂]" : "[房间消息]"} ${message.text}`)
+      .join("\n");
+    const system = `你是 BC 自动加好友的保守证据审查器。只输出严格 JSON：
+{"decision":"add|skip","confidence":0到1,"evidence":[证据编号],"reason":"一句理由"}
+只有至少两条不同的直接证据共同表明此人持续、友善且真诚地与御坂互动，才可 add。
+普通寒暄、单次玩笑、仅仅同处一室、互动次数很多、第三人评价、性/束缚玩法本身都不是充分证据。
+出现敌意、羞辱、冲突、拒绝、边界不明、强迫、证据含糊或前后矛盾，一律 skip。
+不要推测未写出的感情；只使用编号证据。add 必须 confidence>=0.92 且至少引用两条直接对御坂的证据。`;
+    const raw = await callLLM(system, [{
+      role: "user",
+      content: `候选：${senderName}#${memberNumber}\n总互动计数：${evidence.interactionCount}\n候选证据：\n${numbered}`,
+    }], { thinking: false, temperature: 0, maxTokens: 220 });
+    const decision = parseFriendDecision(raw);
+    const validIndices = decision.evidence.filter(index =>
+      index >= 0 && index < evidence.messages.length && evidence.messages[index].addressedToBot);
+    const uniqueIndices = [...new Set(validIndices)];
+    const accepted = decision.decision === "add" &&
+      decision.confidence >= 0.92 &&
+      uniqueIndices.length >= 2;
+    const selectedEvidence = uniqueIndices.map(index => evidence.messages[index].text);
+    const result = {
+      ok: accepted,
+      reason: accepted ? "evidence-approved" : "evidence-rejected",
+      decision,
+      selectedEvidence,
+      interactionCount: evidence.interactionCount,
+      directCount: evidence.directCount,
+    };
+    pushDebugTrace({ stage: "friend:evaluated", memberNumber, senderName, ...result });
+    return result;
+  }
+
+  async function evaluateAutoFriend(memberNumber, senderName, currentContent, options = {}) {
+    if (!CONFIG.autoFriendEnabled && options.ignoreFeatureSwitch !== true) {
+      return { ok: false, reason: "friend-disabled" };
+    }
+    const relationship = friendRelationshipStatus(memberNumber);
+    if (!relationship.eligible) return { ok: false, ...relationship };
+    const audit = loadFriendAudit();
+    const previousReview = audit[relationship.memberNumber];
+    if (previousReview?.status === "added") {
+      return { ok: false, reason: "already-evaluated", memberNumber: relationship.memberNumber };
+    }
+    if (Number(previousReview?.nextReviewAt || 0) > Date.now()) {
+      return {
+        ok: false,
+        reason: "friend-review-cooldown",
+        memberNumber: relationship.memberNumber,
+        nextReviewAt: Number(previousReview.nextReviewAt),
+      };
+    }
+    const rateLimit = friendRateLimitStatus();
+    if (!rateLimit.ready) return { ok: false, reason: "friend-rate-limit", rateLimit };
+    const evidence = buildAutoFriendEvidence(memberNumber, currentContent);
+    if (evidence.interactionCount < CONFIG.autoFriendMinInteractions ||
+        evidence.directCount < CONFIG.autoFriendMinDirectMessages ||
+        evidence.messages.length < CONFIG.autoFriendMinDirectMessages) {
+      return { ok: false, reason: "insufficient-history", evidence };
+    }
+    const evaluation = await classifyFriendEvidence(memberNumber, senderName, evidence);
+    // 证据不足时记录冷却，避免每条消息都重复调用审查模型；通过的候选
+    // 由 addNativeFriend 在真正成功后写入 status=added。
+    if (!evaluation.ok) {
+      const now = Date.now();
+      audit[relationship.memberNumber] = {
+        status: "skipped",
+        evaluatedAt: new Date(now).toISOString(),
+        nextReviewAt: now + CONFIG.autoFriendReviewCooldownMs,
+        name: relationship.name,
+        reason: evaluation.decision?.reason || evaluation.reason || "evidence-rejected",
+        evidence: evaluation.selectedEvidence || [],
+      };
+      saveFriendAudit(audit);
+    }
+    return evaluation;
+  }
+
+  async function maybeAutoFriend(memberNumber, senderName, currentContent, options = {}) {
+    const mn = Number(memberNumber);
+    if (state.autoFriendInFlight[mn]) {
+      return { ok: false, reason: "friend-evaluation-in-flight", memberNumber: mn };
+    }
+    state.autoFriendInFlight[mn] = true;
+    try {
+      const evaluation = await evaluateAutoFriend(mn, senderName, currentContent);
+      if (!evaluation.ok) return evaluation;
+      return addNativeFriend(mn, {
+        mode: "autonomous",
+        reason: evaluation.decision.reason,
+        evidence: evaluation.selectedEvidence,
+      }, options);
+    } finally {
+      delete state.autoFriendInFlight[mn];
+    }
+  }
+
   function executeEmote(memberNumber, expression) {
     try {
       const char = (memberNumber === Player.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === memberNumber);
@@ -2891,6 +3457,212 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
     } catch(e) {
       console.error("[MisakaChat] 表情设置失败:", e.message);
       return { ok: false, reason: e.message };
+    }
+  }
+
+  function characterByMemberNumber(memberNumber) {
+    const mn = Number(memberNumber);
+    if (mn === Number(Player?.MemberNumber)) return Player;
+    return (ChatRoomCharacter || []).find(c => Number(c.MemberNumber) === mn) || null;
+  }
+
+  function activityCandidateKey(candidate) {
+    return [
+      candidate?.activityName || "",
+      candidate?.groupName || "",
+      candidate?.itemAsset || "",
+      candidate?.itemGroup || "",
+    ].join("|");
+  }
+
+  function buildAllowedActivityCatalog(memberNumber) {
+    const target = characterByMemberNumber(memberNumber);
+    if (!target || typeof ActivityAllowedForGroup !== "function") return [];
+    const groups = (AssetGroup || []).filter(group => group?.Family === target.AssetFamily);
+    const seen = new Set();
+    const catalog = [];
+    for (const rawGroup of groups) {
+      let allowed = [];
+      try {
+        allowed = ActivityAllowedForGroup(target, rawGroup.Name) || [];
+      } catch (e) {
+        pushDebugTrace({
+          stage: "activity:catalog-error",
+          memberNumber: Number(memberNumber),
+          group: rawGroup.Name,
+          reason: e.message,
+        });
+        continue;
+      }
+      for (const itemActivity of allowed) {
+        const activity = itemActivity?.Activity;
+        const groupName = String(itemActivity?.Group || rawGroup.Name || "");
+        const group = ActivityGetGroupOrMirror?.(target.AssetFamily, groupName);
+        if (!activity?.Name || !group?.Name) continue;
+        let label = "";
+        try {
+          const tag = ActivityBuildChatTag(target, group, activity);
+          label = String(ActivityDictionaryText(tag) || tag)
+            .replaceAll("SourceCharacter", "御坂")
+            .replaceAll("TargetCharacter", target.Nickname || target.Name || `#${target.MemberNumber}`);
+        } catch (e) {}
+        const candidate = {
+          activityName: String(activity.Name),
+          groupName: String(group.Name),
+          itemAsset: String(itemActivity?.Item?.Asset?.Name || ""),
+          itemGroup: String(itemActivity?.Item?.Asset?.Group?.Name || ""),
+          label: label.slice(0, 160),
+          itemActivity,
+        };
+        const key = activityCandidateKey(candidate);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        catalog.push(candidate);
+      }
+    }
+    return catalog;
+  }
+
+  function compactActivityCatalog(catalog) {
+    return (catalog || []).map((candidate, index) => {
+      const item = candidate.itemAsset
+        ? `｜道具 ${candidate.itemGroup}:${candidate.itemAsset}`
+        : "";
+      return `${index}. ${candidate.activityName}@${candidate.groupName}${item}｜${candidate.label || "无本地描述"}`;
+    }).join("\n");
+  }
+
+  function parseActivitySelection(raw) {
+    const jsonText = String(raw || "")
+      .replace(/^```(?:json)?\s*/i, "")
+      .replace(/\s*```$/, "")
+      .trim();
+    try {
+      const parsed = JSON.parse(jsonText);
+      const index = Number(parsed?.index);
+      if (!Number.isInteger(index) || index < 0) return null;
+      return { index, reason: String(parsed?.reason || "").trim().slice(0, 160) };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  async function resolvePlannedActivity(plan, senderName, content) {
+    const targetNumber = Number(plan?.activity?.target);
+    const target = characterByMemberNumber(targetNumber);
+    if (!target) return { ok: false, reason: "target-not-in-room", targetNumber };
+    const catalog = buildAllowedActivityCatalog(targetNumber);
+    pushDebugTrace({
+      stage: "activity:catalog",
+      target: targetNumber,
+      count: catalog.length,
+      request: plan?.activity?.request || plan?.goal || content,
+    });
+    if (catalog.length === 0) return { ok: false, reason: "no-native-activity", targetNumber };
+
+    const request = String(plan?.activity?.request || plan?.goal || content || "").trim();
+    const system = `你是 BC 原生 Activity 选择器。只输出严格 JSON：{"index":候选编号,"reason":"选择理由"}。
+从动态允许目录中选择最符合用户原意的一项。目录已经通过 BC 原生距离、区域、姿势、道具前置和双方偏好权限检查。
+必须遵守：
+1. 只选择目录中的编号，不得发明 Activity、部位或道具。
+2. 保留动作对象和身体部位；“摸头”不能改成摸胸，“亲脸/亲嘴”不能改成亲腿。
+3. 用户未指定身体部位时，选择最日常、最少冒犯的可用部位；不得自行升级为私密部位。
+4. 用户只是要求假装、躲藏、表演或描述动作时不应进入本选择器；若已经进入，只选择与请求直接相符的原生动作。
+5. 若没有语义相符项，输出 {"index":-1,"reason":"no-match"}。`;
+    const user = `说话者：${senderName}\n原始请求：${content}\n规划目标：${request}\n目标：${target.Nickname || target.Name}#${targetNumber}\n允许目录：\n${compactActivityCatalog(catalog)}`;
+    const raw = await callLLM(system, [{ role: "user", content: user }], {
+      thinking: false,
+      temperature: 0,
+      maxTokens: 160,
+    });
+    const selected = parseActivitySelection(raw);
+    if (!selected || selected.index >= catalog.length) {
+      return { ok: false, reason: "resolver-no-match", targetNumber, catalogCount: catalog.length };
+    }
+    const candidate = catalog[selected.index];
+    const result = {
+      ok: true,
+      targetNumber,
+      targetName: target.Nickname || target.Name || `#${targetNumber}`,
+      key: activityCandidateKey(candidate),
+      activityName: candidate.activityName,
+      groupName: candidate.groupName,
+      itemAsset: candidate.itemAsset,
+      itemGroup: candidate.itemGroup,
+      label: candidate.label,
+      reason: selected.reason,
+    };
+    pushDebugTrace({ stage: "activity:resolved", ...result });
+    return result;
+  }
+
+  function findAllowedActivitySelection(selection) {
+    const target = characterByMemberNumber(selection?.targetNumber);
+    if (!target) return null;
+    return buildAllowedActivityCatalog(selection.targetNumber)
+      .find(candidate => activityCandidateKey(candidate) === selection.key) || null;
+  }
+
+  function activityCooldownStatus(targetNumber) {
+    const now = Date.now();
+    const globalRemaining = CONFIG.activityCooldownMs - (now - state.lastActivityTime);
+    const targetRemaining = CONFIG.activityPerTargetCooldownMs -
+      (now - (state.lastActivityByTarget[targetNumber] || 0));
+    const remainingMs = Math.max(globalRemaining, targetRemaining, 0);
+    return { ready: remainingMs <= 0, remainingMs };
+  }
+
+  function executeNativeActivity(selection, options = {}) {
+    const dryRun = options.dryRun === true;
+    if (!CONFIG.activityEnabled) return { ok: false, reason: "activity-disabled" };
+    const target = characterByMemberNumber(selection?.targetNumber);
+    if (!target) return { ok: false, reason: "target-not-in-room" };
+    const cooldown = activityCooldownStatus(selection.targetNumber);
+    if (!cooldown.ready) return { ok: false, reason: "activity-cooldown", remainingMs: cooldown.remainingMs };
+
+    // 执行前重新读取原生允许目录。角色姿势、距离、权限或道具状态可能在
+    // 规划后已经变化；旧候选绝不能绕过 BC 当下的校验。
+    const candidate = findAllowedActivitySelection(selection);
+    if (!candidate) return { ok: false, reason: "activity-no-longer-allowed" };
+    const targetGroup = ActivityGetGroupOrMirror?.(target.AssetFamily, candidate.groupName);
+    if (!targetGroup || typeof ActivityRun !== "function") {
+      return { ok: false, reason: "activity-api-unavailable" };
+    }
+    if (dryRun) {
+      return {
+        ok: true,
+        dryRun: true,
+        targetNumber: Number(target.MemberNumber),
+        activityName: candidate.activityName,
+        groupName: candidate.groupName,
+        itemAsset: candidate.itemAsset,
+      };
+    }
+    try {
+      ActivityRun(Player, target, targetGroup, candidate.itemActivity, true);
+      const now = Date.now();
+      state.lastActivityTime = now;
+      state.lastActivityByTarget[selection.targetNumber] = now;
+      const result = {
+        ok: true,
+        targetNumber: Number(target.MemberNumber),
+        targetName: target.Nickname || target.Name || `#${target.MemberNumber}`,
+        activityName: candidate.activityName,
+        groupName: candidate.groupName,
+        itemAsset: candidate.itemAsset,
+        label: candidate.label,
+      };
+      pushDebugTrace({ stage: "activity:executed", ...result });
+      return result;
+    } catch (e) {
+      pushDebugTrace({
+        stage: "activity:execute-failed",
+        target: selection.targetNumber,
+        activityName: candidate.activityName,
+        groupName: candidate.groupName,
+        reason: e.message,
+      });
+      return { ok: false, reason: e.message || "activity-run-failed" };
     }
   }
 
@@ -3354,6 +4126,62 @@ function unescapeHTML(s) {
         return;
       }
 
+      if (requestPlan.intent === "friendship") {
+        const friendship = requestPlan.friendship || {};
+        let friendResult = { ok: false, reason: "friend-request-invalid" };
+        if (friendship.explicit && Number(friendship.target) === Number(senderNum)) {
+          friendResult = addNativeFriend(senderNum, {
+            mode: "explicit-request",
+            reason: `${senderName} 本人在当前消息中明确请求御坂添加好友`,
+            evidence: [content],
+          }, {
+            // 这个开关只控制“自主判断并添加”；本人明确请求不应被误挡。
+            ignoreFeatureSwitch: true,
+            // 自主加好友的全局冷却与每日上限不应阻挡本人明确请求。
+            ignoreRateLimit: true,
+          });
+        }
+        pushDebugTrace({ id: debugId, stage: "friend:explicit-result", friendResult });
+        let finalReply = "好友关系要由本人提出哦。";
+        if (friendResult.ok) finalReply = "好呀，已经加上啦～";
+        else if (friendResult.reason === "already-friend") finalReply = "我们已经是好友啦。";
+        else if (friendResult.reason === "friend-rate-limit") finalReply = "今天先慢一点，过一阵再加吧。";
+        else if (friendResult.reason === "automated-doll") finalReply = "娃娃账号不加入好友名单哦。";
+        sendReply(finalReply);
+        pushDebugTrace({ id: debugId, stage: "sent", finalReply });
+        return;
+      }
+
+      // BC 原生 Activity 由独立分支完成。规划器只保留目标和自然语言意图，
+      // 选择器只能从 BC 当下允许目录中选择；执行前还会重新枚举一次目录，
+      // 避免姿势、距离、道具或权限在规划期间变化后绕过原生校验。
+      if (requestPlan.intent === "activity") {
+        const selection = await resolvePlannedActivity(requestPlan, senderName, content);
+        pushDebugTrace({ id: debugId, stage: "activity:selection", selection });
+        if (!selection.ok) {
+          const finalReply = selection.reason === "target-not-in-room"
+            ? "没找到这个人，做不了。"
+            : "现在没有合适的 BC 动作，我先不乱来。";
+          sendReply(finalReply);
+          pushDebugTrace({ id: debugId, stage: "sent", finalReply });
+          return;
+        }
+        const activityResult = executeNativeActivity(selection);
+        pushDebugTrace({ id: debugId, stage: "activity:result", activityResult });
+        if (!activityResult.ok) {
+          let finalReply = "这个动作现在做不了，我先不乱来。";
+          if (activityResult.reason === "activity-disabled") finalReply = "原生互动现在关着呢。";
+          else if (activityResult.reason === "activity-cooldown") {
+            finalReply = "慢一点啦，刚刚才互动过呢。";
+          } else if (activityResult.reason === "target-not-in-room") {
+            finalReply = "没找到这个人，做不了。";
+          }
+          sendReply(finalReply);
+          pushDebugTrace({ id: debugId, stage: "sent", finalReply });
+        }
+        return;
+      }
+
       const needCatalog = requestPlan.intent === "action" && !!requestPlan.needsCatalog;
       const currentAppearanceFacts = buildCurrentAppearanceFacts(requestPlan);
       let systemPrompt = getSystemPrompt(needCatalog) +
@@ -3573,6 +4401,16 @@ function unescapeHTML(s) {
 
       sendReply(finalReply);
       pushDebugTrace({ id: debugId, stage: "sent", finalReply });
+      if (requestPlan.stickerId) {
+        scheduleStickerAfterReply(finalReply, requestPlan.stickerId, debugId);
+      }
+      if (CONFIG.autoFriendEnabled && ["chat", "roleplay"].includes(requestPlan.intent)) {
+        maybeAutoFriend(senderNum, senderName, content).then(result => {
+          pushDebugTrace({ id: debugId, stage: "friend:auto-result", result });
+        }).catch(error => {
+          pushDebugTrace({ id: debugId, stage: "friend:auto-error", reason: error.message });
+        });
+      }
 
     } catch (e) {
       console.error("[MisakaChat] 回复失败:", e.message);
@@ -3595,10 +4433,30 @@ function unescapeHTML(s) {
     else if (sub === "key" && parts[1]) { localStorage.setItem(storageKey("apikey"), parts[1]); sendLocal("🔑 API key 已保存"); }
     else if (sub === "embedkey" && parts[1]) { localStorage.setItem("misaka_openrouter_key", parts[1]); sendLocal("🔎 OpenRouter embedding key 已保存"); }
     else if (sub === "model" && parts[1]) { localStorage.setItem(storageKey("model"), parts[1]); CONFIG.model = parts[1]; sendLocal("🤖 模型已切换: " + parts[1]); }
+    else if (sub === "activity" && ["on", "off"].includes(parts[1])) {
+      CONFIG.activityEnabled = parts[1] === "on";
+      localStorage.setItem(storageKey("activity_enabled"), String(CONFIG.activityEnabled));
+      sendLocal(`🎭 BC 原生互动已${CONFIG.activityEnabled ? "开启" : "关闭"}`);
+    }
+    else if (sub === "sticker" && ["on", "off"].includes(parts[1])) {
+      const wantsEnabled = parts[1] === "on";
+      CONFIG.stickerEnabled = wantsEnabled && getStickerCatalog().length > 0;
+      localStorage.setItem(storageKey("sticker_enabled"), String(CONFIG.stickerEnabled));
+      if (wantsEnabled && !CONFIG.stickerEnabled) {
+        sendLocal("🖼 尚未配置正式表情包目录，暂时不能开启");
+      } else {
+        sendLocal(`🖼 御坂表情包已${CONFIG.stickerEnabled ? "开启" : "关闭"}`);
+      }
+    }
+    else if (sub === "friend" && ["on", "off"].includes(parts[1])) {
+      CONFIG.autoFriendEnabled = parts[1] === "on";
+      localStorage.setItem(storageKey("auto_friend_enabled"), String(CONFIG.autoFriendEnabled));
+      sendLocal(`🤝 自动加好友已${CONFIG.autoFriendEnabled ? "开启" : "关闭"}`);
+    }
     else if (sub === "status") {
       const key = getApiKeyStatus();
       const embed = getEmbeddingProviderStatus();
-      sendLocal(`状态: ${CONFIG.enabled?"开启":"关闭"} | 版本 ${SCRIPT_VERSION} ${RELEASE_CHANNEL} / loader ${window.__misakaUserLoaderLoaded || "手动"} | key ${key.source} | 模型 ${CONFIG.model} | embedding ${embed.provider.name}/${embed.provider.model} via ${embed.key.source} | 语义 ${state.semanticMemories.length} | 提炼 ${state.refinedMemories.length} | 认识 ${Object.keys(loadMemory().profiles||{}).length} 人`);
+      sendLocal(`状态: ${CONFIG.enabled?"开启":"关闭"} | Activity ${CONFIG.activityEnabled?"开启":"关闭"} | Sticker ${CONFIG.stickerEnabled?"开启":"关闭"} | AutoFriend ${CONFIG.autoFriendEnabled?"开启":"关闭"} | 版本 ${SCRIPT_VERSION} ${RELEASE_CHANNEL} / loader ${window.__misakaUserLoaderLoaded || "手动"} | key ${key.source} | 模型 ${CONFIG.model} | embedding ${embed.provider.name}/${embed.provider.model} via ${embed.key.source} | 语义 ${state.semanticMemories.length} | 提炼 ${state.refinedMemories.length} | 认识 ${Object.keys(loadMemory().profiles||{}).length} 人`);
     } else if (sub === "forget") {
       localStorage.setItem(storageKey("memory"), "{}");
       state.semanticMemories = [];
@@ -3632,11 +4490,19 @@ function unescapeHTML(s) {
       const profiles = Object.entries(mem.profiles || {});
       if (profiles.length === 0) sendLocal("记忆为空");
       else profiles.forEach(([mn, info]) => sendLocal(`  ${info.name} (#${mn}): ${info.chatCount||0}次 | ${info.lastChat||""}`));
+    } else if (sub === "trace") {
+      try {
+        const records = JSON.parse(localStorage.getItem(storageKey("capability_trace")) || "[]");
+        window.__misakaCapabilityTraceExport = JSON.stringify(Array.isArray(records) ? records : [], null, 2);
+        sendLocal(`🔎 已导出 ${Array.isArray(records) ? records.length : 0} 条能力 trace 到 window.__misakaCapabilityTraceExport`);
+      } catch (e) {
+        sendLocal("❌ trace 导出失败");
+      }
     } else if (sub === "persona" && parts[1]) {
       localStorage.setItem(storageKey("persona_extra"), parts.slice(1).join(" "));
       sendLocal("📝 人设附加备注已更新");
     } else {
-      sendLocal("用法: /misaka on|off|key <key>|embedkey <openrouter-key>|model <name>|status|forget|memory|persona <text>|export|import");
+      sendLocal("用法: /misaka on|off|activity on|off|sticker on|off|friend on|off|key <key>|embedkey <openrouter-key>|model <name>|status|trace|forget|memory|persona <text>|export|import");
     }
     return true;
   }
@@ -3655,6 +4521,16 @@ function unescapeHTML(s) {
     if (Player.MemberNumber !== 194331) { console.log("[MisakaChat] 非御坂账号,跳过"); return; }
     const savedModel = localStorage.getItem(storageKey("model")) || "";
     if (savedModel) CONFIG.model = savedModel;
+    const savedActivityEnabled = localStorage.getItem(storageKey("activity_enabled"));
+    if (savedActivityEnabled !== null) CONFIG.activityEnabled = savedActivityEnabled === "true";
+    const savedStickerEnabled = localStorage.getItem(storageKey("sticker_enabled"));
+    if (savedStickerEnabled !== null) CONFIG.stickerEnabled = savedStickerEnabled === "true";
+    if (getStickerCatalog().length === 0) CONFIG.stickerEnabled = false;
+    const savedAutoFriendEnabled = localStorage.getItem(storageKey("auto_friend_enabled"));
+    if (savedAutoFriendEnabled !== null) CONFIG.autoFriendEnabled = savedAutoFriendEnabled === "true";
+    const savedFriendRate = loadFriendRateState();
+    state.lastAutoFriendTime = savedFriendRate.lastTime;
+    state.autoFriendDaily = savedFriendRate.daily;
 
     const existingMods = bcModSdk.getModsInfo();
     const existingMod = existingMods.find(m => m.name === "MisakaChat");
