@@ -71,13 +71,20 @@ The runner hot-loads the local candidate and checks that:
 - roleplay and chat remain outside the native Activity branch;
 - a forged or stale candidate cannot bypass the current BC allowed catalog.
 
-## Contextual sticker suite (not created yet)
+## Contextual sticker browser suite
 
-The production catalog is intentionally empty and the feature is disabled
-until the user provides the official sticker IDs, URLs and semantic labels.
-Create the contextual selection and sender regression only after that catalog
-becomes the agreed source of truth; do not invent fixture IDs that look like
-production data.
+`sticker-blue.browser.js` validates the four user-supplied production stickers,
+their exact URLs and semantic selection boundaries. It also verifies that
+ordinary chat, memory questions and native Activity requests do not select a
+sticker.
+
+```bash
+node tests/run-sticker-blue-cdp.mjs --repeats=3
+```
+
+The runner temporarily enables the feature switch, hot-loads the local
+candidate and restores the user's saved switch afterwards. Sending is dry-run
+only: it never calls `ChatRoomSendChat` and never posts an image to the room.
 
 ## Friendship browser suite
 

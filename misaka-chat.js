@@ -1,4 +1,4 @@
-// MisakaChat v2.10.17 - BC 御坂自动回复系统
+// MisakaChat v2.11.0 - BC 御坂自动回复系统
 // 模块分区:
 //   [Config]      L15-55   配置 + 状态
 //   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.10.17";
+  const SCRIPT_VERSION = "2.11.0";
   const RELEASE_CHANNEL = "stable";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
@@ -71,9 +71,9 @@
     activityEnabled: true,
     activityCooldownMs: 15000,
     activityPerTargetCooldownMs: 60000,
-    // 正式表情包目录尚未由用户提供；保留机制但默认关闭，避免空目录
-    // 被误认为已经上线。
-    stickerEnabled: false,
+    // 表情包只作为偶发的情绪补充；目录、冷却、重复冷却和每日上限共同
+    // 防止刷屏。仍可用 /misaka sticker off 独立关闭。
+    stickerEnabled: true,
     stickerCooldownMs: 2 * 60 * 1000,
     stickerRepeatCooldownMs: 30 * 60 * 1000,
     stickerDailyLimit: 12,
@@ -87,9 +87,35 @@
     autoFriendReviewCooldownMs: 7 * 24 * 60 * 60 * 1000,
   };
 
-  // 只允许模型选择固定 ID，绝不让模型生成网址。附加表情可以通过
-  // misaka_sticker_catalog 注入，但仍须通过相同的 HTTPS 图片 URL 校验。
-  const BUILTIN_STICKER_CATALOG = Object.freeze([]);
+  // 只允许模型选择固定 ID，绝不让模型生成网址。label 刻意写明适用边界，
+  // 避免把玩闹式气鼓鼓用于严重冲突，或把恍然大悟误作长时间思考。
+  // 附加表情仍可通过 misaka_sticker_catalog 注入，并通过相同 URL 校验。
+  const BUILTIN_STICKER_CATALOG = Object.freeze([
+    Object.freeze({
+      id: "pout",
+      url: "https://i.imgur.com/7WBMieG.png",
+      label: "轻度生气、气鼓鼓地不服气（玩闹式不满，不用于严重冲突）",
+      tags: Object.freeze(["生气", "气鼓鼓", "不满", "抱怨", "不服气", "被捉弄", "闹别扭"]),
+    }),
+    Object.freeze({
+      id: "flustered_blush",
+      url: "https://i.imgur.com/runjo00.png",
+      label: "突然被戳中后惊慌脸红、害羞得不知所措",
+      tags: Object.freeze(["脸红", "害羞", "惊讶", "惊慌", "被调戏", "不知所措", "措手不及"]),
+    }),
+    Object.freeze({
+      id: "tearful",
+      url: "https://i.imgur.com/09gQvFG.png",
+      label: "受伤、委屈或难过到掉眼泪（不是喜极而泣）",
+      tags: Object.freeze(["伤心", "哭哭", "委屈", "难过", "受伤", "掉眼泪", "想被安慰"]),
+    }),
+    Object.freeze({
+      id: "sudden_realization",
+      url: "https://i.imgur.com/OlJqOCD.png",
+      label: "突然听懂、发现重点或恍然大悟（不是持续沉思）",
+      tags: Object.freeze(["恍然大悟", "突然明白", "意外发现", "原来如此", "注意到", "灵光一现"]),
+    }),
+  ]);
 
   let state = {
     recentMessages: [],
@@ -1430,6 +1456,8 @@ constraints 只记录用户明确表达的限制：noMove=禁止移动，noAdd=�
 表情包规则：
 - stickerId 只能从“御坂表情包目录”的 ID 中选择，或者为空字符串。绝不能输出网址或发明 ID。
 - 只在 chat 或 roleplay 中出现清晰、强烈且与目录高度匹配的情绪时选择；普通对话、记忆回答、activity、action、clarify 一律为空。
+- 若用户明确描述御坂本人正在“气鼓鼓/不服气”“被调戏得惊慌脸红”“委屈难过到掉眼泪”或“突然明白/恍然大悟”，优先选择对应表情；不要因为同一句同时包含安慰、道歉或玩笑而漏掉已经明确成立的强情绪。
+- pout 只用于玩闹式不满，不用于严肃冲突；tearful 只用于委屈伤心，不用于喜极而泣；sudden_realization 只用于突然听懂或发现重点，不用于普通思考。
 - 表情包是偶尔的情绪补充，不是每轮必发。只能根据目录中的 label 和 tags 判断匹配。
 - “突然！送你一份意想不到的礼物”“吓你一跳”是可直接回应的 chat/roleplay，不需要执行真实操作，也不得选 clarify。
 格式:{"intent":"activity|friendship|action|chat|roleplay|clarify","memorySearch":false,"memoryEntities":[],"stickerId":"","usedPendingClarification":false,"needsCatalog":false,"goal":"最终目标","activity":{"target":123,"request":"摸摸她的头"},"friendship":{"target":123,"explicit":true},"constraints":{"noMove":false,"noAdd":false,"replaceExisting":false,"noStack":false,"preserveParts":[]},"operations":[],"question":""}
@@ -1462,7 +1490,12 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
         : "";
       // 规划器是主判定；这条极窄的确定性护栏只防止显式过去式问句被随机漏判。
       // 即使答案已在概括记忆里，多做一次检索也比绕过证据后直接编造更安全。
-      const explicitPastNeedsSearch = plan.intent === "chat" && isExplicitPastQuestion(content);
+      const explicitPastNeedsSearch =
+        ["chat", "clarify"].includes(plan.intent) && isExplicitPastQuestion(content);
+      // “当初谁……”“某人当时怎么称呼……”已经是完整的历史问题。
+      // 规划器偶发将其判为 clarify 时直接纠正为记忆查询，不让随机性制造
+      // 无意义追问；真实动作、roleplay 和好友请求仍不受此护栏影响。
+      if (explicitPastNeedsSearch && plan.intent === "clarify") plan.intent = "chat";
       plan.memorySearch = plan.intent === "chat" && (plan.memorySearch === true || explicitPastNeedsSearch);
       plan.usedPendingClarification = !!pendingClarification && plan.usedPendingClarification === true;
       const validTypes = new Set(["itemadd","itemdel","itemdelall","itemset","itemcolor","move","moveTo","moveEdge","snapshotSave","snapshotRestore","copyRestraint","emote"]);
