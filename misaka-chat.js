@@ -1,4 +1,4 @@
-// MisakaChat v2.11.1 - BC 御坂自动回复系统
+// MisakaChat v2.11.2 - BC 御坂自动回复系统
 // 模块分区:
 //   [Config]      L15-55   配置 + 状态
 //   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.11.1";
+  const SCRIPT_VERSION = "2.11.2";
   const RELEASE_CHANNEL = "stable";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
@@ -1296,8 +1296,81 @@ ${recentSemantic}`;
       const hh = String(t.getHours()).padStart(2, "0");
       const mm = String(t.getMinutes()).padStart(2, "0");
       const who = m.isSelf ? "御坂" : `${m.senderName}#${m.senderMemberNumber || "?"}`;
-      return `[${hh}:${mm}] ${who}: ${String(m.content || "").slice(0, 220)}`;
+      const content = String(m.content || "").slice(0, 220);
+      const correction = !m.isSelf && /^(?:不对|不是|错了|更正|准确地?说|应该是|其实是)[，,：:\s]/.test(content.trim())
+        ? "【显式纠正：此句覆盖同话题的较早说法】"
+        : "";
+      return `[${hh}:${mm}] ${who}: ${correction}${content}`;
     }).join("\n").slice(-5000);
+  }
+
+  function normalizePlannerOperations(rawOperations, roomNumbers, validTypes, validParts) {
+    return (Array.isArray(rawOperations) ? rawOperations : []).map(op => ({
+      types: (Array.isArray(op?.types) ? op.types : [op?.type]).filter(t => validTypes.has(t)),
+      targets: (Array.isArray(op?.targets) ? op.targets : []).map(Number).filter(n => roomNumbers.has(n)),
+      parts: (Array.isArray(op?.parts) ? op.parts : []).filter(p => validParts.has(p)),
+      assets: (Array.isArray(op?.assets) ? op.assets : [])
+        .map(name => String(name || "").trim())
+        .filter(name => /^[A-Za-z0-9_]+$/.test(name))
+        .slice(0, 8),
+    })).filter(op => op.types.length > 0 && op.targets.length > 0);
+  }
+
+  function stripQuotedSegments(content) {
+    let text = String(content || "");
+    const pairedQuotes = [
+      /“[^”]*”/g, /‘[^’]*’/g, /「[^」]*」/g, /『[^』]*』/g,
+      /"[^"]*"/g, /'[^']*'/g,
+    ];
+    for (const pattern of pairedQuotes) text = text.replace(pattern, " ");
+    return text.replace(/\s+/g, " ").trim();
+  }
+
+  function recentConversationHasAnswer(content, senderNum) {
+    const now = Date.now();
+    const current = String(content || "").trim();
+    const recent = state.recentMessages.slice(-10).filter(message => {
+      if (message?.isSelf) return false;
+      if (now - Number(message?.time || 0) > 5 * 60 * 1000) return false;
+      return !(Number(message?.senderMemberNumber) === Number(senderNum) &&
+        String(message?.content || "").trim() === current);
+    });
+    if (recent.length === 0) return false;
+
+    const knownNames = new Set(["misaka", "御搬", "御坂", "搬运工"]);
+    for (const character of ChatRoomCharacter || []) {
+      for (const value of [character?.Name, character?.Nickname]) {
+        const name = String(value || "").trim().toLowerCase();
+        if (name.length >= 2) knownNames.add(name);
+      }
+    }
+    for (const profile of Object.values(loadMemory()?.profiles || {})) {
+      const name = String(profile?.name || "").trim().toLowerCase();
+      if (name.length >= 2) knownNames.add(name);
+    }
+    const normalizeTopic = value => {
+      let text = String(value || "").toLowerCase();
+      for (const name of knownNames) text = text.split(name).join("");
+      return text
+        .replace(/[a-z][a-z0-9_-]*/gi, "")
+        .replace(/(?:还记得|记不记得|以前|之前|上次|刚才|当时|当初|最后|说过|发生过|什么|怎么回事|为什么|是不是|是否|请问|告诉我|你听到了吗|了吗|了吗|呢|吗|谁)/g, "")
+        .replace(/[^\p{L}\p{N}]+/gu, "");
+    };
+    const queryTopic = normalizeTopic(current);
+    if (queryTopic.length < 2) return false;
+    const queryBigrams = new Set();
+    for (let index = 0; index < queryTopic.length - 1; index++) {
+      queryBigrams.add(queryTopic.slice(index, index + 2));
+    }
+    return recent.some(message => {
+      const recentTopic = normalizeTopic(
+        `${message?.senderName || ""}${message?.content || ""}`);
+      let overlap = 0;
+      for (const bigram of queryBigrams) {
+        if (recentTopic.includes(bigram)) overlap++;
+      }
+      return overlap >= 2;
+    });
   }
 
   function isExplicitPastQuestion(content) {
@@ -1308,8 +1381,10 @@ ${recentSemantic}`;
     // “Rin为什么老说你笨”没有显式时间词，但仍是在追问跨多轮互动形成的
     // 历史原因。只对已知人物或御坂本人启用这条窄护栏，避免把
     // “猫为什么总是睡觉”一类常识问题误送进记忆检索。
-    const habitual = /(?:为什么.*(?:老是|总是|一直|经常)|(?:老是|总是|一直|经常).*(?:说|叫|做|对|给))/.test(text);
-    let mentionsKnownPerson = /(?:misaka|御搬|御坂|搬运工)/i.test(text);
+    const habitual = /(?:为什么.*(?:老(?:是)?|总是|一直|经常)|(?:老(?:是)?|总是|一直|经常).*(?:说|叫|做|对|给))/.test(text);
+    let mentionsKnownPerson =
+      /(?:misaka|御搬|御坂|搬运工)/i.test(text) ||
+      /(?:^|[，,\s])[A-Z][A-Za-z0-9_-]{1,31}(?=为什么|怎么|当时|以前|之前|上次)/.test(text);
     if (!mentionsKnownPerson) {
       const names = new Set();
       for (const character of ChatRoomCharacter || []) {
@@ -1325,6 +1400,65 @@ ${recentSemantic}`;
       mentionsKnownPerson = [...names].some(name => text.includes(name));
     }
     return asks && (past || (habitual && mentionsKnownPerson));
+  }
+
+  function normalizePlannerMemoryDecision(
+    plan, content, senderNum, recentAnswerAvailableAtPlanStart) {
+    const explicitPastNeedsSearch = isExplicitPastQuestion(content);
+    const recentAnswerAvailable =
+      typeof recentAnswerAvailableAtPlanStart === "boolean"
+        ? recentAnswerAvailableAtPlanStart
+        : recentConversationHasAnswer(content, senderNum);
+    // 显式过去式问句即使被模型随机判成 roleplay/action，也是在询问
+    // 已发生的事实，而不是授权御坂现在执行或虚构。统一收口为 chat。
+    if (explicitPastNeedsSearch && plan.intent !== "chat") plan.intent = "chat";
+    plan.memorySearch = plan.intent === "chat" &&
+      !recentAnswerAvailable &&
+      (plan.memorySearch === true || explicitPastNeedsSearch);
+    return plan;
+  }
+
+  function normalizePlannerActivityDecision(plan, content) {
+    if (plan?.intent !== "clarify" ||
+        plan?.activity?.target ||
+        !String(plan?.activity?.request || "").trim()) {
+      return plan;
+    }
+    const text = stripQuotedSegments(content);
+    if (!text || /(?:假装|动作描写|星号动作|表演|演一下|\*)/.test(text)) return plan;
+
+    // DeepSeek 偶尔能保留“摸头”等 Activity 请求，却随机丢掉文本中已经
+    // 明确点名的目标并改成 clarify。这里只接受“互动动词在前 + 唯一房间
+    // 人名在后”的窄模式；“摸摸她”或“某人摸我”仍交给规划器继续澄清。
+    const interaction = "(?:抚摸|摸摸|摸|拥抱|抱抱|抱|亲吻|亲一下|亲|吻|舔|咬|拍打|拍|挠痒|挠|揉|捏|戳|蹭)";
+    const matchedTargets = new Map();
+    for (const character of ChatRoomCharacter || []) {
+      const memberNumber = Number(character?.MemberNumber);
+      if (!Number.isFinite(memberNumber) ||
+          memberNumber === Number(Player?.MemberNumber)) continue;
+      const aliases = [...new Set([
+        character?.Nickname,
+        character?.Name,
+        `#${memberNumber}`,
+      ].map(value => String(value || "").trim()).filter(value => value.length >= 2))]
+        .sort((left, right) => right.length - left.length);
+      for (const alias of aliases) {
+        const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        if (new RegExp(`${interaction}.{0,12}${escaped}(?![A-Za-z0-9_#-])`, "i").test(text)) {
+          matchedTargets.set(memberNumber, character);
+          break;
+        }
+      }
+    }
+    if (matchedTargets.size !== 1) return plan;
+    plan.intent = "activity";
+    plan.memorySearch = false;
+    plan.memoryEntities = [];
+    plan.stickerId = "";
+    plan.operations = [];
+    plan.activity.target = [...matchedTargets.keys()][0];
+    plan.question = "";
+    return plan;
   }
 
   function getPendingClarification(senderNum) {
@@ -1425,6 +1559,10 @@ ${recentSemantic}`;
     const refinedFacts = (state.refinedMemories || []).slice(-CONFIG.maxRefinedMemories)
       .map(m => String(m?.text || m || "").trim()).filter(Boolean).join("\n").slice(-4000);
     const stickerCatalog = compactStickerCatalog();
+    // callLLM 返回前房间可能继续收到消息。这个判定必须与上面构造的
+    // recentContext 使用同一时刻的快照，不能在数秒后重新读取滚动窗口。
+    const recentAnswerAvailableAtPlanStart =
+      recentConversationHasAnswer(content, senderNum);
     const plannerPrompt = `你是 BC 请求规划器。只输出一行严格 JSON，不要 markdown，不要回复用户。
 根据最新消息判断是 chat、roleplay、activity、friendship、action 还是 clarify。自然语言含糊但有常见合理解释时不要急着 clarify。
 activity 是对房间内真实人物进行身体互动时的默认优先选择，例如摸头、拥抱、亲吻、舔、咬、拍打、挠痒等；不要求用户明确说“BC/官方/原生动作”。activity 必须指定房间内真实目标，activity.target 填目标编号，activity.request 用短句保留动作与身体部位。执行层会从 BC 当下允许的原生 Activity 目录中选择语义吻合项；没有合适原生动作时再安全降级为 *动作描写*。
@@ -1432,6 +1570,7 @@ roleplay 只用于用户明确要求文字/星号动作描写、假装、表演�
 friendship 只表示房间成员本人明确要求御坂把自己加为 BC 好友，例如“御坂加我好友”“可以把我加进好友吗”。friendship.target 必须等于当前说话者编号，friendship.explicit=true。第三人要求御坂添加别人、泛泛说“我们是朋友”、夸赞某人或普通友好聊天都不是 friendship；不得替目标本人作出好友请求。
 action 只用于确实要改变 BC 状态的移动、添加/删除/设置道具、快照、复制或游戏表情。只有执行真实 action 所必需的目标或操作仍无法确定时才选 clarify。
 必须利用“近期对话”理解“也要”“那个”“手一份腿两份”等指代和延续玩笑，但永远只处理最新消息，不补做历史请求。
+近期对话中带【显式纠正】的后一句是说话者对同话题较早说法的更正，应按后一句理解，不得把已纠正的两句并列成无法判断的矛盾。
 手持食物需要区分三种语义：把食物递到嘴边、喂一口、吃掉或把某人的手腿当食物，通常是 roleplay；“给B一个/一份X”“给B点吃的”表示让B实际拿到 ItemHandheld，规划 action，若上文已有明确食物则沿用，未明确时优先选择目录里常见且无害的食物而不是反复追问；“把A手里的X给B”默认给B添加同类手持物但不删除A手里的，只有明确说“拿走、转移、从A手里移交”时才规划先从A移除再给B添加。鸡腿、香肠、爆米花等可能是同一道具的不同样式，必须结合 ItemHandheld 目录中的样式选项保留在 goal 中，不要把样式名误当成不存在的 Asset。
 若存在“待澄清上下文”，判断最新消息是否在回答御坂上一轮的追问。像“狗窝”“红色”“咲”“手臂”这样的短答必须与原始请求合并理解，并继承原请求的目标人物、操作和限制，不得当成孤立的新命令。此时 usedPendingClarification=true；若最新消息明显是新话题，则为 false。
 在承接追问时，“御坂，狗窝”中的“御坂”通常只是对助手的称呼，不表示把御坂作为操作目标。只有“把御坂/给御坂/让你自己”等明确宾语表达才改变目标人物。
@@ -1461,6 +1600,8 @@ constraints 只记录用户明确表达的限制：noMove=禁止移动，noAdd=�
 - 表情包是偶尔的情绪补充，不是每轮必发。只能根据目录中的 label 和 tags 判断匹配。
 - “突然！送你一份意想不到的礼物”“吓你一跳”是可直接回应的 chat/roleplay，不需要执行真实操作，也不得选 clarify。
 格式:{"intent":"activity|friendship|action|chat|roleplay|clarify","memorySearch":false,"memoryEntities":[],"stickerId":"","usedPendingClarification":false,"needsCatalog":false,"goal":"最终目标","activity":{"target":123,"request":"摸摸她的头"},"friendship":{"target":123,"explicit":true},"constraints":{"noMove":false,"noAdd":false,"replaceExisting":false,"noStack":false,"preserveParts":[]},"operations":[],"question":""}
+operations 每项必须使用 types 数组；不要输出单数 type。执行层会兼容单数 type，但标准输出始终是 types。
+action 操作项示例:{"types":["moveEdge"],"targets":[123],"parts":[],"assets":[]}
 房间名单:${roster}
 说话者当前实时道具:${senderItems}
 ItemDevices 紧凑目录:${deviceCatalog || "不可用"}
@@ -1490,13 +1631,11 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
         : "";
       // 规划器是主判定；这条极窄的确定性护栏只防止显式过去式问句被随机漏判。
       // 即使答案已在概括记忆里，多做一次检索也比绕过证据后直接编造更安全。
-      const explicitPastNeedsSearch =
-        ["chat", "clarify"].includes(plan.intent) && isExplicitPastQuestion(content);
       // “当初谁……”“某人当时怎么称呼……”已经是完整的历史问题。
-      // 规划器偶发将其判为 clarify 时直接纠正为记忆查询，不让随机性制造
-      // 无意义追问；真实动作、roleplay 和好友请求仍不受此护栏影响。
-      if (explicitPastNeedsSearch && plan.intent === "clarify") plan.intent = "chat";
-      plan.memorySearch = plan.intent === "chat" && (plan.memorySearch === true || explicitPastNeedsSearch);
+      // 规划器偶发误判 intent 时由确定性历史问句护栏收口，不让随机性
+      // 制造无意义追问、虚构演出或意外操作。
+      normalizePlannerMemoryDecision(
+        plan, content, senderNum, recentAnswerAvailableAtPlanStart);
       plan.usedPendingClarification = !!pendingClarification && plan.usedPendingClarification === true;
       const validTypes = new Set(["itemadd","itemdel","itemdelall","itemset","itemcolor","move","moveTo","moveEdge","snapshotSave","snapshotRestore","copyRestraint","emote"]);
       const validParts = new Set(["Arms","Hands","Legs","Feet","Mouth","Head","Neck","Torso","Pelvis","Breast","Eyes","Ears","Vulva","Devices"]);
@@ -1507,6 +1646,7 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
         target: roomNumbers.has(activityTarget) ? activityTarget : null,
         request: String(plan?.activity?.request || plan.goal || "").trim().slice(0, 160),
       };
+      normalizePlannerActivityDecision(plan, content);
       const friendTarget = Number(plan?.friendship?.target);
       plan.friendship = {
         target: roomNumbers.has(friendTarget) ? friendTarget : null,
@@ -1515,12 +1655,13 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
       // 关系请求不能误入 Activity 或道具操作。模型偶尔会把
       // “把某人加为好友”理解成对该人物执行动作；这里仅识别明确的
       // “加好友”请求，并把第三方请求收口为边界说明。
-      const asksToAddFriend = /(?:加|添加).{0,8}(?:好友|朋友)|(?:好友|朋友).{0,8}(?:加|添加)/.test(content);
+      const unquotedContent = stripQuotedSegments(content);
+      const asksToAddFriend = /(?:加|添加).{0,8}(?:好友|朋友)|(?:好友|朋友).{0,8}(?:加|添加)/.test(unquotedContent);
       const explicitSelfFriendRequest = asksToAddFriend && (
-        /(?:把|将)?我(?:加|添加)(?:为|成)?(?:好友|朋友)/.test(content) ||
-        /(?:加|添加)(?:我|本人)(?:为|成)?(?:好友|朋友)/.test(content) ||
-        /(?:和|跟)我(?:加个|成为|做)?(?:好友|朋友)/.test(content) ||
-        /我们(?:加个|成为|做)?(?:好友|朋友)/.test(content)
+        /(?:把|将)?我(?:加|添加)(?:为|成)?(?:好友|朋友)/.test(unquotedContent) ||
+        /(?:加|添加)(?:我|本人)(?:为|成)?(?:好友|朋友)/.test(unquotedContent) ||
+        /(?:和|跟)我(?:加个|成为|做)?(?:好友|朋友)/.test(unquotedContent) ||
+        /我们(?:加个|成为|做)?(?:好友|朋友)/.test(unquotedContent)
       );
       if (explicitSelfFriendRequest) {
         // 明确的本人请求不需要继续赌规划器的随机分类；这是一个可由文本与
@@ -1543,15 +1684,7 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
         plan.intent = "chat";
         plan.friendship = { target: null, explicit: false };
       }
-      plan.operations = (Array.isArray(plan.operations) ? plan.operations : []).map(op => ({
-        types: (Array.isArray(op?.types) ? op.types : []).filter(t => validTypes.has(t)),
-        targets: (Array.isArray(op?.targets) ? op.targets : []).map(Number).filter(n => roomNumbers.has(n)),
-        parts: (Array.isArray(op?.parts) ? op.parts : []).filter(p => validParts.has(p)),
-        assets: (Array.isArray(op?.assets) ? op.assets : [])
-          .map(name => String(name || "").trim())
-          .filter(name => /^[A-Za-z0-9_]+$/.test(name))
-          .slice(0, 8),
-      })).filter(op => op.types.length > 0 && op.targets.length > 0);
+      plan.operations = normalizePlannerOperations(plan.operations, roomNumbers, validTypes, validParts);
       if (plan.operations.some(op => op.types.some(t => ["itemadd","itemdel","itemdelall","itemset","itemcolor","snapshotRestore","copyRestraint"].includes(t)))) {
         plan.needsCatalog = true;
       }
@@ -1995,6 +2128,25 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
     parseActionCommands,
     buildDeterministicExactReplacementReply,
     normalizeReplacementPlanOperations,
+    stripQuotedSegmentsForTest: stripQuotedSegments,
+    recentConversationHasAnswerForTest: recentConversationHasAnswer,
+    normalizePlannerMemoryDecisionForTest: (plan, content, senderNum) =>
+      normalizePlannerMemoryDecision(
+        JSON.parse(JSON.stringify(plan || {})), content, senderNum),
+    normalizePlannerActivityDecisionForTest: (plan, content) =>
+      normalizePlannerActivityDecision(
+        JSON.parse(JSON.stringify(plan || {})), content),
+    buildPlannerRecentContextForTest: buildPlannerRecentContext,
+    normalizePlannerOperationsForTest: rawOperations => normalizePlannerOperations(
+      rawOperations,
+      new Set((ChatRoomCharacter || []).map(c => Number(c.MemberNumber)).concat(Number(Player?.MemberNumber))),
+      new Set(["itemadd","itemdel","itemdelall","itemset","itemcolor","move","moveTo","moveEdge","snapshotSave","snapshotRestore","copyRestraint","emote"]),
+      new Set(["Arms","Hands","Legs","Feet","Mouth","Head","Neck","Torso","Pelvis","Breast","Eyes","Ears","Vulva","Devices"]),
+    ),
+    snapshotRecentMessagesForTest: () => state.recentMessages.map(message => ({ ...message })),
+    replaceRecentMessagesForTest: messages => {
+      state.recentMessages = (Array.isArray(messages) ? messages : []).map(message => ({ ...message }));
+    },
     // 只读现场回归入口：复用真实规划、检索与回答链，不暴露密钥或执行函数。
     planUserRequest,
     buildPlannerMemoryQuery,

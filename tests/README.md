@@ -100,3 +100,22 @@ node tests/run-friend-blue-cdp.mjs --repeats=3
 
 The suite never calls the mutating add-friend path and asserts that
 `Player.FriendList` remains unchanged.
+
+## Multi-speaker context browser suite
+
+`context-blue.browser.js` covers quoted first-person requests, singular
+operation schemas, recent conversational answers, explicit corrections and
+named Activity requests that drift into clarification:
+
+```bash
+node tests/run-context-blue-cdp.mjs --repeats=3
+```
+
+The suite only calls planning/debug hooks. It restores the page's recent
+conversation context and never sends messages or mutates BC state.
+When the planner API is unavailable, the deterministic JS guards can still be
+verified without network calls:
+
+```bash
+node tests/run-context-blue-cdp.mjs --deterministic-only
+```

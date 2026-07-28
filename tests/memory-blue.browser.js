@@ -161,11 +161,18 @@
       : null;
     const selected = ids ? CASES.filter(testCase => ids.has(testCase.id)) : CASES;
     const results = [];
+    const originalContext = hooks.snapshotRecentMessagesForTest?.();
 
-    for (let repetition = 1; repetition <= repeats; repetition++) {
-      for (const testCase of selected) {
-        results.push(await runCase(testCase, repetition));
+    try {
+      for (let repetition = 1; repetition <= repeats; repetition++) {
+        for (const testCase of selected) {
+          // 这是长期记忆基线，不应被测试期间真实房间的新消息污染。
+          hooks.replaceRecentMessagesForTest?.([]);
+          results.push(await runCase(testCase, repetition));
+        }
       }
+    } finally {
+      if (originalContext) hooks.replaceRecentMessagesForTest?.(originalContext);
     }
 
     const shouldSearch = results.filter(result => result.expected.search);
