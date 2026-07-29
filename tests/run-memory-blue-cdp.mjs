@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import process from "node:process";
 
 const cdpBase = process.env.MISAKA_CDP_URL || "http://127.0.0.1:9222";
+const playerMemberNumber = Number(process.env.MISAKA_PLAYER_MEMBER || 194331);
 const repeatsArg = process.argv.find(arg => arg.startsWith("--repeats="));
 const repeats = Math.max(1, Math.min(10, Number(repeatsArg?.split("=")[1]) || 3));
 const idsArg = process.argv.find(arg => arg.startsWith("--ids="));
@@ -17,14 +18,24 @@ async function findBcTarget() {
   const response = await fetch(`${cdpBase}/json`);
   if (!response.ok) throw new Error(`CDP target list failed: HTTP ${response.status}`);
   const targets = await response.json();
-  const target = targets.find(item =>
+  const candidates = targets.filter(item =>
     item.type === "page" &&
     /^https:\/\/[^/]*bondage-(?:europe|asia)\.com\//i.test(item.url || "")
   );
-  if (!target?.webSocketDebuggerUrl) {
-    throw new Error("No active Bondage Club page found on CDP");
+  for (const candidate of candidates) {
+    if (!candidate?.webSocketDebuggerUrl) continue;
+    const client = await connectCdp(candidate.webSocketDebuggerUrl);
+    try {
+      const memberNumber = await evaluate(
+        client,
+        "Number(window.Player?.MemberNumber || 0)",
+      );
+      if (memberNumber === playerMemberNumber) return candidate;
+    } finally {
+      client.close();
+    }
   }
-  return target;
+  throw new Error(`No active Bondage Club page found for player #${playerMemberNumber}`);
 }
 
 function connectCdp(url) {

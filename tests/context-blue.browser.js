@@ -29,6 +29,9 @@
         !hooks?.snapshotRecentMessagesForTest || !hooks?.replaceRecentMessagesForTest ||
         !hooks?.stripQuotedSegmentsForTest || !hooks?.recentConversationHasAnswerForTest ||
         !hooks?.buildPlannerRecentContextForTest ||
+        !hooks?.normalizeVisibleReplyForTest ||
+        !hooks?.parseAssistantReplyForTest ||
+        !hooks?.formatStructuredVisibleReplyForTest ||
         !hooks?.normalizePlannerMemoryDecisionForTest) {
       throw new Error("MisakaChat context test hooks are unavailable");
     }
@@ -135,6 +138,177 @@
         actual: habitualNamedPlan,
       });
 
+      const bareActionChatReplies = [
+        ["歪了歪头", "哈呜？御坂为什么要学会那个啊……"],
+        ["眼神警惕起来", "小手术？！咲你对御坂做了什么奇怪的事吗……"],
+        ["做了个无奈的表情", "这种事御坂可不敢乱说……你还是自己去问Rin吧！"],
+        ["歪着头想了想，露出有点无奈的表情", "Rin啊……挺爱闹腾的一个家伙呢。"],
+        ["偏头看了看刚醒过来的伊水，忍不住笑了笑", "伊水嘛，挺可爱的一个家伙呢。"],
+        ["拍了拍脑袋", "啊，说得对，我忘记了……"],
+        ["脸微微一红，别过头去", "才不是什么充值开关呢……再乱说的话我可要生气了！"],
+      ];
+      for (const [action, speech] of bareActionChatReplies) {
+        const actual = hooks.normalizeVisibleReplyForTest("chat", `${action}\n${speech}`);
+        results.push({
+          id: `guard-chat-bare-action-is-wrapped-${action}`,
+          repetition: 1,
+          passed: actual === `*${action}*\n${speech}`,
+          actual,
+        });
+      }
+
+      const speechOnlyChat = "这个嘛……御坂觉得这种问题不太好回答呢。\n你还是自己问Rin吧！";
+      const speechOnlyActual = hooks.normalizeVisibleReplyForTest("chat", speechOnlyChat);
+      results.push({
+        id: "guard-two-line-chat-is-not-misread-as-action",
+        repetition: 1,
+        passed: speechOnlyActual === speechOnlyChat,
+        actual: speechOnlyActual,
+      });
+
+      const structuredChat = hooks.parseAssistantReplyForTest(JSON.stringify({
+        protocol: "misaka.reply.v1",
+        commands: [],
+        action: "歪了歪头",
+        speech: "哈呜？御坂为什么要学会那个啊……",
+      }), "chat");
+      results.push({
+        id: "guard-structured-action-and-speech-are-rendered-separately",
+        repetition: 1,
+        passed: structuredChat.structured === true &&
+          structuredChat.cleaned === "*歪了歪头*\n哈呜？御坂为什么要学会那个啊……",
+        actual: structuredChat,
+      });
+
+      const structuredCommand = hooks.parseAssistantReplyForTest(JSON.stringify({
+        protocol: "misaka.reply.v1",
+        commands: [{
+          type: "itemadd",
+          memberNumber: Number(b.MemberNumber),
+          item: "Hairbrush",
+          part: "ItemHandheld",
+          color: "",
+        }],
+        action: "",
+        speech: "梳子拿好啦。",
+      }), "action");
+      results.push({
+        id: "guard-structured-command-object-is-normalized-without-visible-tag",
+        repetition: 1,
+        passed: structuredCommand.structured === true &&
+          structuredCommand.commands.length === 1 &&
+          structuredCommand.commands[0]?.type === "itemadd" &&
+          structuredCommand.commands[0]?.item === "Hairbrush" &&
+          structuredCommand.cleaned === "梳子拿好啦。",
+        actual: structuredCommand,
+      });
+
+      const structuredMove = hooks.parseAssistantReplyForTest(JSON.stringify({
+        protocol: "misaka.reply.v1",
+        commands: [{
+          type: "move",
+          memberNumber: Number(b.MemberNumber),
+          direction: "left",
+        }],
+        action: "",
+        speech: "",
+      }), "action");
+      const filteredMove = hooks.filterCommandsByPlan({
+        intent: "action",
+        operations: [{
+          types: ["move"],
+          targets: [Number(b.MemberNumber)],
+          parts: [],
+          assets: [],
+        }],
+        constraints: {},
+      }, structuredMove.commands);
+      results.push({
+        id: "guard-structured-command-flows-through-existing-plan-filter",
+        repetition: 1,
+        passed: filteredMove.allowed.length === 1 &&
+          filteredMove.rejected.length === 0 &&
+          filteredMove.allowed[0]?.type === "move",
+        actual: filteredMove,
+      });
+
+      const mixedValidityCommands = hooks.parseAssistantReplyForTest(JSON.stringify({
+        protocol: "misaka.reply.v1",
+        commands: [
+          {
+            type: "move",
+            memberNumber: Number(b.MemberNumber),
+            direction: "left",
+          },
+          {
+            type: "itemadd",
+            memberNumber: Number(b.MemberNumber),
+          },
+        ],
+        action: "",
+        speech: "好了。",
+      }), "action");
+      results.push({
+        id: "guard-invalid-structured-command-rejects-the-whole-envelope",
+        repetition: 1,
+        passed: mixedValidityCommands.commands.length === 0 &&
+          mixedValidityCommands.protocolError === "invalid-command-envelope" &&
+          mixedValidityCommands.rejectedCommands.length === 1,
+        actual: mixedValidityCommands,
+      });
+
+      const fieldAuthoritative = hooks.parseAssistantReplyForTest(JSON.stringify({
+        protocol: "misaka.reply.v1",
+        commands: [],
+        action: "",
+        speech: "歪了歪头只是这句话里被引用的内容，不是御坂当前做出的动作。",
+      }), "chat");
+      results.push({
+        id: "guard-structured-speech-is-not-reclassified-by-action-heuristic",
+        repetition: 1,
+        passed: fieldAuthoritative.cleaned ===
+          "歪了歪头只是这句话里被引用的内容，不是御坂当前做出的动作。",
+        actual: fieldAuthoritative,
+      });
+
+      const multilineSpeech = hooks.formatStructuredVisibleReplyForTest(
+        "轻轻站直",
+        "第一句话。\n第二句话仍然保留。\n第三句话也不会因行数被直接丢弃。",
+      );
+      results.push({
+        id: "guard-structured-speech-merges-lines-without-dropping-meaning",
+        repetition: 1,
+        passed: multilineSpeech ===
+          "*轻轻站直*\n第一句话。 第二句话仍然保留。 第三句话也不会因行数被直接丢弃。",
+        actual: multilineSpeech,
+      });
+
+      const unicodeLimited = hooks.formatStructuredVisibleReplyForTest("", "🎐".repeat(330));
+      const unicodeLength = typeof Intl?.Segmenter === "function"
+        ? [...new Intl.Segmenter("zh-CN", { granularity: "grapheme" }).segment(unicodeLimited)].length
+        : Array.from(unicodeLimited).length;
+      results.push({
+        id: "guard-structured-truncation-is-unicode-safe",
+        repetition: 1,
+        passed: unicodeLength === 320 &&
+          unicodeLimited.endsWith("…") &&
+          !unicodeLimited.includes("\uFFFD"),
+        actual: { unicodeLength, suffix: Array.from(unicodeLimited).slice(-4).join("") },
+      });
+
+      const malformedEnvelope = hooks.parseAssistantReplyForTest(
+        '{"protocol":"misaka.reply.v1","commands":[],"action":"歪头","speech":',
+        "chat",
+      );
+      results.push({
+        id: "guard-malformed-structured-json-is-not-leaked-to-room",
+        repetition: 1,
+        passed: malformedEnvelope.structured === true &&
+          malformedEnvelope.protocolError === "invalid-json" &&
+          !malformedEnvelope.cleaned.includes("{"),
+        actual: malformedEnvelope,
+      });
+
       const directActivityPlan = hooks.normalizePlannerActivityDecisionForTest?.(
         {
           intent: "clarify",
@@ -150,6 +324,42 @@
         passed: directActivityPlan?.intent === "activity" &&
           Number(directActivityPlan?.activity?.target) === Number(b.MemberNumber),
         actual: directActivityPlan || null,
+      });
+
+      const selfHairCarePlan = hooks.normalizePlannerActivityDecisionForTest?.(
+        {
+          intent: "roleplay",
+          memorySearch: false,
+          activity: { target: null, request: "帮我编辫子" },
+          question: "",
+        },
+        "御坂，帮我编辫子",
+        Number(a.MemberNumber),
+      );
+      results.push({
+        id: "guard-explicit-self-hair-care-binds-the-sender",
+        repetition: 1,
+        passed: selfHairCarePlan?.intent === "activity" &&
+          Number(selfHairCarePlan?.activity?.target) === Number(a.MemberNumber),
+        actual: selfHairCarePlan || null,
+      });
+
+      const mismatchedNamedTargetPlan = hooks.normalizePlannerActivityDecisionForTest?.(
+        {
+          intent: "activity",
+          memorySearch: false,
+          activity: { target: Number(c.MemberNumber), request: "亲一下她的嘴" },
+          question: "",
+        },
+        `御坂，亲一下${nameOf(b)}的嘴。`,
+        Number(a.MemberNumber),
+      );
+      results.push({
+        id: "guard-explicit-named-activity-overrides-the-wrong-model-target",
+        repetition: 1,
+        passed: mismatchedNamedTargetPlan?.intent === "activity" &&
+          Number(mismatchedNamedTargetPlan?.activity?.target) === Number(b.MemberNumber),
+        actual: mismatchedNamedTargetPlan || null,
       });
 
       const ambiguousActivityPlan = hooks.normalizePlannerActivityDecisionForTest?.(

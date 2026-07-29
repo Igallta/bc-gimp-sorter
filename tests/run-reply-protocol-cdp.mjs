@@ -5,27 +5,29 @@ import process from "node:process";
 
 const cdpBase = process.env.MISAKA_CDP_URL || "http://127.0.0.1:9222";
 const playerMemberNumber = Number(process.env.MISAKA_PLAYER_MEMBER || 194331);
-const repeatsArg = process.argv.find(arg => arg.startsWith("--repeats="));
-const repeats = Math.max(1, Math.min(5, Number(repeatsArg?.split("=")[1]) || 3));
-const deterministicOnly = process.argv.includes("--deterministic-only");
+const idsArg = process.argv.find(arg => arg.startsWith("--ids="));
+const selectedIds = idsArg
+  ? new Set(idsArg.slice("--ids=".length).split(",").map(value => value.trim()).filter(Boolean))
+  : null;
 
-async function findBcTarget() {
+async function findMisakaTarget() {
   const targets = await (await fetch(`${cdpBase}/json`)).json();
   const candidates = targets.filter(item =>
     item.type === "page" &&
     /^https:\/\/[^/]*bondage-(?:europe|asia)\.com\//i.test(item.url || ""));
-  for (const candidate of candidates) {
-    if (!candidate?.webSocketDebuggerUrl) continue;
-    const client = await connectCdp(candidate.webSocketDebuggerUrl);
+  for (const target of candidates) {
+    if (!target.webSocketDebuggerUrl) continue;
+    const client = await connectCdp(target.webSocketDebuggerUrl);
     try {
-      if (await evaluate(client, "Number(window.Player?.MemberNumber || 0)") === playerMemberNumber) {
-        return candidate;
-      }
-    } finally {
+      const memberNumber = await evaluate(client, "Number(window.Player?.MemberNumber || 0)");
+      if (memberNumber === playerMemberNumber) return { target, client };
+    } catch (_) {
       client.close();
+      continue;
     }
+    client.close();
   }
-  throw new Error(`No active Bondage Club page found for player #${playerMemberNumber}`);
+  throw new Error(`No active Misaka #${playerMemberNumber} Bondage Club page found on CDP`);
 }
 
 function connectCdp(url) {
@@ -70,7 +72,7 @@ async function evaluate(client, expression, awaitPromise = false) {
   return result.result?.value;
 }
 
-const client = await connectCdp((await findBcTarget()).webSocketDebuggerUrl);
+const { client } = await findMisakaTarget();
 try {
   await evaluate(client, `window.__misakaRunnerRestore = {
     hadPlanDebug: Object.prototype.hasOwnProperty.call(window, "__misakaPlanDebug"),
@@ -80,18 +82,57 @@ try {
   }`);
   await evaluate(client, `window.__misakaNextBootstrapOptions = { mode: "test" }`);
   await evaluate(client, await readFile(new URL("../misaka-chat.js", import.meta.url), "utf8"));
-  await evaluate(client, await readFile(new URL("./context-blue.browser.js", import.meta.url), "utf8"));
-  const report = await evaluate(
-    client,
-    `window.__runMisakaContextBlue(${JSON.stringify({ repeats, deterministicOnly })})`,
-    true,
-  );
+  const cases = [
+    { id: "chat-speech", intent: "chat", content: "御坂，晚上好呀", commandCount: 0 },
+    { id: "chat-action-and-speech", intent: "chat", content: "听说我把动作格式修好了，你有什么反应？", commandCount: 0 },
+    { id: "roleplay-action", intent: "roleplay", content: "御坂，假装歪头看着我，再问我怎么了", commandCount: 0 },
+    {
+      id: "action-command-object",
+      intent: "action",
+      content: "只做协议序列化测试：在commands中表示把御坂#194331向左移动一步，不要真的执行。",
+      commandCount: 1,
+      commandType: "move",
+    },
+  ].filter(testCase => !selectedIds || selectedIds.has(testCase.id));
+  const results = [];
+  for (const testCase of cases) {
+    const actual = await evaluate(
+      client,
+      `window.__misakaPlanDebug.dryRunStructuredReplyForTest(${JSON.stringify(testCase.intent)},${JSON.stringify(testCase.content)})`,
+      true,
+    );
+    const parsed = actual?.parsed;
+    results.push({
+      ...testCase,
+      passed: parsed?.structured === true &&
+        parsed?.protocolError === "" &&
+        Array.isArray(parsed?.commands) &&
+        parsed.commands.length === testCase.commandCount &&
+        (!testCase.commandType || parsed.commands[0]?.type === testCase.commandType) &&
+        typeof parsed.cleaned === "string" &&
+        (testCase.commandCount > 0 || parsed.cleaned.length > 0),
+      actual,
+    });
+  }
+  const report = {
+    summary: {
+      version: await evaluate(client, "window.__misakaScriptVersion || 'unknown'"),
+      runs: results.length,
+      passed: results.filter(result => result.passed).length,
+      failed: results.filter(result => !result.passed).length,
+      modelCalls: results.length,
+      chatMessagesSent: 0,
+      mutatingActionsCalled: false,
+    },
+    failures: results.filter(result => !result.passed),
+    results,
+  };
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
-  process.exitCode = report?.summary?.failed > 0 ? 1 : 0;
+  process.exitCode = report.summary.failed > 0 ? 1 : 0;
 } finally {
   await evaluate(client, `(() => {
     const restore = window.__misakaRunnerRestore;
-    window.__misakaTestLifecycle?.dispose?.("context-suite-complete");
+    window.__misakaTestLifecycle?.dispose?.("reply-protocol-suite-complete");
     delete window.__misakaTestLifecycle;
     if (restore?.hadPlanDebug) window.__misakaPlanDebug = restore.planDebug;
     else delete window.__misakaPlanDebug;

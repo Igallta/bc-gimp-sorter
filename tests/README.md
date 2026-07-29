@@ -64,7 +64,7 @@ With a BC room open in the CDP browser:
 node tests/run-activity-blue-cdp.mjs --repeats=3
 ```
 
-The runner hot-loads the local candidate and checks that:
+The runner loads the local candidate in side-effect-free test mode and checks that:
 
 - an ordinary physical interaction prefers `intent=activity` without requiring
   the user to say “BC/official/native”;
@@ -72,6 +72,11 @@ The runner hot-loads the local candidate and checks that:
 - explicit pretend/action-description requests and chat remain outside the
   native Activity branch;
 - a forged or stale candidate cannot bypass the current BC allowed catalog.
+
+Known v3.0.0 limitation: hair care requires `Hairbrush`, but the runtime does
+not yet plan “equip Hairbrush, then run `TakeCare@ItemHead`” as a compound
+Activity. The three hair-care cases remain explicit known failures when the
+current catalog lacks `TakeCare`; `Pet@ItemHead` is not accepted as equivalent.
 
 ## Contextual sticker browser suite
 
@@ -84,9 +89,16 @@ sticker.
 node tests/run-sticker-blue-cdp.mjs --repeats=3
 ```
 
-The runner temporarily enables the feature switch, hot-loads the local
-candidate and restores the user's saved switch afterwards. Sending is dry-run
-only: it never calls `ChatRoomSendChat` and never posts an image to the room.
+The runner temporarily enables the feature switch, loads the local candidate
+in side-effect-free test mode and restores the user's saved switch afterwards.
+Sending is dry-run only: it never calls `ChatRoomSendChat` and never posts an
+image to the room.
+
+Known v3.0.0 result: `tearful` can remain empty for the explicit sad/crying
+positive case (0/3 in the release regression). The other three stickers,
+catalog URLs and all no-sticker boundaries passed. Keep this case failing until
+the behavior is fixed; it is a documented non-blocking release issue, not a
+reason to weaken the expected result.
 
 ## Friendship browser suite
 
@@ -119,3 +131,36 @@ verified without network calls:
 ```bash
 node tests/run-context-blue-cdp.mjs --deterministic-only
 ```
+
+## Structured reply protocol suite
+
+`run-reply-protocol-cdp.mjs` loads the local candidate in side-effect-free test
+mode and asks the real reply model for chat, action+speech, roleplay and one
+typed command envelope.
+It validates `misaka.reply.v1` parsing without calling `ChatRoomSendChat`,
+`ActivityRun` or any character mutation path:
+
+```bash
+node tests/run-reply-protocol-cdp.mjs
+```
+
+To repeat only selected cases while limiting model cost:
+
+```bash
+node tests/run-reply-protocol-cdp.mjs --ids=action-command-object
+```
+
+## Lifecycle and hot-reload suite
+
+`run-lifecycle-blue-cdp.mjs` repeatedly loads the candidate in test mode and
+asserts that every previous test lifecycle is disposed, no IndexedDB embedding
+memory or runtime timer is created, and the active room runtime remains
+untouched:
+
+```bash
+node tests/run-lifecycle-blue-cdp.mjs --iterations=10
+```
+
+The runner also forces garbage collection before and after the loop and fails
+when retained heap growth exceeds 20 MiB. It does not send messages, install
+socket hooks or mutate character state.

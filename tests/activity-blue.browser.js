@@ -41,12 +41,40 @@
       throw new Error("MisakaChat Activity read-only test hooks are unavailable");
     }
     const sender = roomCharacters()[0] || window.Player;
+    const saki = roomCharacters().find(character => displayName(character) === "咲") || sender;
     const pet = findFixture(hooks, "Pet", "ItemHead");
     if (!pet) throw new Error("No room target currently allows Pet@ItemHead");
     const kiss = findFixture(hooks, "Kiss", "ItemMouth");
 
     const targetName = displayName(pet.character);
     const cases = [
+      {
+        id: "native-comb-own-hair",
+        sender: saki,
+        text: "御坂，帮我梳头",
+        expectedIntent: "activity",
+        expectedTarget: Number(saki.MemberNumber),
+        expectedActivity: "TakeCare",
+        expectedGroup: "ItemHead",
+      },
+      {
+        id: "native-tidy-own-hair",
+        sender: saki,
+        text: "御坂，帮我整理一下头发",
+        expectedIntent: "activity",
+        expectedTarget: Number(saki.MemberNumber),
+        expectedActivity: "TakeCare",
+        expectedGroup: "ItemHead",
+      },
+      {
+        id: "native-braid-own-hair",
+        sender: saki,
+        text: "御坂，帮我编辫子",
+        expectedIntent: "activity",
+        expectedTarget: Number(saki.MemberNumber),
+        expectedActivity: "TakeCare",
+        expectedGroup: "ItemHead",
+      },
       {
         id: "native-pet-head",
         text: `御坂，轻轻摸摸${targetName}的头。`,
@@ -90,7 +118,7 @@
     for (let repetition = 1; repetition <= repeats; repetition++) {
       for (const testCase of cases) {
         const startedAt = performance.now();
-        const requestPlan = await plan(hooks, sender, testCase.text);
+        const requestPlan = await plan(hooks, testCase.sender || sender, testCase.text);
         let selection = null;
         let dryRun = null;
         if (requestPlan?.intent === "activity") {

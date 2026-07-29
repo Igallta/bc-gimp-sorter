@@ -1,4 +1,4 @@
-// MisakaChat v2.11.2 - BC 御坂自动回复系统
+// MisakaChat v3.0.0 - BC 御坂自动回复系统
 // 模块分区:
 //   [Config]      L15-55   配置 + 状态
 //   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
@@ -14,14 +14,89 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "2.11.2";
+  const SCRIPT_VERSION = "3.0.0";
   const RELEASE_CHANNEL = "stable";
+  const bootstrapOptions = window.__misakaNextBootstrapOptions || {};
+  delete window.__misakaNextBootstrapOptions;
+  const TEST_MODE = bootstrapOptions.mode === "test";
   window.__misakaScriptVersion = SCRIPT_VERSION;
 
-  if (window.__misakaInstance) console.log("[MisakaChat] 杀掉旧实例 #" + window.__misakaInstance);
-  window.__misakaInstance = Date.now();
-  const myInstance = window.__misakaInstance;
-  function isCurrent() { return window.__misakaInstance === myInstance; }
+  const lifecycleSlot = TEST_MODE ? "__misakaTestLifecycle" : "__misakaLifecycle";
+  const previousLifecycle = window[lifecycleSlot];
+  let previousHandoff = null;
+  try { previousHandoff = previousLifecycle?.takeHandoff?.() || null; } catch (e) {}
+  if (previousLifecycle?.dispose) previousLifecycle.dispose(TEST_MODE ? "test-reload" : "hot-reload");
+
+  const lifecycle = {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    mode: TEST_MODE ? "test" : "runtime",
+    disposed: false,
+    timeouts: new Set(),
+    intervals: new Set(),
+    requests: new Set(),
+    cleanups: new Set(),
+    dispose(reason = "manual") {
+      if (this.disposed) return;
+      this.disposed = true;
+      for (const timer of this.timeouts) clearTimeout(timer);
+      for (const timer of this.intervals) clearInterval(timer);
+      this.timeouts.clear();
+      this.intervals.clear();
+      for (const request of this.requests) {
+        try { request.abort?.(); } catch (e) {}
+      }
+      this.requests.clear();
+      for (const cleanup of this.cleanups) {
+        try { cleanup(); } catch (e) {}
+      }
+      this.cleanups.clear();
+      console.log(`[MisakaChat] 实例 ${this.id} 已销毁 (${reason})`);
+    },
+  };
+  window[lifecycleSlot] = lifecycle;
+  if (!TEST_MODE) {
+    if (window.__misakaInstance) console.log("[MisakaChat] 杀掉旧实例 #" + window.__misakaInstance);
+    window.__misakaInstance = lifecycle.id;
+  }
+  const myInstance = lifecycle.id;
+  function isCurrent() {
+    return !lifecycle.disposed && window[lifecycleSlot] === lifecycle &&
+      (TEST_MODE || window.__misakaInstance === myInstance);
+  }
+  function onDispose(cleanup) {
+    lifecycle.cleanups.add(cleanup);
+    return cleanup;
+  }
+  function trackedTimeout(callback, delay) {
+    const timer = setTimeout(() => {
+      lifecycle.timeouts.delete(timer);
+      if (isCurrent()) callback();
+    }, delay);
+    lifecycle.timeouts.add(timer);
+    return timer;
+  }
+  function clearTrackedTimeout(timer) {
+    clearTimeout(timer);
+    lifecycle.timeouts.delete(timer);
+  }
+  function trackedInterval(callback, delay) {
+    const timer = setInterval(() => {
+      if (isCurrent()) callback();
+    }, delay);
+    lifecycle.intervals.add(timer);
+    return timer;
+  }
+  function clearTrackedInterval(timer) {
+    clearInterval(timer);
+    lifecycle.intervals.delete(timer);
+  }
+  function trackRequest(request) {
+    if (request) lifecycle.requests.add(request);
+    return request;
+  }
+  function releaseRequest(request) {
+    if (request) lifecycle.requests.delete(request);
+  }
 
   const CONFIG = {
     enabled: true,
@@ -136,6 +211,27 @@
     roomLog: [],          // 进出记录
     snapshots: {},        // 束缚快照 { memberNumber: { items, time } }
     pendingClarifications: {}, // 按发送者保存的待澄清请求；他人插话不会打断
+  };
+  onDispose(() => {
+    state.semanticMemories = [];
+    state.refinedMemories = [];
+    state.recentMessages = [];
+    state.roomLog = [];
+    state.snapshots = {};
+    state.pendingClarifications = {};
+    if (!TEST_MODE && window.__misakaLifecycle === lifecycle) {
+      window.__misakaOnMessage = null;
+      window.__misakaGlobalBusy = false;
+      window.__misakaReplyInProgress = false;
+    }
+  });
+  lifecycle.takeHandoff = () => {
+    if (lifecycle.disposed || TEST_MODE || !state.idbReady || !state.refinedIdbReady) return null;
+    return {
+      protocol: "misaka.lifecycle.v1",
+      semanticMemories: state.semanticMemories,
+      refinedMemories: state.refinedMemories,
+    };
   };
 
   // 事务式替换期间只修改内存中的 Appearance，最后再统一同步一次。
@@ -258,32 +354,57 @@
   })();
 
   // 从 IndexedDB 异步加载语义记忆和提炼记忆(加载完成前用空数组占位)
-  state.semanticMemories = [];
-  state.refinedMemories = [];
+  const handedOffMemory = !TEST_MODE &&
+    previousHandoff?.protocol === "misaka.lifecycle.v1" &&
+    Array.isArray(previousHandoff.semanticMemories) &&
+    Array.isArray(previousHandoff.refinedMemories)
+    ? previousHandoff
+    : null;
+  state.semanticMemories = handedOffMemory?.semanticMemories || [];
+  state.refinedMemories = handedOffMemory?.refinedMemories || [];
   state.idbReady = false;
+  state.refinedIdbReady = false;
 
-  IDB.getSemantic().then(entries => {
-    if (Array.isArray(entries)) {
-      // 按 time 排序(IndexedDB autoIncrement id 基本保序,但显式排序更稳)
-      entries.sort((a, b) => (a.time || 0) - (b.time || 0));
-      state.semanticMemories = entries;
-    }
+  if (TEST_MODE) {
     state.idbReady = true;
-    console.log(`[MisakaChat] IDB 加载完成: ${state.semanticMemories.length} 条语义记忆`);
-  }).catch(e => {
+    state.refinedIdbReady = true;
+  } else if (handedOffMemory) {
     state.idbReady = true;
-    console.warn("[MisakaChat] IDB 加载语义记忆失败,从空开始:", e.message);
-  });
+    state.refinedIdbReady = true;
+    console.log(
+      `[MisakaChat] 生命周期移交完成: ${state.semanticMemories.length} 条语义记忆, ` +
+      `${state.refinedMemories.length} 条提炼记忆`
+    );
+  } else {
+    IDB.getSemantic().then(entries => {
+      if (!isCurrent()) return;
+      if (Array.isArray(entries)) {
+        // 按 time 排序(IndexedDB autoIncrement id 基本保序,但显式排序更稳)
+        entries.sort((a, b) => (a.time || 0) - (b.time || 0));
+        state.semanticMemories = entries;
+      }
+      state.idbReady = true;
+      console.log(`[MisakaChat] IDB 加载完成: ${state.semanticMemories.length} 条语义记忆`);
+    }).catch(e => {
+      if (!isCurrent()) return;
+      state.idbReady = true;
+      console.warn("[MisakaChat] IDB 加载语义记忆失败,从空开始:", e.message);
+    });
 
-  IDB.getRefined().then(entries => {
-    if (Array.isArray(entries)) {
-      entries.sort((a, b) => (a.time || 0) - (b.time || 0));
-      state.refinedMemories = entries;
-    }
-    console.log(`[MisakaChat] IDB 加载完成: ${state.refinedMemories.length} 条提炼记忆`);
-  }).catch(e => {
-    console.warn("[MisakaChat] IDB 加载提炼记忆失败:", e.message);
-  });
+    IDB.getRefined().then(entries => {
+      if (!isCurrent()) return;
+      if (Array.isArray(entries)) {
+        entries.sort((a, b) => (a.time || 0) - (b.time || 0));
+        state.refinedMemories = entries;
+      }
+      state.refinedIdbReady = true;
+      console.log(`[MisakaChat] IDB 加载完成: ${state.refinedMemories.length} 条提炼记忆`);
+    }).catch(e => {
+      if (!isCurrent()) return;
+      state.refinedIdbReady = true;
+      console.warn("[MisakaChat] IDB 加载提炼记忆失败:", e.message);
+    });
+  }
 
 
 
@@ -783,10 +904,15 @@
     }
     const lines = String(reply || "").split("\n");
     const index = lines.length - 1;
-    const firstClause = lines[index].split(/[，,；;]/, 1)[0].trim();
-    // 只有首分句本身已经形成完整回答时才收口，避免把“嗯，”之类语气词当答案。
-    if (firstClause.length >= 6 && /[\p{L}\p{N}]/u.test(firstClause)) {
-      lines[index] = /[。！？~～]$/.test(firstClause) ? firstClause : `${firstClause}。`;
+    const speech = lines[index].trim();
+    const periodIndex = speech.search(/[。.]/);
+    const firstSentence = periodIndex >= 0
+      ? speech.slice(0, periodIndex + 1).trim()
+      : speech;
+    // 是非题只按首个句号收口。逗号和分号后的内容可能仍承载问题的核心谓词，
+    // 例如“Rikka确实说过类似的话，想吃掉御坂”，不能再按分句截掉。
+    if (firstSentence.length >= 6 && /[\p{L}\p{N}]/u.test(firstSentence)) {
+      lines[index] = /[。.！？~～]$/.test(firstSentence) ? firstSentence : `${firstSentence}。`;
     }
     return lines.join("\n");
   }
@@ -986,7 +1112,8 @@ ${recentSemantic}`;
       const recentIdle = state.recentIdleLines.slice(-3);
       // idle 不需要道具清单,用精简 prompt
       const systemPrompt = getSystemPrompt(false) +
-        "\n\n【当前任务】房间安静了。自然地说一句闲聊或做一个小动作。只输出最终回复本身,不要分析、不要描述你在做什么、不要输出思考过程。若同时包含动作和台词，动作必须单独一行并完整写成 *动作*，台词另起一行且不能带星号；禁止输出 *动作*台词* 这种混合格式。";
+        "\n\n【当前任务】房间安静了。自然地说一句闲聊或做一个小动作。不要分析或输出思考过程。" +
+        `\n\n${structuredReplyInstruction()}`;
       // 扩大到最近 15 条,让 LLM 看到更完整的时间线
       const recent = state.recentMessages.slice(-15).map(m => {
         const t = new Date(m.time || Date.now());
@@ -1004,15 +1131,19 @@ ${recentSemantic}`;
       const idleGuard = recentIdle.length
         ? `\n最近你已经说过:\n${recentIdle.join("\n")}\n不要重复类似内容。`
         : "";
-      const userPrompt = `最近消息:\n${recent || "暂无消息"}${idleGuard}${idleHint}\n\n直接输出一句自然的闲聊(不超过40字),不要分析,不要解释。动作与台词不能写在同一行。`;
+      const userPrompt = `最近消息:\n${recent || "暂无消息"}${idleGuard}${idleHint}\n\n生成一句自然的闲聊（不超过40字），按最终回复协议输出。`;
       const reply = await callLLM(systemPrompt, [{ role: "user", content: userPrompt }], {
         model: CONFIG.fallbackModel,
         fallbackModel: CONFIG.fallbackModel,
+        json: true,
         // thinking 与最终回复共享输出预算；80 token 会偶发截断在半句话中。
-        // 最终可见文本仍由 prompt 的 40 字要求和 sanitizeReply 的 120 字上限约束。
+        // 最终可见文本由结构化 action/speech 字段分别做 Unicode 安全限长。
         maxTokens: 1024,
       });
-      const cleaned = normalizeIdleReply(reply || "");
+      const parsedReply = parseAssistantReply(reply || "", "chat");
+      const cleaned = parsedReply.structured
+        ? parsedReply.cleaned
+        : normalizeIdleReply(reply || "");
       if (!cleaned || cleaned.length < 2) return "";
       // 简易去重:字符集相似度 > 0.7 跳过
       const similarity = (a, b) => {
@@ -1038,8 +1169,8 @@ ${recentSemantic}`;
   }
 
   function startIdleTimer() {
-    if (idleTimer) clearInterval(idleTimer);
-    idleTimer = setInterval(async () => {
+    if (idleTimer) clearTrackedInterval(idleTimer);
+    idleTimer = trackedInterval(async () => {
       if (!isCurrent() || !CONFIG.enabled || state.busy) return;
       if (typeof CurrentScreen === "undefined" || CurrentScreen !== "ChatRoom") return;
       const now = Date.now();
@@ -1050,6 +1181,7 @@ ${recentSemantic}`;
         state.busy = true;
         try {
           const generated = await generateIdleLine();
+          if (!isCurrent()) return;
           // fallback 也带变化,不要每次都同一条
           const fallbacks = [
             "*百无聊赖地翻看记录本*",
@@ -1080,8 +1212,10 @@ ${recentSemantic}`;
         } catch(e) { console.warn("[MisakaChat] idle 发送失败:", e.message); }
         finally {
           state.busy = false;
-          window.__misakaGlobalBusy = false;
-          window.__misakaReplyInProgress = false;
+          if (isCurrent()) {
+            window.__misakaGlobalBusy = false;
+            window.__misakaReplyInProgress = false;
+          }
         }
       }
     }, CONFIG.idleCheckMs);
@@ -1145,6 +1279,7 @@ ${recentSemantic}`;
   }
 
   async function callLLM(systemPrompt, contextMessages, options = {}) {
+    if (!isCurrent()) return null;
     // 速率限制检查
     if (!rateLimiter.canCall()) {
       console.warn("[MisakaChat] LLM 速率限制: 1分钟内超过 " + rateLimiter.maxCalls + " 次调用");
@@ -1160,10 +1295,21 @@ ${recentSemantic}`;
 
     const useThinking = options.thinking !== false;
     return new Promise((resolve) => {
+      let settled = false;
+      let disposeResolver = null;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        if (disposeResolver) lifecycle.cleanups.delete(disposeResolver);
+        resolve(value);
+      };
+      disposeResolver = onDispose(() => finish(null));
       const doRequest = (url, model, isFallback) => {
+        if (!isCurrent()) { finish(null); return; }
         // thinking 模式:思考进 reasoning_content,回复进 content
         const bodyObj = { model, messages, max_tokens: maxTokens };
         if (Number.isFinite(options.temperature)) bodyObj.temperature = options.temperature;
+        if (options.json === true) bodyObj.response_format = { type: "json_object" };
         // DeepSeek 默认会启用 thinking。仅仅省略 thinking 参数并不等于关闭；
         // 小 token 预算的规划器会把额度全部耗在 reasoning_content，最终 content=null。
         bodyObj.thinking = { type: useThinking ? "enabled" : "disabled" };
@@ -1171,42 +1317,55 @@ ${recentSemantic}`;
         const useGM = typeof window.__GM_xmlhttpRequest !== "undefined";
 
         if (useGM) {
-          window.__GM_xmlhttpRequest({
+          let request = null;
+          const complete = (callback) => (...args) => {
+            releaseRequest(request);
+            if (!isCurrent()) { finish(null); return; }
+            callback(...args);
+          };
+          request = trackRequest(window.__GM_xmlhttpRequest({
             method: "POST", url, headers: {
               "Content-Type": "application/json",
               "Authorization": "Bearer " + apiKey
             }, data: reqBody, timeout: CONFIG.apiKeyTimeout,
-            onload: (resp) => {
+            onload: complete((resp) => {
               try {
                 const data = JSON.parse(resp.responseText);
-                if (data.choices?.length > 0) { const r = extractReply(data.choices[0].message); if (r) resolve(r); else if (!isFallback) doRequest(url, fallbackModel, true); else resolve(null); }
-                else resolve(null);
+                if (data.choices?.length > 0) { const r = extractReply(data.choices[0].message); if (r) finish(r); else if (!isFallback) doRequest(url, fallbackModel, true); else finish(null); }
+                else finish(null);
               } catch (e) {
                 if (!isFallback) doRequest(url, fallbackModel, true);
-                else resolve(null);
+                else finish(null);
               }
-            },
-            onerror: () => { if (!isFallback) doRequest(url, fallbackModel, true); else resolve(null); },
-            ontimeout: () => { if (!isFallback) doRequest(url, fallbackModel, true); else resolve(null); }
-          });
+            }),
+            onerror: complete(() => { if (!isFallback) doRequest(url, fallbackModel, true); else finish(null); }),
+            ontimeout: complete(() => { if (!isFallback) doRequest(url, fallbackModel, true); else finish(null); })
+          }));
         } else {
           const xhr = new XMLHttpRequest();
+          trackRequest(xhr);
+          const complete = (callback) => (...args) => {
+            releaseRequest(xhr);
+            if (!isCurrent()) { finish(null); return; }
+            callback(...args);
+          };
           xhr.open("POST", url, true);
           xhr.setRequestHeader("Content-Type", "application/json");
           xhr.setRequestHeader("Authorization", "Bearer " + apiKey);
           xhr.timeout = CONFIG.apiKeyTimeout;
-          xhr.onload = () => {
+          xhr.onload = complete(() => {
             try {
               const data = JSON.parse(xhr.responseText);
-              if (data.choices?.length > 0) { const r = extractReply(data.choices[0].message); if (r) resolve(r); else if (!isFallback) doRequest(url, fallbackModel, true); else resolve(null); }
-              else resolve(null);
+              if (data.choices?.length > 0) { const r = extractReply(data.choices[0].message); if (r) finish(r); else if (!isFallback) doRequest(url, fallbackModel, true); else finish(null); }
+              else finish(null);
             } catch (e) {
               if (!isFallback) doRequest(url, fallbackModel, true);
-              else resolve(null);
+              else finish(null);
             }
-          };
-          xhr.onerror = () => { if (!isFallback) doRequest(url, fallbackModel, true); else resolve(null); };
-          xhr.ontimeout = () => { if (!isFallback) doRequest(url, fallbackModel, true); else resolve(null); };
+          });
+          xhr.onerror = complete(() => { if (!isFallback) doRequest(url, fallbackModel, true); else finish(null); });
+          xhr.ontimeout = complete(() => { if (!isFallback) doRequest(url, fallbackModel, true); else finish(null); });
+          xhr.onabort = complete(() => finish(null));
           xhr.send(reqBody);
         }
       };
@@ -1418,19 +1577,33 @@ ${recentSemantic}`;
     return plan;
   }
 
-  function normalizePlannerActivityDecision(plan, content) {
-    if (plan?.intent !== "clarify" ||
-        plan?.activity?.target ||
-        !String(plan?.activity?.request || "").trim()) {
-      return plan;
-    }
+  function normalizePlannerActivityDecision(plan, content, senderNum) {
+    if (!["activity", "clarify", "roleplay"].includes(plan?.intent)) return plan;
     const text = stripQuotedSegments(content);
     if (!text || /(?:假装|动作描写|星号动作|表演|演一下|\*)/.test(text)) return plan;
 
-    // DeepSeek 偶尔能保留“摸头”等 Activity 请求，却随机丢掉文本中已经
-    // 明确点名的目标并改成 clarify。这里只接受“互动动词在前 + 唯一房间
-    // 人名在后”的窄模式；“摸摸她”或“某人摸我”仍交给规划器继续澄清。
-    const interaction = "(?:抚摸|摸摸|摸|拥抱|抱抱|抱|亲吻|亲一下|亲|吻|舔|咬|拍打|拍|挠痒|挠|揉|捏|戳|蹭)";
+    // “帮我梳头/整理头发/编辫子”的目标由语法直接确定为发送者。规划器
+    // 偶尔会随机漂到 clarify/roleplay，但这类请求既没有目标歧义，也已有
+    // BC 原生 TakeCare@ItemHead，可安全确定性收口。
+    const selfHairCare = /(?:帮|给|替)我.{0,6}(?:梳(?:一?下)?头|整理(?:一?下)?头发|编(?:一?下)?辫子)/.test(text);
+    const senderNumber = Number(senderNum);
+    if (selfHairCare && Number.isFinite(senderNumber) &&
+        (ChatRoomCharacter || []).some(character => Number(character?.MemberNumber) === senderNumber)) {
+      plan.intent = "activity";
+      plan.memorySearch = false;
+      plan.memoryEntities = [];
+      plan.stickerId = "";
+      plan.operations = [];
+      plan.activity.target = senderNumber;
+      plan.activity.request = String(plan.activity.request || text).trim().slice(0, 160);
+      plan.question = "";
+      return plan;
+    }
+
+    // DeepSeek 偶尔能保留 Activity 请求，却随机丢掉或替换文本中已经明确
+    // 点名的目标。这里只接受“互动动词与唯一房间人名相邻”的窄模式；
+    // “摸摸她”或“某人摸我”仍交给规划器继续澄清。
+    const interaction = "(?:抚摸|摸摸|摸|拥抱|抱抱|抱|亲吻|亲一下|亲|吻|舔|咬|拍打|拍|挠痒|挠|揉|捏|戳|蹭|梳(?:一?下)?头|整理(?:一?下)?头发|编(?:一?下)?辫子)";
     const matchedTargets = new Map();
     for (const character of ChatRoomCharacter || []) {
       const memberNumber = Number(character?.MemberNumber);
@@ -1444,7 +1617,10 @@ ${recentSemantic}`;
         .sort((left, right) => right.length - left.length);
       for (const alias of aliases) {
         const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        if (new RegExp(`${interaction}.{0,12}${escaped}(?![A-Za-z0-9_#-])`, "i").test(text)) {
+        if (new RegExp(
+          `(?:${interaction}.{0,12}${escaped}|${escaped}.{0,12}${interaction})(?![A-Za-z0-9_#-])`,
+          "i",
+        ).test(text)) {
           matchedTargets.set(memberNumber, character);
           break;
         }
@@ -1457,6 +1633,7 @@ ${recentSemantic}`;
     plan.stickerId = "";
     plan.operations = [];
     plan.activity.target = [...matchedTargets.keys()][0];
+    plan.activity.request = String(plan.activity.request || text).trim().slice(0, 160);
     plan.question = "";
     return plan;
   }
@@ -1646,7 +1823,7 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
         target: roomNumbers.has(activityTarget) ? activityTarget : null,
         request: String(plan?.activity?.request || plan.goal || "").trim().slice(0, 160),
       };
-      normalizePlannerActivityDecision(plan, content);
+      normalizePlannerActivityDecision(plan, content, senderNum);
       const friendTarget = Number(plan?.friendship?.target);
       plan.friendship = {
         target: roomNumbers.has(friendTarget) ? friendTarget : null,
@@ -1865,6 +2042,177 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
       return "";
     });
     return { commands, cleaned: cleaned.trim() };
+  }
+
+  const STRUCTURED_REPLY_PROTOCOL = "misaka.reply.v1";
+  const VISIBLE_ACTION_MAX_GRAPHEMES = 80;
+  const VISIBLE_SPEECH_MAX_GRAPHEMES = 320;
+
+  function structuredReplyInstruction() {
+    return `【最终回复协议：${STRUCTURED_REPLY_PROTOCOL}】
+只输出一个严格 JSON 对象，不要 Markdown 代码块，不要在 JSON 前后添加文字：
+{"protocol":"${STRUCTURED_REPLY_PROTOCOL}","commands":[],"action":"","speech":""}
+- commands 必须是对象数组。聊天和文字角色扮演时为空数组。
+- action 只写动作内容，不写 *；没有动作时为空字符串。
+- speech 只写台词，不写名字前缀、星号或操作指令；没有台词时为空字符串。
+- 不得把动作混入 speech，也不得把台词混入 action。
+- MOVE: {"type":"move","memberNumber":123,"direction":"left|right"}
+- 移到某人旁边: {"type":"moveTo","memberNumber":123,"targetNumber":456,"side":"left|right"}
+- 移到边缘: {"type":"moveEdge","memberNumber":123,"edge":"left|right"}
+- 添加: {"type":"itemadd","memberNumber":123,"item":"AssetName","part":"Arms","color":"#RRGGBB或空"}
+- 移除: {"type":"itemdel","memberNumber":123,"item":"AssetName","part":"Arms或空"}
+- 全部释放: {"type":"itemdelall","memberNumber":123}
+- 改色: {"type":"itemcolor","memberNumber":123,"item":"AssetName","part":"layer或空","color":"#RRGGBB"}
+- 设置属性: {"type":"itemset","memberNumber":123,"item":"AssetName","part":"Arms或空","property":"属性名","value":"值"}
+- 快照: {"type":"snapshotSave|snapshotRestore","memberNumber":123}
+- 复制束缚: {"type":"copyRestraint","sourceNumber":123,"targetNumber":456}
+- 表情: {"type":"emote","memberNumber":123,"expression":"Hearts"}
+- BCE 查询: {"type":"bcequery","target":"名字或编号"}
+复合操作按真实执行顺序排列 commands。字段不可省略时不要改名，也不要使用旧的 [ITEMADD:...] 文本标签。`;
+  }
+
+  function normalizeStructuredCommand(raw) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const aliases = {
+      move: "move",
+      moveto: "moveTo",
+      moveedge: "moveEdge",
+      itemadd: "itemadd",
+      itemdel: "itemdel",
+      itemdelall: "itemdelall",
+      itemcolor: "itemcolor",
+      itemset: "itemset",
+      snapshotsave: "snapshotSave",
+      snapshotrestore: "snapshotRestore",
+      copyrestraint: "copyRestraint",
+      emote: "emote",
+      bcequery: "bcequery",
+      memsearch: "memsearch",
+    };
+    const type = aliases[String(raw.type || "").replace(/[_\s-]/g, "").toLowerCase()];
+    if (!type) return null;
+    const memberNumber = Number(raw.memberNumber);
+    const hasMemberNumber = Number.isInteger(memberNumber) && memberNumber > 0;
+    const text = key => String(raw[key] || "").trim();
+    if (type === "bcequery" && text("target")) return { type, target: text("target") };
+    if (type === "memsearch" && text("query")) return { type, query: text("query") };
+    if (type === "move" && hasMemberNumber && /^(left|right)$/i.test(text("direction"))) {
+      return { type, memberNumber, direction: text("direction").toLowerCase() };
+    }
+    if (type === "moveTo" && hasMemberNumber &&
+        Number.isInteger(Number(raw.targetNumber)) && Number(raw.targetNumber) > 0 &&
+        /^(left|right)$/i.test(text("side"))) {
+      return {
+        type,
+        memberNumber,
+        targetNumber: Number(raw.targetNumber),
+        side: text("side").toLowerCase(),
+      };
+    }
+    if (type === "moveEdge" && hasMemberNumber && /^(left|right)$/i.test(text("edge"))) {
+      return { type, memberNumber, edge: text("edge").toLowerCase() };
+    }
+    if (type === "itemadd" && hasMemberNumber && text("item")) {
+      return {
+        type,
+        memberNumber,
+        item: text("item"),
+        part: text("part"),
+        color: text("color"),
+      };
+    }
+    if (type === "itemdel" && hasMemberNumber && text("item")) {
+      return { type, memberNumber, item: text("item"), part: text("part") };
+    }
+    if (type === "itemdelall" && hasMemberNumber) return { type, memberNumber };
+    if (type === "itemcolor" && hasMemberNumber && text("item") && text("color")) {
+      return {
+        type,
+        memberNumber,
+        item: text("item"),
+        part: text("part"),
+        color: text("color"),
+      };
+    }
+    if (type === "itemset" && hasMemberNumber && text("item") &&
+        text("property") && text("value")) {
+      return {
+        type,
+        memberNumber,
+        item: text("item"),
+        part: text("part"),
+        property: text("property"),
+        value: text("value"),
+      };
+    }
+    if (["snapshotSave", "snapshotRestore"].includes(type) && hasMemberNumber) {
+      return { type, memberNumber };
+    }
+    if (type === "copyRestraint" &&
+        Number.isInteger(Number(raw.sourceNumber)) && Number(raw.sourceNumber) > 0 &&
+        Number.isInteger(Number(raw.targetNumber)) && Number(raw.targetNumber) > 0) {
+      return {
+        type,
+        sourceNumber: Number(raw.sourceNumber),
+        targetNumber: Number(raw.targetNumber),
+      };
+    }
+    if (type === "emote" && hasMemberNumber && text("expression")) {
+      return { type, memberNumber, expression: text("expression") };
+    }
+    return null;
+  }
+
+  function parseStructuredReply(reply) {
+    const raw = String(reply || "").trim();
+    if (!raw) return { matched: false, ok: false, reason: "empty" };
+    const unwrapped = raw
+      .replace(/^```(?:json)?\s*/i, "")
+      .replace(/\s*```$/, "")
+      .trim();
+    let parsed = null;
+    try {
+      parsed = JSON.parse(unwrapped);
+    } catch (e) {
+      const start = unwrapped.indexOf("{");
+      const end = unwrapped.lastIndexOf("}");
+      if (start >= 0 && end > start) {
+        try { parsed = JSON.parse(unwrapped.slice(start, end + 1)); } catch (_) {}
+      }
+    }
+    const looksStructured = /^\s*(?:```(?:json)?\s*)?\{/i.test(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { matched: looksStructured, ok: false, reason: "invalid-json" };
+    }
+    const matched = ["commands", "action", "speech", "protocol"].some(key =>
+      Object.prototype.hasOwnProperty.call(parsed, key));
+    if (!matched) return { matched: false, ok: false, reason: "not-reply-envelope" };
+    const rawCommands = Array.isArray(parsed.commands) ? parsed.commands : [];
+    const commands = [];
+    const rejectedCommands = [];
+    if (!Array.isArray(parsed.commands)) {
+      rejectedCommands.push({ reason: "commands-not-array", value: parsed.commands });
+    }
+    for (const candidate of rawCommands) {
+      if (typeof candidate === "string") {
+        const legacy = parseActionCommands(candidate);
+        if (legacy.commands.length > 0 && !legacy.cleaned) commands.push(...legacy.commands);
+        else rejectedCommands.push(candidate);
+        continue;
+      }
+      const normalized = normalizeStructuredCommand(candidate);
+      if (normalized) commands.push(normalized);
+      else rejectedCommands.push(candidate);
+    }
+    return {
+      matched: true,
+      ok: true,
+      protocol: String(parsed.protocol || ""),
+      commands,
+      rejectedCommands,
+      action: typeof parsed.action === "string" ? parsed.action : "",
+      speech: typeof parsed.speech === "string" ? parsed.speech : "",
+    };
   }
 
   function executeMove(memberNumber, direction) {
@@ -2116,16 +2464,21 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
     const commands = [...deletes, ...adds];
     const filtered = filterCommandsByPlan(plan, commands);
     if (filtered.allowed.length !== commands.length || filtered.rejected.length > 0) return "";
-    const lines = commands.map(cmd => cmd.type === "itemdel"
-      ? `[ITEMDEL:${cmd.memberNumber}:${cmd.item}${cmd.part ? `:${cmd.part}` : ""}]`
-      : `[ITEMADD:${cmd.memberNumber}:${cmd.item}${cmd.part ? `:${cmd.part}` : ""}]`);
-    return `${lines.join("\n")}\n好了。`;
+    return JSON.stringify({
+      protocol: STRUCTURED_REPLY_PROTOCOL,
+      commands,
+      action: "",
+      speech: "好了。",
+    });
   }
 
   // 供浏览器现场回归读取；不暴露密钥或底层执行函数。
   window.__misakaPlanDebug = {
     filterCommandsByPlan,
     parseActionCommands,
+    parseStructuredReply,
+    parseAssistantReply,
+    dryRunStructuredReplyForTest,
     buildDeterministicExactReplacementReply,
     normalizeReplacementPlanOperations,
     stripQuotedSegmentsForTest: stripQuotedSegments,
@@ -2133,9 +2486,9 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
     normalizePlannerMemoryDecisionForTest: (plan, content, senderNum) =>
       normalizePlannerMemoryDecision(
         JSON.parse(JSON.stringify(plan || {})), content, senderNum),
-    normalizePlannerActivityDecisionForTest: (plan, content) =>
+    normalizePlannerActivityDecisionForTest: (plan, content, senderNum) =>
       normalizePlannerActivityDecision(
-        JSON.parse(JSON.stringify(plan || {})), content),
+        JSON.parse(JSON.stringify(plan || {})), content, senderNum),
     buildPlannerRecentContextForTest: buildPlannerRecentContext,
     normalizePlannerOperationsForTest: rawOperations => normalizePlannerOperations(
       rawOperations,
@@ -2147,6 +2500,19 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
     replaceRecentMessagesForTest: messages => {
       state.recentMessages = (Array.isArray(messages) ? messages : []).map(message => ({ ...message }));
     },
+    inspectLifecycleForTest: () => ({
+      id: lifecycle.id,
+      mode: lifecycle.mode,
+      current: isCurrent(),
+      disposed: lifecycle.disposed,
+      timeouts: lifecycle.timeouts.size,
+      intervals: lifecycle.intervals.size,
+      requests: lifecycle.requests.size,
+      idbReady: state.idbReady,
+      refinedIdbReady: state.refinedIdbReady,
+      semanticMemories: state.semanticMemories.length,
+      refinedMemories: state.refinedMemories.length,
+    }),
     // 只读现场回归入口：复用真实规划、检索与回答链，不暴露密钥或执行函数。
     planUserRequest,
     buildPlannerMemoryQuery,
@@ -2497,6 +2863,10 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
     captureActionBaseline,
     verifyPlanConstraints,
     normalizeRoleplayReply,
+    normalizeVisibleReplyForTest: normalizeVisibleReply,
+    formatStructuredVisibleReplyForTest: formatStructuredVisibleReply,
+    parseStructuredReplyForTest: parseStructuredReply,
+    parseAssistantReplyForTest: parseAssistantReply,
     inspectAllowedActivities: memberNumber => buildAllowedActivityCatalog(memberNumber).map(candidate => ({
       key: activityCandidateKey(candidate),
       activityName: candidate.activityName,
@@ -3204,7 +3574,7 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
 
   // 发送回复到 BC 聊天室(含去重 + 多行分割)
   function sendReply(text) {
-    if (!text) return false;
+    if (!text || !isCurrent()) return false;
     const sentKey = text;
     const now = Date.now();
     if (window.__misakaLastSentReply === sentKey && now - (window.__misakaLastSentReplyTime || 0) < 5000) {
@@ -3218,7 +3588,14 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
       if (parts.length === 1 && parts[0].includes("|")) parts = parts[0].split(/\|/).map(p => p.trim()).filter(Boolean);
       if (parts.length >= 2) {
         let delay = 0;
-        for (const p of parts) { if (!p) continue; setTimeout(() => { ElementValue("InputChat", p); ChatRoomSendChat(); }, delay); delay += 600; }
+        for (const p of parts) {
+          if (!p) continue;
+          trackedTimeout(() => {
+            ElementValue("InputChat", p);
+            ChatRoomSendChat();
+          }, delay);
+          delay += 600;
+        }
       } else { ElementValue("InputChat", parts[0] || text); ChatRoomSendChat(); }
       if (state.recentMessages.length > CONFIG.maxContext) state.recentMessages.shift();
     }
@@ -3331,8 +3708,7 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
     if (!resolved.ok) return false;
     const messageCount = String(reply || "").split(/\n|\|/).map(v => v.trim()).filter(Boolean).length;
     const delay = Math.max(900, messageCount * 650 + 250);
-    setTimeout(() => {
-      if (!isCurrent()) return;
+    trackedTimeout(() => {
       const result = sendSticker(stickerId);
       pushDebugTrace({ id: debugId, stage: "sticker:result", result });
     }, delay);
@@ -4118,14 +4494,14 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
     window.__misakaGlobalBusy = true;
     window.__misakaReplyInProgress = true;
 
-    const replyTimeout = setTimeout(() => {
+    const replyTimeout = trackedTimeout(() => {
       console.error("[MisakaChat] 回复硬超时");
       state.busy = false;
       window.__misakaGlobalBusy = false;
       window.__misakaReplyInProgress = false;
     }, CONFIG.replyHardTimeoutMs);
 
-    handleReply(senderNum, senderName, readableContent).finally(() => clearTimeout(replyTimeout));
+    handleReply(senderNum, senderName, readableContent).finally(() => clearTrackedTimeout(replyTimeout));
   }
 
   // === [BCE] 玩家档案查询 ===
@@ -4191,11 +4567,64 @@ function unescapeHTML(s) {
     return s.replace(/&quot;/g, '"').replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&#39;/g, "'");
   }
 
+  function graphemes(text) {
+    const value = String(text || "");
+    if (typeof Intl !== "undefined" && typeof Intl.Segmenter === "function") {
+      return [...new Intl.Segmenter("zh-CN", { granularity: "grapheme" }).segment(value)]
+        .map(part => part.segment);
+    }
+    return Array.from(value);
+  }
+
+  function truncateNatural(text, maxGraphemes) {
+    const units = graphemes(text);
+    if (units.length <= maxGraphemes) return text;
+    const prefix = units.slice(0, maxGraphemes).join("").trimEnd();
+    const minimumBoundary = Math.floor(maxGraphemes * 0.55);
+    let boundary = -1;
+    for (const match of prefix.matchAll(/[。！？!?…~～；;](?=\s|$|[^”’」』）】])/g)) {
+      boundary = match.index + match[0].length;
+    }
+    if (boundary >= minimumBoundary) return prefix.slice(0, boundary).trimEnd();
+    return `${graphemes(prefix).slice(0, Math.max(1, maxGraphemes - 1)).join("").trimEnd()}…`;
+  }
+
+  function stripBalancedOuterQuotes(text) {
+    const value = String(text || "").trim();
+    const pairs = new Map([['"', '"'], ["'", "'"], ["“", "”"], ["‘", "’"]]);
+    const expected = pairs.get(value[0]);
+    return expected && value.endsWith(expected) ? value.slice(1, -1).trim() : value;
+  }
+
+  function sanitizeReplyField(value, kind) {
+    let cleaned = unescapeHTML(stripBalancedOuterQuotes(value))
+      .replace(/^(御[搬坂]|Misaka|misaka)\s*[::]\s*/i, "")
+      .replace(/\s*\n+\s*/g, " ")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+    cleaned = cleaned.replace(/^\*+|\*+$/g, "").trim();
+    if (!cleaned) return "";
+    return truncateNatural(
+      cleaned,
+      kind === "action" ? VISIBLE_ACTION_MAX_GRAPHEMES : VISIBLE_SPEECH_MAX_GRAPHEMES,
+    );
+  }
+
+  function formatStructuredVisibleReply(action, speech) {
+    const cleanAction = sanitizeReplyField(action, "action");
+    const cleanSpeech = sanitizeReplyField(speech, "speech");
+    return [
+      cleanAction ? `*${cleanAction}*` : "",
+      cleanSpeech,
+    ].filter(Boolean).join("\n");
+  }
+
   function sanitizeReply(reply) {
-    let cleaned = String(reply || "").replace(/^["""''''']+|["""''''']+$/g, "").trim();
+    let cleaned = stripBalancedOuterQuotes(reply);
 
     // thinking 模式下思考过程在 reasoning_content 里,content 是干净的回复
-    // 这里只做格式处理:按行分割、兼容旧 | 格式、清理孤立 *
+    // 这里只为旧文本协议做兼容；新协议使用 action/speech 独立字段，不经过
+    // “取前两行再切 120 字符”的有损链路。
     let lines = cleaned.split(/\n+/).map(l => l.trim().replace(/^(御[搬坂]|Misaka|misaka)\s*[::]\s*/i, "").trim()).filter(Boolean);
     // 最多取前两行(动作 + 说话)
     lines = lines.slice(0, 2);
@@ -4210,8 +4639,7 @@ function unescapeHTML(s) {
     }).filter(Boolean);
     cleaned = lines.join('\n');
 
-    const result = unescapeHTML(cleaned.slice(0, 120));
-    return result;
+    return unescapeHTML(cleaned);
   }
 
   function normalizeRoleplayReply(reply) {
@@ -4226,22 +4654,107 @@ function unescapeHTML(s) {
     return [`*${action}*`, speech].filter(Boolean).join("\n");
   }
 
+  function looksLikeBareActionLine(line) {
+    const text = String(line || "").replace(/^\*+|\*+$/g, "").trim();
+    if (!text || text.length > 36 || /[?？!！]$/.test(text)) return false;
+    if (/^(?:轻轻|微微|慢慢|悄悄|下意识地|忍不住|有些|故意|假装)?(?:歪(?:了)?歪头|歪(?:着)?头|偏(?:了)?偏头|偏头|点(?:了)?点头|点头|摇(?:了)?摇头|摇头|低(?:下)?头|抬(?:起)?头|别过头|转过头|探头|耸(?:了)?耸肩|耸肩|摆(?:了)?摆手|摆手|挥(?:了)?挥手|挥手|摊(?:了)?摊手|摊手|拍(?:了)?拍(?:手|脑袋|额头)|揉(?:了)?揉(?:眼睛|鼻子|头发|脑袋)|眨(?:了)?眨眼|眨眼|闭(?:上)?眼|睁(?:开)?眼|撇(?:了)?撇嘴|鼓(?:了)?鼓脸|跺(?:了)?跺脚|叹(?:了)?口气|叹气|轻笑|笑(?:了)?笑|哼(?:了)?一声|做(?:了)?个.+表情|露出.+表情|站直|坐直|缩(?:了)?缩(?:脖子|身体)|退(?:了)?一步|靠(?:近|过去)|凑(?:近|过去)|(?:脸|脸颊|耳根).{0,10}(?:一红|泛红|发红|红起来))/.test(text)) {
+      return true;
+    }
+    const hasBodyCue = /(?:眼神|目光|视线|表情|脸|脸颊|耳根|嘴角|眉头|肩膀?|双手|手指|脑袋|头|身体|姿势)/.test(text);
+    const hasActionCue = /(?:警惕|失焦|发红|脸红|一红|泛红|红起来|移开|躲开|垂下|抬起|交叠|抱起|抱住|攥紧|松开|僵住|颤(?:了|抖|一下)|抖(?:了|一下)|歪|偏|低|抬|摇|点|摆|挥|耸|揉|拍|别过(?:头)?(?:去)?|转过(?:头)?|露出|变得|起来|下去|过去)$/.test(text);
+    return hasBodyCue && hasActionCue;
+  }
+
+  function normalizeVisibleReply(intent, reply) {
+    const cleaned = sanitizeReply(reply);
+    if (!cleaned) return "";
+    if (intent === "roleplay") return normalizeRoleplayReply(cleaned);
+    const lines = cleaned.split(/\n+/).map(s => s.trim()).filter(Boolean).slice(0, 2);
+    if (lines.length === 0 || /^\*[^*\n]+\*$/.test(lines[0])) return lines.join("\n");
+    if (!looksLikeBareActionLine(lines[0])) return lines.join("\n");
+    const action = lines[0].replace(/^\*+|\*+$/g, "").trim();
+    return [`*${action}*`, ...lines.slice(1)].join("\n");
+  }
+
+  function parseAssistantReply(reply, intent = "chat") {
+    const structured = parseStructuredReply(reply);
+    if (structured.matched) {
+      if (!structured.ok) {
+        return {
+          commands: [],
+          cleaned: "刚才没组织好，再说一次吧。",
+          structured: true,
+          protocolError: structured.reason,
+          rejectedCommands: [],
+        };
+      }
+      const protocolMismatch = structured.protocol &&
+        structured.protocol !== STRUCTURED_REPLY_PROTOCOL;
+      const commandEnvelopeInvalid = structured.rejectedCommands.length > 0;
+      return {
+        // 结构化 commands 是一个原子操作计划。任一对象格式错误时不能执行
+        // 剩余合法子集，否则复合请求会留下半成品；action 分支会因此进入
+        // 已有的“无可执行指令”纠错流程。
+        commands: protocolMismatch || commandEnvelopeInvalid ? [] : structured.commands,
+        cleaned: formatStructuredVisibleReply(structured.action, structured.speech),
+        structured: true,
+        protocol: structured.protocol,
+        protocolError: protocolMismatch
+          ? "unsupported-protocol"
+          : (commandEnvelopeInvalid ? "invalid-command-envelope" : ""),
+        rejectedCommands: structured.rejectedCommands,
+      };
+    }
+    const legacy = parseActionCommands(reply);
+    return {
+      commands: legacy.commands,
+      cleaned: normalizeVisibleReply(intent, legacy.cleaned),
+      structured: false,
+      protocol: "legacy-text",
+      protocolError: "",
+      rejectedCommands: [],
+    };
+  }
+
+  async function dryRunStructuredReplyForTest(intent, content) {
+    const safeIntent = ["chat", "roleplay", "action"].includes(intent) ? intent : "chat";
+    const systemPrompt = getSystemPrompt(false) +
+      `\n\n【本轮测试计划】intent=${safeIntent}。这是只读协议测试，只验证序列化结果，任何 commands 都不会执行。` +
+      `\n\n${structuredReplyInstruction()}`;
+    const raw = await callLLM(systemPrompt, [{
+      role: "user",
+      content: `【当前必须处理的最新消息】测试者#0: ${String(content || "向我打个招呼").slice(0, 300)}`,
+    }], {
+      thinking: true,
+      temperature: 0,
+      maxTokens: 2048,
+      json: true,
+    });
+    return {
+      raw,
+      parsed: parseAssistantReply(raw, safeIntent),
+    };
+  }
+
   async function renderClarification(question) {
     const fallback = sanitizeReply(question || "我还没弄明白，能再说清楚一点吗？");
     const prompt = getSystemPrompt(false) +
       "\n\n【当前任务】把下面的追问信息改写成一句简短、自然、符合御坂口吻的问题。" +
-      "只输出问题本身，不执行操作，不写技术说明，不自称客服。";
+      "不执行操作，不写技术说明，不自称客服。" +
+      `\n\n${structuredReplyInstruction()}`;
     const reply = await callLLM(prompt, [{ role: "user", content: `需要确认的信息:${fallback}` }], {
       thinking: false,
       maxTokens: 256,
+      json: true,
     });
     if (!reply) return fallback;
-    const parsed = parseActionCommands(reply);
+    const parsed = parseAssistantReply(reply, "chat");
     if (parsed.commands.some(c => !["memsearch", "bcequery"].includes(c.type))) return fallback;
-    return sanitizeReply(parsed.cleaned) || fallback;
+    return parsed.cleaned || fallback;
   }
 
   async function handleReply(senderNum, senderName, content) {
+    if (!isCurrent()) return;
     const debugId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     state.busy = true;
     window.__misakaGlobalBusy = true;
@@ -4251,6 +4764,7 @@ function unescapeHTML(s) {
 
     try {
       await new Promise(r => setTimeout(r, CONFIG.replyDelayMs));
+      if (!isCurrent()) return;
 
       // 构建上下文(带时间戳 + 身份标识,帮 LLM 理解对话时间线和说话者)
       const recentForContext = state.recentMessages.slice(-CONFIG.maxContext);
@@ -4405,14 +4919,15 @@ function unescapeHTML(s) {
         `operations.assets 若非空，优先使用规划器从目录解析出的 Asset；只有完整实时目录明确证明它不合适时才改用更准确的 Asset。` +
         `MOVE 只改变聊天室人物横向站位，绝不能表示进入、躺进、关进或使用设备；这类目标必须通过 ItemDevices 的 ITEMADD/ITEMDEL/ITEMSET 达成。` +
         `ITEMSET 的值必须来自该道具在目标 group 的精确清单，绝不能把 Arms 的样式套到 Legs/Feet。LeatherDeluxeCuffs 只能放 Arms。命名姿势必须真正设置对应样式，不能只加普通绳索或夹带口塞来冒充。` +
-        `不得改变计划目标人物或跨越操作大类；不得自行夹带移动、表情或其他无关操作。复合操作必须按真实执行顺序输出（例如替换必须先 ITEMDEL 再 ITEMADD，随后才能 ITEMSET）。` +
-        `intent=roleplay 时只用 *动作描写* 完成最新请求，不输出任何真实操作指令；intent=chat 时只聊天。`;
+        `不得改变计划目标人物或跨越操作大类；不得自行夹带移动、表情或其他无关操作。复合操作必须按真实执行顺序输出（例如替换必须先移除再添加，随后才能设置属性）。` +
+        `intent=roleplay 时只在 action 字段写动作描写，commands 必须为空；intent=chat 时只聊天，commands 必须为空。` +
+        `\n\n${structuredReplyInstruction()}`;
       console.log(`[MisakaChat] system prompt 构建完成(意图: ${requestPlan.intent}, 完整道具清单: ${needCatalog ? "是" : "否"})`);
 
-      let reply = await callLLM(systemPrompt, contextMessages);
+      let reply = await callLLM(systemPrompt, contextMessages, { json: true });
       pushDebugTrace({ id: debugId, stage: "llm:first", reply });
       if (reply) {
-        const firstPass = parseActionCommands(reply);
+        const firstPass = parseAssistantReply(reply, requestPlan.intent);
         pushDebugTrace({ id: debugId, stage: "parse:first", commands: firstPass.commands, cleaned: firstPass.cleaned });
         const bceCommands = firstPass.commands.filter(c => c.type === "bcequery");
         // 兜底:用户说"查一下XXX"但 LLM 没输出 BCEQUERY 时,自动提取查询目标
@@ -4442,7 +4957,7 @@ function unescapeHTML(s) {
               extraContext += `\n\n【BCE档案查询结果:${cmd.target}】\n没有找到这个人的档案。\n`;
             }
           }
-          reply = await callLLM(systemPrompt + extraContext, contextMessages);
+          reply = await callLLM(systemPrompt + extraContext, contextMessages, { json: true });
           pushDebugTrace({ id: debugId, stage: "llm:extra-context", reply });
         }
       }
@@ -4453,9 +4968,9 @@ function unescapeHTML(s) {
 
       // 明确要求执行操作、但首轮没有任何可执行指令时，强制纠错一次。
       // 这比把自然语言“好了”当成功更安全，也覆盖绑第三人和修改第三人道具的场景。
-      const initialParsed = parseActionCommands(reply);
+      const initialParsed = parseAssistantReply(reply, requestPlan.intent);
       const initialExecutable = filterCommandsByPlan(requestPlan, initialParsed.commands).allowed;
-      const initialCleaned = sanitizeReply(initialParsed.cleaned);
+      const initialCleaned = initialParsed.cleaned;
       const initialIsClarifyingQuestion = /[?？]\s*$/.test(initialCleaned || "");
       const planHasExactAssets = (requestPlan.operations || []).some(op =>
         Array.isArray(op.assets) && op.assets.length > 0);
@@ -4467,8 +4982,11 @@ function unescapeHTML(s) {
           reply = deterministicReply;
           pushDebugTrace({ id: debugId, stage: "deterministic:exact-replacement", reply });
         } else {
-          const correctionPrompt = `${systemPrompt}\n\n【本轮强制纠错】\n用户明确要求你执行操作，但你上一稿没有输出任何可执行指令。必须根据当前名单和道具清单，在第一行输出正确的 [ITEMADD:...] / [ITEMDEL:...] / [ITEMSET:...] / [ITEMCOLOR:...] / [MOVE:...] 等指令，然后第二行回复。若 operations.assets 非空，则具体道具已经确定，必须直接使用其中的精确 Asset，禁止再次追问。只有计划本身没有精确目标、部位或道具时才能追问；绝不能用动作描写或口头声称已经完成。`;
-          const retryReply = await callLLM(correctionPrompt, contextMessages, { thinking: false });
+          const correctionPrompt = `${systemPrompt}\n\n【本轮强制纠错】\n用户明确要求你执行操作，但你上一稿的 commands 没有任何可执行对象。必须根据当前名单和道具清单，在 commands 数组中输出正确的结构化操作对象，并在 speech 中简短回复。若 operations.assets 非空，则具体道具已经确定，必须直接使用其中的精确 Asset，禁止再次追问。只有计划本身没有精确目标、部位或道具时才能追问；绝不能只用 action 或 speech 声称已经完成。`;
+          const retryReply = await callLLM(correctionPrompt, contextMessages, {
+            thinking: false,
+            json: true,
+          });
           if (retryReply) {
             reply = retryReply;
             pushDebugTrace({ id: debugId, stage: "llm:action-retry", reply });
@@ -4481,14 +4999,23 @@ function unescapeHTML(s) {
       }
 
       // 解析操作指令
-      const { commands, cleaned } = parseActionCommands(reply);
+      const parsedReply = parseAssistantReply(reply, requestPlan.intent);
+      const { commands, cleaned } = parsedReply;
       const planFiltered = filterCommandsByPlan(requestPlan, commands);
       const executableCommands = planFiltered.allowed;
-      let finalReply = requestPlan.intent === "roleplay"
-        ? normalizeRoleplayReply(cleaned)
-        : sanitizeReply(cleaned);
+      let finalReply = cleaned;
       let commandResult = null;  // 提前声明,避免 TDZ
-      pushDebugTrace({ id: debugId, stage: "parse:final", commands, executableCommands, rejectedCommands: planFiltered.rejected, cleaned, finalReply });
+      pushDebugTrace({
+        id: debugId,
+        stage: "parse:final",
+        commands,
+        executableCommands,
+        rejectedCommands: [...(parsedReply.rejectedCommands || []), ...planFiltered.rejected],
+        protocol: parsedReply.protocol,
+        protocolError: parsedReply.protocolError,
+        cleaned,
+        finalReply,
+      });
 
       // 二次纠错仍没有指令时，绝不能把“绑好了/调好了”之类口头成功发出去。
       // 若模型确实在追问则保留追问，否则明确告知本轮没有执行。
@@ -4504,6 +5031,7 @@ function unescapeHTML(s) {
         pushDebugTrace({ id: debugId, stage: "validate:filtered", rejected: planFiltered.rejected, kept: executableCommands });
       }
       if (executableCommands.length > 0) {
+        if (!isCurrent()) return;
         // 在任何实际操作前冻结明确限制所关心的状态。后置条件验证命令是否真正
         // 生效；baseline 则验证 noMove/noAdd/preserveParts 等“不应变化”的部分。
         const actionBaseline = captureActionBaseline(requestPlan);
@@ -4611,6 +5139,7 @@ function unescapeHTML(s) {
         finalReply = defaultReplies[Math.floor(Math.random() * defaultReplies.length)];
       }
       if (!finalReply) return;
+      if (!isCurrent()) return;
 
       sendReply(finalReply);
       pushDebugTrace({ id: debugId, stage: "sent", finalReply });
@@ -4626,12 +5155,16 @@ function unescapeHTML(s) {
       }
 
     } catch (e) {
-      console.error("[MisakaChat] 回复失败:", e.message);
-      pushDebugTrace({ id: debugId, stage: "error", error: e.message });
+      if (isCurrent()) {
+        console.error("[MisakaChat] 回复失败:", e.message);
+        pushDebugTrace({ id: debugId, stage: "error", error: e.message });
+      }
     } finally {
       state.busy = false;
-      window.__misakaGlobalBusy = false;
-      window.__misakaReplyInProgress = false;
+      if (isCurrent()) {
+        window.__misakaGlobalBusy = false;
+        window.__misakaReplyInProgress = false;
+      }
     }
   }
 
@@ -4730,7 +5263,8 @@ function unescapeHTML(s) {
 
   // === [Init] 初始化 ===
   function init() {
-    if (typeof Player === "undefined" || !Player) { setTimeout(init, 1000); return; }
+    if (!isCurrent() || TEST_MODE) return;
+    if (typeof Player === "undefined" || !Player) { trackedTimeout(init, 1000); return; }
     if (Player.MemberNumber !== 194331) { console.log("[MisakaChat] 非御坂账号,跳过"); return; }
     const savedModel = localStorage.getItem(storageKey("model")) || "";
     if (savedModel) CONFIG.model = savedModel;
@@ -4750,7 +5284,7 @@ function unescapeHTML(s) {
     let mod;
     if (existingMod) { console.log("[MisakaChat] mod 已注册"); mod = { hookFunction: () => {} }; }
     else {
-      mod = bcModSdk.registerMod({ name: "MisakaChat", fullName: "Misaka Auto Chat v2", version: SCRIPT_VERSION, repository: "https://github.com/Igallta/bc-gimp-sorter" });
+      mod = bcModSdk.registerMod({ name: "MisakaChat", fullName: "Misaka Auto Chat v3", version: SCRIPT_VERSION, repository: "https://github.com/Igallta/bc-gimp-sorter" });
     }
 
    window.__misakaOnMessage = onChatRoomMessage;
@@ -4806,6 +5340,13 @@ function unescapeHTML(s) {
   }
 
 
-  if (document.readyState === "complete" || document.readyState === "interactive") setTimeout(init, 2000);
-  else window.addEventListener("load", () => setTimeout(init, 2000));
+  if (!TEST_MODE) {
+    if (document.readyState === "complete" || document.readyState === "interactive") {
+      trackedTimeout(init, 2000);
+    } else {
+      const onLoad = () => trackedTimeout(init, 2000);
+      window.addEventListener("load", onLoad, { once: true });
+      onDispose(() => window.removeEventListener("load", onLoad));
+    }
+  }
 })();
