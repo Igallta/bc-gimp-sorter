@@ -43,7 +43,7 @@ MisakaChat 的对话和 embedding 凭据不写入仓库。安装后通过 `/misa
 /misaka on|off
 /misaka status
 /misaka key <key>
-/misaka embedkey <openrouter-key>
+/misaka embedkey <openai-key>
 /misaka model <name>
 /misaka memory
 /misaka export|import

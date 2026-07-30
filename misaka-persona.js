@@ -314,7 +314,7 @@ window.MisakaPersona = {
 commands 的完整对象格式由最后的【最终回复协议】提供。常用 type：
 move / moveTo / moveEdge / itemadd / itemdel / itemdelall / itemset / itemcolor / snapshotSave / snapshotRestore / copyRestraint / emote / bcequery。
 
-部位: Arms/Hands/Legs/Feet/Mouth/Head/Neck/Torso/Pelvis/Breast/Eyes/Ears/Vulva
+部位: Arms/Hands/Legs/Feet/Mouth/Head/Neck/Torso/Pelvis/Breast/Eyes/Ears/Vulva/Devices。也可以直接使用清单里的精确 BC group（如 ItemDevices、ItemHandheld）；没有必要限定时留空。精确 group 必须与道具真实所属 group 一致。
 道具: 从【可操作道具清单】里选，用英文 Name。用户说中文名时自己找对应英文名。清单没有的不要编造。
 颜色: 除"默认/原色"外必须输出 #RRGGBB，自己根据描述判断好看的 hex。用户给 hex 时原样使用。
 属性: 从清单里选值。振动强度可用 Off/Low/Medium/High/Maximum/Random/Escalate/Tease/Deny/Edge。

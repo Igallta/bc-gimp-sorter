@@ -218,7 +218,7 @@ Tampermonkey
        └─ 固定 revision 加载 misaka-chat.js
                │
                ├─ DeepSeek Chat Completions
-               ├─ OpenRouter / OpenAI Embeddings
+               ├─ OpenAI Embeddings
                ├─ localStorage：配置、人物档案、计数
                ├─ IndexedDB：语义记忆、提炼记忆
                └─ BC / ModSDK：消息、人物、道具、移动
@@ -415,8 +415,7 @@ v2.10.17 沿用 v2.10.16 的单路调用，不经过普通人格回复，也不�
 | `misaka_memory` | 人物档案 |
 | `misaka_msg_count` | 长期提炼计数 |
 | `misaka_apikey` | 对话 API Key |
-| `misaka_openrouter_key` | 首选 embedding Key |
-| `misaka_openai_key` | 旧 OpenAI embedding 兜底 |
+| `misaka_openai_key` | OpenAI embedding Key |
 | `misaka_model` | 模型覆盖值 |
 | `misaka_persona_extra` | 人格附加备注 |
 | `misaka_activity_enabled` | BC 原生 Activity 开关 |
@@ -441,10 +440,9 @@ Key 只保存在本地浏览器，不得写入源码、提交、日志、文档�
 ### 模型
 
 - 对话：DeepSeek Chat Completions，默认 `deepseek-v4-flash`。
-- Embedding 首选：OpenRouter `qwen/qwen3-embedding-8b`。
-- 旧兜底：OpenAI `text-embedding-3-large`，3,072 维。
+- Embedding：OpenAI `text-embedding-3-large`，3,072 维。
 
-历史语义库主要是 3,072 维向量。切换 embedding 模型必须检查维度和语义空间兼容，必要时备份后全量重建。
+当前语义库全部是 3,072 维 OpenAI 向量。切换 embedding 模型必须检查维度和语义空间兼容，必要时备份后全量重建。
 
 ### 导入导出
 

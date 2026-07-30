@@ -121,14 +121,7 @@
     idleCheckMs: 60000,  // 每分钟检查一次 idle
     embeddingProviders: [
       {
-        name: "OpenRouter Qwen",
-        base: "https://openrouter.ai/api/v1/embeddings",
-        model: "qwen/qwen3-embedding-8b",
-        keyNames: ["misaka_openrouter_key", "misaka_apikey"],
-        dimensions: null,
-      },
-      {
-        name: "OpenAI legacy",
+        name: "OpenAI",
         base: "https://api.openai.com/v1/embeddings",
         model: "text-embedding-3-large",
         keyNames: ["misaka_openai_key"],
@@ -487,7 +480,8 @@
   }
 
   // === [Memory] Semantic Memory (Embedding-based) ===
-  // 优先走 OpenRouter Qwen embedding；保留旧 OpenAI key 作为显式 fallback。
+  // 语义库一直使用 OpenAI text-embedding-3-large 的 3,072 维向量。
+  // 对话用的 misaka_apikey 不得作为 embedding key 回退。
   function getEmbeddingProviderStatus() {
     for (const provider of CONFIG.embeddingProviders) {
       for (const keyName of provider.keyNames || []) {
@@ -2059,15 +2053,16 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
 - MOVE: {"type":"move","memberNumber":123,"direction":"left|right"}
 - 移到某人旁边: {"type":"moveTo","memberNumber":123,"targetNumber":456,"side":"left|right"}
 - 移到边缘: {"type":"moveEdge","memberNumber":123,"edge":"left|right"}
-- 添加: {"type":"itemadd","memberNumber":123,"item":"AssetName","part":"Arms","color":"#RRGGBB或空"}
-- 移除: {"type":"itemdel","memberNumber":123,"item":"AssetName","part":"Arms或空"}
+- 添加: {"type":"itemadd","memberNumber":123,"item":"AssetName","part":"Arms、Devices、ItemDevices或空","color":"#RRGGBB或空"}
+- 移除: {"type":"itemdel","memberNumber":123,"item":"AssetName","part":"Arms、Devices、ItemDevices或空"}
 - 全部释放: {"type":"itemdelall","memberNumber":123}
 - 改色: {"type":"itemcolor","memberNumber":123,"item":"AssetName","part":"layer或空","color":"#RRGGBB"}
-- 设置属性: {"type":"itemset","memberNumber":123,"item":"AssetName","part":"Arms或空","property":"属性名","value":"值"}
+- 设置属性: {"type":"itemset","memberNumber":123,"item":"AssetName","part":"Arms、Devices、ItemDevices或空","property":"属性名","value":"值"}
 - 快照: {"type":"snapshotSave|snapshotRestore","memberNumber":123}
 - 复制束缚: {"type":"copyRestraint","sourceNumber":123,"targetNumber":456}
 - 表情: {"type":"emote","memberNumber":123,"expression":"Hearts"}
 - BCE 查询: {"type":"bcequery","target":"名字或编号"}
+part 可以使用上文列出的语义部位，也可以使用道具清单中的精确 BC group（例如 ItemDevices、ItemHandheld）；没有必要限定部位时留空。精确 group 必须与 item 真实所属 group 一致。
 复合操作按真实执行顺序排列 commands。字段不可省略时不要改名，也不要使用旧的 [ITEMADD:...] 文本标签。`;
   }
 
@@ -2513,6 +2508,13 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
       semanticMemories: state.semanticMemories.length,
       refinedMemories: state.refinedMemories.length,
     }),
+    inspectEmbeddingConfigForTest: () => CONFIG.embeddingProviders.map(provider => ({
+      name: provider.name,
+      base: provider.base,
+      model: provider.model,
+      keyNames: [...provider.keyNames],
+      dimensions: provider.dimensions,
+    })),
     // 只读现场回归入口：复用真实规划、检索与回答链，不暴露密钥或执行函数。
     planUserRequest,
     buildPlannerMemoryQuery,
@@ -2549,11 +2551,10 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
 
   function strictCommandItem(char, itemName, part) {
     if (!char) return null;
-    const mapping = findItemAsset(itemName, char);
-    const assetName = mapping?.asset || String(itemName || "");
-    const groups = part && BODY_PART_GROUPS[part]
-      ? BODY_PART_GROUPS[part]
-      : (mapping?.group ? [mapping.group] : []);
+    const resolution = resolveItemPartGroups(char, itemName, part);
+    if (!resolution.ok) return null;
+    const assetName = resolution.asset;
+    const groups = resolution.groups;
     const candidates = (char.Appearance || []).filter(a => a?.Asset?.Group?.Name?.startsWith("Item"));
     const scoped = groups.length ? candidates.filter(a => groups.includes(a.Asset.Group.Name)) : candidates;
     return scoped.find(a =>
@@ -2867,6 +2868,18 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
     formatStructuredVisibleReplyForTest: formatStructuredVisibleReply,
     parseStructuredReplyForTest: parseStructuredReply,
     parseAssistantReplyForTest: parseAssistantReply,
+    dryRunPlannedRequestForTest,
+    resolveItemAddTargetForTest: (itemName, part, memberNumber) => {
+      const char = actionTargetCharacter(memberNumber);
+      const resolved = resolveItemAddTarget(char, itemName, part);
+      if (!resolved.ok) return resolved;
+      return {
+        ok: true,
+        group: resolved.group,
+        asset: resolved.asset,
+        partKind: resolved.partKind,
+      };
+    },
     inspectAllowedActivities: memberNumber => buildAllowedActivityCatalog(memberNumber).map(candidate => ({
       key: activityCandidateKey(candidate),
       activityName: candidate.activityName,
@@ -2902,39 +2915,14 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
 
   function findItemByPart(char, itemName, part) {
     if (!char) return null;
-    const searchName = itemName;
-    // 限定部位
-    if (part) {
-      const groups = BODY_PART_GROUPS[part];
-      if (groups) {
-        for (const g of groups) {
-          const item = char.Appearance.find(a =>
-            a?.Asset?.Group?.Name === g &&
-            (a?.Asset?.Name === searchName || a?.Asset?.Name === itemName ||
-             a?.Asset?.Description === searchName || a?.Asset?.Description === itemName ||
-             a?.Asset?.Description?.includes(searchName) || a?.Asset?.Description?.includes(itemName))
-          );
-          if (item) return item;
-        }
-      }
-    }
-    // 不限定部位 - 精确匹配
-    let target = char.Appearance.find(a =>
-      a?.Asset?.Group?.Name?.startsWith("Item") &&
-      (a?.Asset?.Name === searchName || a?.Asset?.Description === searchName)
-    );
-    if (!target && searchName !== itemName) {
-      target = char.Appearance.find(a =>
-        a?.Asset?.Group?.Name?.startsWith("Item") &&
-        (a?.Asset?.Name === itemName || a?.Asset?.Description === itemName)
-      );
-    }
-    // 包含匹配
-    if (!target) target = char.Appearance.find(a =>
-      a?.Asset?.Group?.Name?.startsWith("Item") &&
-      (a?.Asset?.Description?.includes(searchName) || a?.Asset?.Description?.includes(itemName))
-    );
-    return target;
+    const resolution = resolveItemPartGroups(char, itemName, part);
+    if (!resolution.ok) return null;
+    return (char.Appearance || []).find(a =>
+      resolution.groups.includes(a?.Asset?.Group?.Name) &&
+      (a?.Asset?.Name === resolution.asset ||
+       a?.Asset?.Name === itemName ||
+       a?.Asset?.Description === itemName)
+    ) || null;
   }
 
 
@@ -3002,6 +2990,75 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
       }
     }
     return null;
+  }
+
+  // itemadd/itemdel/itemset 的 part 兼容三种稳定表示：
+  // 1. 语义部位（Arms / Devices）；
+  // 2. BC 原生 group（ItemArms / ItemDevices）；
+  // 3. 空值（使用 Asset 的默认 group）。
+  // 原生 group 只有在 AssetGet 证实目标道具确实属于该 group 时才接受，
+  // 防止为了兼容模型输出而重新引入“说绑手、实际绑脚”一类错位操作。
+  function resolveItemPartGroups(char, itemName, part) {
+    if (!char) return { ok: false, reason: "missing-character" };
+    const mapping = findItemAsset(itemName, char);
+    if (!mapping) {
+      return { ok: false, reason: "unknown-item", item: itemName };
+    }
+    const rawPart = String(part || "").trim();
+    if (!rawPart) {
+      return {
+        ok: true,
+        asset: mapping.asset,
+        defaultGroup: mapping.group,
+        groups: [mapping.group],
+        partKind: "default",
+      };
+    }
+
+    if (BODY_PART_GROUPS[rawPart]) {
+      const groups = BODY_PART_GROUPS[rawPart].filter(group =>
+        !!AssetGet(char.AssetFamily, group, mapping.asset));
+      if (groups.length === 0) {
+        return {
+          ok: false,
+          reason: "incompatible-part",
+          item: mapping.asset,
+          part: rawPart,
+        };
+      }
+      return {
+        ok: true,
+        asset: mapping.asset,
+        defaultGroup: mapping.group,
+        groups,
+        partKind: "semantic",
+      };
+    }
+
+    if (/^Item[A-Za-z0-9]+$/.test(rawPart)) {
+      if (!AssetGet(char.AssetFamily, rawPart, mapping.asset)) {
+        return {
+          ok: false,
+          reason: "incompatible-part",
+          item: mapping.asset,
+          part: rawPart,
+        };
+      }
+      return {
+        ok: true,
+        asset: mapping.asset,
+        defaultGroup: mapping.group,
+        groups: [rawPart],
+        partKind: "native-group",
+      };
+    }
+
+    return {
+      ok: false,
+      reason: "unknown-part",
+      item: mapping.asset,
+      part: rawPart,
+    };
   }
 
   // 拘束快照系统 - 存储玩家当前道具状态,用于"绑回去"
@@ -3343,7 +3400,7 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
     try {
       const char = (memberNumber === Player.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === memberNumber); if (!char) { console.log("[MisakaChat] 找不到玩家 #" + memberNumber); return { ok: false, reason: "missing-character" }; }
       let target = findItemByPart(char, itemName, part);
-      if (!target) {
+      if (!target && !part) {
         const mapping = findItemAsset(itemName, char);
         if (mapping) {
           target = char.Appearance.find(a => a?.Asset?.Group?.Name === mapping.group);
@@ -3379,31 +3436,58 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
     return null;
   }
 
+  function resolveItemAddTarget(char, itemName, part) {
+    const resolution = resolveItemPartGroups(char, itemName, part);
+    if (!resolution.ok) return resolution;
+    const targetGroup = String(part || "").trim()
+      ? findEmptyGroup(char, resolution.groups, resolution.asset)
+      : (char.Appearance.find(a => a.Asset?.Group?.Name === resolution.defaultGroup)
+          ? (findEmptyGroup(char, [
+              resolution.defaultGroup,
+              ...Asset.filter(a =>
+                a?.Group?.Name?.startsWith("Item") &&
+                a.Name === resolution.asset &&
+                a.Group.Name !== resolution.defaultGroup
+              ).map(a => a.Group.Name),
+            ], resolution.asset) || resolution.defaultGroup)
+          : resolution.defaultGroup);
+    if (!targetGroup) {
+      return {
+        ok: false,
+        reason: "incompatible-part",
+        item: resolution.asset,
+        part: String(part || "").trim(),
+      };
+    }
+    const targetAsset = AssetGet(char.AssetFamily, targetGroup, resolution.asset);
+    if (!targetAsset) {
+      return {
+        ok: false,
+        reason: "unknown-item",
+        item: resolution.asset,
+        part: String(part || "").trim(),
+      };
+    }
+    return {
+      ok: true,
+      group: targetGroup,
+      asset: resolution.asset,
+      targetAsset,
+      partKind: resolution.partKind,
+    };
+  }
+
   function executeItemAdd(memberNumber, itemName, part, color) {
     try {
       const char = (memberNumber === Player.MemberNumber) ? Player : ChatRoomCharacter.find(c => c.MemberNumber === memberNumber);
       if (!char) { console.log("[MisakaChat] 找不到玩家 #" + memberNumber); return { ok: false, reason: "missing-character" }; }
-      const mapping = findItemAsset(itemName, char);
-      if (!mapping) { console.log("[MisakaChat] 未知道具:", itemName); return { ok: false, reason: "unknown-item", memberNumber, item: itemName }; }
-      if (!char) { console.log("[MisakaChat] 找不到玩家 #" + memberNumber); return { ok: false, reason: "missing-character" }; }
-
-      // 找目标 group
-      const candidateGroups = part ? (BODY_PART_GROUPS[part] || []) : [];
-      let targetGroup;
-      if (part && candidateGroups.length > 0) {
-        targetGroup = findEmptyGroup(char, candidateGroups, mapping.asset);
-        // 明确指定了身体部位时绝不回退到该道具的默认 group。过去 HempRope:Hands
-        // 会静默落到 ItemFeet，造成“说绑手、实际绑脚”。
-        if (!targetGroup) return { ok: false, reason: "incompatible-part", memberNumber, item: itemName, part };
-      } else if (part) {
-        return { ok: false, reason: "unknown-part", memberNumber, item: itemName, part };
-      } else {
-        targetGroup = char.Appearance.find(a => a.Asset?.Group?.Name === mapping.group)
-            ? (findEmptyGroup(char, [mapping.group, ...Asset.filter(a => a?.Group?.Name?.startsWith("Item") && a.Name === mapping.asset && a.Group.Name !== mapping.group).map(a => a.Group.Name)], mapping.asset) || mapping.group)
-            : mapping.group;
+      const resolved = resolveItemAddTarget(char, itemName, part);
+      if (!resolved.ok) {
+        console.log("[MisakaChat] ITEMADD 无法解析目标:", itemName, part || "(默认)", resolved.reason);
+        return { ...resolved, memberNumber, item: itemName };
       }
-      let targetAsset = AssetGet(char.AssetFamily, targetGroup, mapping.asset);
-      if (!targetAsset) return { ok: false, reason: "unknown-item", memberNumber, item: itemName };
+      const targetGroup = resolved.group;
+      const targetAsset = resolved.targetAsset;
 
       // 颜色覆盖
       let colorOverride = null;
@@ -3436,7 +3520,7 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
       let target = findItemByPart(char, itemName, part);
 
       // fallback: findItemAsset mapping
-      if (!target) {
+      if (!target && !part) {
         const mapping = findItemAsset(itemName, char);
         if (mapping) {
           target = char.Appearance.find(a => a?.Asset?.Group?.Name === mapping.group);
@@ -4753,6 +4837,59 @@ function unescapeHTML(s) {
     return parsed.cleaned || fallback;
   }
 
+  function buildMainReplySystemPrompt(requestPlan) {
+    const needCatalog = requestPlan.intent === "action" && !!requestPlan.needsCatalog;
+    const currentAppearanceFacts = buildCurrentAppearanceFacts(requestPlan);
+    return getSystemPrompt(needCatalog) +
+      `\n\n【本轮结构化操作计划】\n${JSON.stringify(requestPlan)}\n` +
+      `${currentAppearanceFacts ? `\n${currentAppearanceFacts}\n` : ""}` +
+      `必须以 goal 的最终状态和 constraints 为准。当前实时 Appearance 高于历史对话；不得根据历史声称某道具现在仍存在。` +
+      `operations 是意图提示与操作边界，不是逐字段审查白名单。你可以在同一目标和操作大类内选择完成 goal 所需的 ADD/SET/DEL、精确 Asset 与实际部位。` +
+      `operations.assets 若非空，优先使用规划器从目录解析出的 Asset；只有完整实时目录明确证明它不合适时才改用更准确的 Asset。` +
+      `MOVE 只改变聊天室人物横向站位，绝不能表示进入、躺进、关进或使用设备；这类目标必须通过 ItemDevices 的 ITEMADD/ITEMDEL/ITEMSET 达成。` +
+      `ITEMSET 的值必须来自该道具在目标 group 的精确清单，绝不能把 Arms 的样式套到 Legs/Feet。LeatherDeluxeCuffs 只能放 Arms。命名姿势必须真正设置对应样式，不能只加普通绳索或夹带口塞来冒充。` +
+      `不得改变计划目标人物或跨越操作大类；不得自行夹带移动、表情或其他无关操作。复合操作必须按真实执行顺序输出（例如替换必须先移除再添加，随后才能设置属性）。` +
+      `intent=roleplay 时只在 action 字段写动作描写，commands 必须为空；intent=chat 时只聊天，commands 必须为空。` +
+      `\n\n${structuredReplyInstruction()}`;
+  }
+
+  async function dryRunPlannedRequestForTest(senderNum, senderName, content) {
+    const requestPlan = await planUserRequest(senderNum, senderName, content, null);
+    if (requestPlan?.intent !== "action") {
+      return { requestPlan, raw: null, parsed: null, filtered: null, resolutions: [] };
+    }
+    const systemPrompt = buildMainReplySystemPrompt(requestPlan);
+    const raw = await callLLM(systemPrompt, [{
+      role: "user",
+      content: `【当前必须处理的最新消息】${senderName}#${senderNum}: ${content}\n只回复并执行这一条。历史消息只作上下文,不要补做旧请求。`,
+    }], {
+      thinking: true,
+      temperature: 0,
+      maxTokens: 2048,
+      json: true,
+    });
+    const parsed = parseAssistantReply(raw || "", requestPlan.intent);
+    const filtered = filterCommandsByPlan(requestPlan, parsed.commands);
+    const resolutions = filtered.allowed
+      .filter(command => command.type === "itemadd")
+      .map(command => {
+        const char = actionTargetCharacter(command.memberNumber);
+        const resolved = resolveItemAddTarget(char, command.item, command.part);
+        return {
+          command,
+          resolved: resolved.ok
+            ? {
+                ok: true,
+                group: resolved.group,
+                asset: resolved.asset,
+                partKind: resolved.partKind,
+              }
+            : resolved,
+        };
+      });
+    return { requestPlan, raw, parsed, filtered, resolutions };
+  }
+
   async function handleReply(senderNum, senderName, content) {
     if (!isCurrent()) return;
     const debugId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -4910,18 +5047,7 @@ function unescapeHTML(s) {
       }
 
       const needCatalog = requestPlan.intent === "action" && !!requestPlan.needsCatalog;
-      const currentAppearanceFacts = buildCurrentAppearanceFacts(requestPlan);
-      let systemPrompt = getSystemPrompt(needCatalog) +
-        `\n\n【本轮结构化操作计划】\n${JSON.stringify(requestPlan)}\n` +
-        `${currentAppearanceFacts ? `\n${currentAppearanceFacts}\n` : ""}` +
-        `必须以 goal 的最终状态和 constraints 为准。当前实时 Appearance 高于历史对话；不得根据历史声称某道具现在仍存在。` +
-        `operations 是意图提示与操作边界，不是逐字段审查白名单。你可以在同一目标和操作大类内选择完成 goal 所需的 ADD/SET/DEL、精确 Asset 与实际部位。` +
-        `operations.assets 若非空，优先使用规划器从目录解析出的 Asset；只有完整实时目录明确证明它不合适时才改用更准确的 Asset。` +
-        `MOVE 只改变聊天室人物横向站位，绝不能表示进入、躺进、关进或使用设备；这类目标必须通过 ItemDevices 的 ITEMADD/ITEMDEL/ITEMSET 达成。` +
-        `ITEMSET 的值必须来自该道具在目标 group 的精确清单，绝不能把 Arms 的样式套到 Legs/Feet。LeatherDeluxeCuffs 只能放 Arms。命名姿势必须真正设置对应样式，不能只加普通绳索或夹带口塞来冒充。` +
-        `不得改变计划目标人物或跨越操作大类；不得自行夹带移动、表情或其他无关操作。复合操作必须按真实执行顺序输出（例如替换必须先移除再添加，随后才能设置属性）。` +
-        `intent=roleplay 时只在 action 字段写动作描写，commands 必须为空；intent=chat 时只聊天，commands 必须为空。` +
-        `\n\n${structuredReplyInstruction()}`;
+      let systemPrompt = buildMainReplySystemPrompt(requestPlan);
       console.log(`[MisakaChat] system prompt 构建完成(意图: ${requestPlan.intent}, 完整道具清单: ${needCatalog ? "是" : "否"})`);
 
       let reply = await callLLM(systemPrompt, contextMessages, { json: true });
@@ -5177,7 +5303,7 @@ function unescapeHTML(s) {
     if (sub === "on") { CONFIG.enabled = true; sendLocal("✅ 自动回复已开启"); }
     else if (sub === "off") { CONFIG.enabled = false; sendLocal("⏹ 自动回复已关闭"); }
     else if (sub === "key" && parts[1]) { localStorage.setItem(storageKey("apikey"), parts[1]); sendLocal("🔑 API key 已保存"); }
-    else if (sub === "embedkey" && parts[1]) { localStorage.setItem("misaka_openrouter_key", parts[1]); sendLocal("🔎 OpenRouter embedding key 已保存"); }
+    else if (sub === "embedkey" && parts[1]) { localStorage.setItem("misaka_openai_key", parts[1]); sendLocal("🔎 OpenAI embedding key 已保存"); }
     else if (sub === "model" && parts[1]) { localStorage.setItem(storageKey("model"), parts[1]); CONFIG.model = parts[1]; sendLocal("🤖 模型已切换: " + parts[1]); }
     else if (sub === "activity" && ["on", "off"].includes(parts[1])) {
       CONFIG.activityEnabled = parts[1] === "on";
@@ -5248,7 +5374,7 @@ function unescapeHTML(s) {
       localStorage.setItem(storageKey("persona_extra"), parts.slice(1).join(" "));
       sendLocal("📝 人设附加备注已更新");
     } else {
-      sendLocal("用法: /misaka on|off|activity on|off|sticker on|off|friend on|off|key <key>|embedkey <openrouter-key>|model <name>|status|trace|forget|memory|persona <text>|export|import");
+      sendLocal("用法: /misaka on|off|activity on|off|sticker on|off|friend on|off|key <key>|embedkey <openai-key>|model <name>|status|trace|forget|memory|persona <text>|export|import");
     }
     return true;
   }

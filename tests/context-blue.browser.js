@@ -52,6 +52,17 @@
     const repeats = Math.max(1, Math.min(5, Number(options.repeats) || 3));
     const originalContext = hooks.snapshotRecentMessagesForTest();
     const results = [];
+    const embeddingProviders = hooks.inspectEmbeddingConfigForTest?.() || [];
+    results.push({
+      id: "guard-embedding-uses-only-openai-key",
+      repetition: 1,
+      passed: embeddingProviders.length === 1 &&
+        embeddingProviders[0]?.name === "OpenAI" &&
+        embeddingProviders[0]?.model === "text-embedding-3-large" &&
+        embeddingProviders[0]?.dimensions === 3072 &&
+        JSON.stringify(embeddingProviders[0]?.keyNames) === JSON.stringify(["misaka_openai_key"]),
+      actual: embeddingProviders,
+    });
 
     try {
       const quote = `${nameOf(c)}刚才说“御坂，加我好友”，你听到了吗？`;
@@ -201,6 +212,80 @@
           structuredCommand.commands[0]?.item === "Hairbrush" &&
           structuredCommand.cleaned === "梳子拿好啦。",
         actual: structuredCommand,
+      });
+
+      const resolveItemAddTarget = (item, part) =>
+        hooks.resolveItemAddTargetForTest?.(
+          item,
+          part,
+          Number(b.MemberNumber),
+        ) || null;
+      const nativeDeviceGroup = resolveItemAddTarget("PetBed", "ItemDevices");
+      results.push({
+        id: "guard-itemadd-accepts-validated-native-device-group",
+        repetition: 1,
+        passed: nativeDeviceGroup?.ok === true &&
+          nativeDeviceGroup?.group === "ItemDevices" &&
+          nativeDeviceGroup?.asset === "PetBed",
+        actual: nativeDeviceGroup,
+      });
+
+      const semanticDevicePart = resolveItemAddTarget("PetBed", "Devices");
+      results.push({
+        id: "guard-itemadd-accepts-semantic-device-part",
+        repetition: 1,
+        passed: semanticDevicePart?.ok === true &&
+          semanticDevicePart?.group === "ItemDevices" &&
+          semanticDevicePart?.asset === "PetBed",
+        actual: semanticDevicePart,
+      });
+
+      const omittedDevicePart = resolveItemAddTarget("PetBed", "");
+      results.push({
+        id: "guard-itemadd-uses-asset-default-group-when-part-is-empty",
+        repetition: 1,
+        passed: omittedDevicePart?.ok === true &&
+          omittedDevicePart?.group === "ItemDevices" &&
+          omittedDevicePart?.asset === "PetBed",
+        actual: omittedDevicePart,
+      });
+
+      const incompatibleDeviceGroup = resolveItemAddTarget("PetBed", "ItemArms");
+      results.push({
+        id: "guard-itemadd-rejects-native-group-that-does-not-own-the-asset",
+        repetition: 1,
+        passed: incompatibleDeviceGroup?.ok === false &&
+          incompatibleDeviceGroup?.reason === "incompatible-part",
+        actual: incompatibleDeviceGroup,
+      });
+
+      const nativeHandheldGroup = resolveItemAddTarget("Hairbrush", "ItemHandheld");
+      results.push({
+        id: "guard-itemadd-accepts-validated-native-handheld-group",
+        repetition: 1,
+        passed: nativeHandheldGroup?.ok === true &&
+          nativeHandheldGroup?.group === "ItemHandheld" &&
+          nativeHandheldGroup?.asset === "Hairbrush",
+        actual: nativeHandheldGroup,
+      });
+
+      const semanticArmPart = resolveItemAddTarget("HempRope", "Arms");
+      results.push({
+        id: "guard-itemadd-keeps-semantic-limb-placement",
+        repetition: 1,
+        passed: semanticArmPart?.ok === true &&
+          semanticArmPart?.group === "ItemArms" &&
+          semanticArmPart?.asset === "HempRope",
+        actual: semanticArmPart,
+      });
+
+      const unknownPart = resolveItemAddTarget("PetBed", "Furniture");
+      results.push({
+        id: "guard-itemadd-rejects-unknown-freeform-part",
+        repetition: 1,
+        passed: unknownPart?.ok === false &&
+          unknownPart?.reason === "unknown-part",
+        actual: unknownPart,
       });
 
       const structuredMove = hooks.parseAssistantReplyForTest(JSON.stringify({

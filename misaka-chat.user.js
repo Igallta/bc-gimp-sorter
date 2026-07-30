@@ -16,7 +16,6 @@
 // @grant        GM_getValue
 // @connect      api.deepseek.com
 // @connect      api.openai.com
-// @connect      openrouter.ai
 // @run-at       document-end
 // ==/UserScript==
 
@@ -25,8 +24,7 @@
 
   // 不再硬编码任何 API key — 通过 BC 控制台手动设置：
   // localStorage.setItem("misaka_apikey", "sk-xxx")
-  // localStorage.setItem("misaka_openrouter_key", "sk-or-v1-xxx")
-  // localStorage.setItem("misaka_openai_key", "sk-xxx") // 旧 OpenAI embedding 兜底
+  // localStorage.setItem("misaka_openai_key", "sk-proj-xxx")
 
   // 把 GM 函数暴露到 window，让注入的脚本能用
   try { window.__GM_xmlhttpRequest = GM_xmlhttpRequest; } catch(e) {}

@@ -144,6 +144,24 @@ It validates `misaka.reply.v1` parsing without calling `ChatRoomSendChat`,
 node tests/run-reply-protocol-cdp.mjs
 ```
 
+## Planned item-operation browser suite
+
+`run-item-operation-blue-cdp.mjs` drives the real planner and reply model for
+natural device requests, then resolves every generated `itemadd` through the
+same target-group resolver used by execution. It does not call the mutating
+executor or send room messages.
+
+The fixture currently requires Rin to be present and covers the colloquial,
+Chinese asset-name and explicit BC asset-name forms of the pet-bed request:
+
+```bash
+node tests/run-item-operation-blue-cdp.mjs --repeats=3
+```
+
+It asserts that every request targets Rin, resolves to `PetBed`, survives the
+plan boundary and maps semantic, native or omitted `part` values to the real
+`ItemDevices` group.
+
 To repeat only selected cases while limiting model cost:
 
 ```bash
