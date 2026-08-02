@@ -1496,6 +1496,48 @@ ${recentSemantic}`;
     return text.replace(/\s+/g, " ").trim();
   }
 
+  const IDENTITY_VARIANT_FOLD = Object.freeze({
+    "殘": "残",
+    "楓": "枫",
+  });
+
+  function foldIdentityText(value) {
+    return String(value || "").normalize("NFKC").toLowerCase()
+      .replace(/[殘楓]/g, character => IDENTITY_VARIANT_FOLD[character] || character)
+      .replace(/\s+/g, " ").trim();
+  }
+
+  function identityTextContains(content, alias) {
+    const text = foldIdentityText(content);
+    const name = foldIdentityText(alias);
+    if (!name) return false;
+    if (/^[\x00-\x7F]+$/.test(name)) {
+      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return new RegExp(`(^|[^a-z0-9_])${escaped}(?=$|[^a-z0-9_])`, "i").test(text);
+    }
+    return text.includes(name);
+  }
+
+  function beginsWithMisakaInvocation(content) {
+    const text = foldIdentityText(content);
+    const aliases = [...new Set([
+      "御坂", "御搬", "Misaka", Player?.Nickname, Player?.Name,
+    ].map(foldIdentityText).filter(Boolean))];
+    return aliases.some(alias => text === alias ||
+      text.startsWith(`${alias}，`) || text.startsWith(`${alias},`) ||
+      text.startsWith(`${alias}：`) || text.startsWith(`${alias}:`) ||
+      text.startsWith(`${alias} `));
+  }
+
+  function discardInvocationSelfMatch(matches, content) {
+    const playerNumber = Number(Player?.MemberNumber);
+    if (matches.size > 1 && Number.isFinite(playerNumber) &&
+        matches.has(playerNumber) && beginsWithMisakaInvocation(content)) {
+      matches.delete(playerNumber);
+    }
+    return matches;
+  }
+
   function hasPairedQuotedSegment(content) {
     return /“[^”]*”|‘[^’]*’|「[^」]*」|『[^』]*』|"[^"]*"|'[^']*'/.test(
       String(content || ""),
@@ -1564,14 +1606,12 @@ ${recentSemantic}`;
     const matched = new Map();
     for (const character of ChatRoomCharacter) {
       const displayName = String(character?.Nickname || character?.Name || "").trim();
-      if (displayName.length < 2) continue;
-      const escaped = displayName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const asciiName = /^[\x00-\x7F]+$/.test(displayName);
-      const pattern = asciiName
-        ? new RegExp(`(^|[^A-Za-z0-9_])${escaped}(?=$|[^A-Za-z0-9_])`, "i")
-        : new RegExp(escaped);
-      if (pattern.test(text)) matched.set(Number(character.MemberNumber), character);
+      if (displayName.length < 2 && !/[^\x00-\x7F]/.test(displayName)) continue;
+      if (identityTextContains(text, displayName)) {
+        matched.set(Number(character.MemberNumber), character);
+      }
     }
+    discardInvocationSelfMatch(matched, text);
     // 账号名可能与另一位玩家的当前显示名重复。用户直接写出唯一显示名时，
     // 显示名优先；若同时明确提到多个人，则保留规划器对主客体的判断。
     if (matched.size !== 1) return plan;
@@ -1595,15 +1635,131 @@ ${recentSemantic}`;
         character?.Nickname,
         character?.Name,
         `#${memberNumber}`,
-      ].map(value => String(value || "").trim()).filter(value => value.length >= 2))];
-      if (aliases.some(alias => {
-        const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        return /^[\x00-\x7F]+$/.test(alias)
-          ? new RegExp(`(^|[^A-Za-z0-9_])${escaped}(?=$|[^A-Za-z0-9_])`, "i").test(text)
-          : new RegExp(escaped).test(text);
-      })) matches.set(memberNumber, character);
+      ].map(value => String(value || "").trim()).filter(value =>
+        value.length >= 2 || /[^\x00-\x7F]/.test(value)))];
+      if (aliases.some(alias => identityTextContains(text, alias))) {
+        matches.set(memberNumber, character);
+      }
     }
+    discardInvocationSelfMatch(matches, text);
     return matches.size === 1 ? [...matches.values()][0] : null;
+  }
+
+  function findExplicitHandheldAsset(content, target) {
+    if (!target || typeof Asset === "undefined" || !Array.isArray(Asset) ||
+        typeof AssetGet !== "function") return null;
+    const text = foldIdentityText(content);
+    const candidates = Asset.filter(asset => {
+      if (asset?.Group?.Name !== "ItemHandheld" ||
+          !AssetGet(target.AssetFamily, "ItemHandheld", asset.Name)) return false;
+      const aliases = [...new Set([
+        asset.Name,
+        asset.Description,
+        assetCnName(asset),
+      ].map(value => String(value || "").trim()).filter(value => value.length >= 2))];
+      return aliases.some(alias => text.includes(foldIdentityText(alias)));
+    });
+    const names = [...new Set(candidates.map(asset => asset.Name))];
+    return names.length === 1 ? names[0] : null;
+  }
+
+  function findPreferredHandheldFoodAsset(target, excludedAsset = "") {
+    if (!target || typeof AssetGet !== "function") return null;
+    const excluded = String(excludedAsset || "");
+    const preferred = ["棒棒糖", "烤鱼", "蛋糕卷", "鸡腿", "糖果手杖"];
+    return preferred.find(name => name !== excluded &&
+      !!AssetGet(target.AssetFamily, "ItemHandheld", name)) || null;
+  }
+
+  // “给某人一个/一份 X”在御坂协议中表示把真实 ItemHandheld 放到目标手里。
+  // 这一语义可由当前房间名单和 Asset 目录完全确定，不应让规划器在御坂本人、
+  // ItemMouth 与纯文字 roleplay 之间漂移。
+  function normalizePlannerHandheldGiveDecision(plan, content, senderNum) {
+    if (!plan || !Array.isArray(ChatRoomCharacter)) return plan;
+    const text = stripQuotedSegments(content);
+    if (!/(?:给|給|递给|遞給|交给|交給|放到|放在|塞到|塞進|塞进)/.test(text) ||
+        /(?:不要|別|别|不用|无需|無需|不必).{0,12}(?:给|給|递|遞|放|塞)/.test(text) ||
+        /(?:喂|餵|吃一口|尝一口|嘗一口|递到嘴边|遞到嘴邊|放到嘴里|放到嘴裡|含住|舔)/.test(text)) {
+      return plan;
+    }
+    let target = findUniqueMentionedRoomCharacter(text);
+    const givesToSender = /(?:给|給|递给|遞給|交给|交給).{0,5}我(?:一|个|個|份|根|点|點|些|$)|(?:我的手|我手里|我手裡)/.test(text);
+    if (givesToSender) {
+      target = ChatRoomCharacter.find(character =>
+        Number(character?.MemberNumber) === Number(senderNum)) || target;
+    }
+    if (!target) return plan;
+    const explicitAsset = findExplicitHandheldAsset(text, target);
+    const genericFood = /(?:点|點|份|些|个|個|根).{0,4}(?:吃的|食物|零食)|(?:吃的|食物|零食).{0,4}(?:给|給)/.test(text);
+    if (!explicitAsset && !genericFood) return plan;
+    const selectedAsset = explicitAsset || findPreferredHandheldFoodAsset(target);
+    if (!selectedAsset) return plan;
+
+    plan.intent = "action";
+    plan.failed = false;
+    plan.memorySearch = false;
+    plan.memoryEntities = [];
+    plan.stickerId = "";
+    plan.needsCatalog = true;
+    plan.operations = [{
+      types: ["itemadd", "itemset"],
+      targets: [Number(target.MemberNumber)],
+      parts: ["ItemHandheld"],
+      assets: [selectedAsset],
+    }];
+    plan.goal = `把${selectedAsset}放到${target.Nickname || target.Name}手里`;
+    plan.question = "";
+    return plan;
+  }
+
+  function normalizePlannerExpiredHandheldReplacement(plan, content) {
+    if (!plan || !Array.isArray(ChatRoomCharacter)) return plan;
+    const text = stripQuotedSegments(content);
+    if (!/(?:过期|過期|坏了|壞了|不新鲜|不新鮮)/.test(text) ||
+        !/(?:换个别的|換個別的|换一个|換一個|换根新的|換根新的)/.test(text)) {
+      return plan;
+    }
+    let target = findUniqueMentionedRoomCharacter(text);
+    if (/(?:你手里|你手裡|你拿着|你拿著)/.test(text)) target = Player;
+    if (!target) return plan;
+    const worn = (target.Appearance || []).filter(item => {
+      if (item?.Asset?.Group?.Name !== "ItemHandheld") return false;
+      const aliases = [item.Asset.Name, item.Asset.Description, assetCnName(item.Asset)];
+      return aliases.some(alias => alias && foldIdentityText(text).includes(foldIdentityText(alias)));
+    });
+    if (worn.length !== 1) return plan;
+    const oldAsset = worn[0].Asset.Name;
+    const newAsset = findPreferredHandheldFoodAsset(target, oldAsset);
+    if (!newAsset) return plan;
+
+    plan.intent = "action";
+    plan.failed = false;
+    plan.memorySearch = false;
+    plan.memoryEntities = [];
+    plan.stickerId = "";
+    plan.needsCatalog = true;
+    plan.operations = [{
+      types: ["itemdel"],
+      targets: [Number(target.MemberNumber)],
+      parts: ["ItemHandheld"],
+      assets: [oldAsset],
+    }, {
+      types: ["itemadd", "itemset"],
+      targets: [Number(target.MemberNumber)],
+      parts: ["ItemHandheld"],
+      assets: [newAsset],
+    }];
+    plan.constraints = {
+      ...(plan.constraints || {}),
+      noMove: true,
+      noAdd: false,
+      replaceExisting: true,
+      noStack: true,
+      preserveParts: [],
+    };
+    plan.goal = `把${target.Nickname || target.Name}手里的${oldAsset}换成${newAsset}`;
+    plan.question = "";
+    return plan;
   }
 
   function normalizePlannerExplicitItemAddDecision(plan, content) {
@@ -2224,6 +2380,8 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
       }
       plan.operations = normalizePlannerOperations(plan.operations, roomNumbers, validTypes, validParts);
       normalizePlannerExplicitActionTargets(plan, content);
+      normalizePlannerHandheldGiveDecision(plan, content, senderNum);
+      normalizePlannerExpiredHandheldReplacement(plan, content);
       normalizePlannerExplicitItemAddDecision(plan, content);
       normalizePlannerColloquialItemAliases(plan, content);
       normalizePlannerAmbiguousSingleItemDecision(plan, content);
@@ -2290,7 +2448,7 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
       return plan;
     } catch (e) {
       console.warn("[MisakaChat] 请求规划失败:", e.message, result);
-      const fallbackPlan = normalizePlannerExplicitItemAddDecision({
+      let fallbackPlan = normalizePlannerHandheldGiveDecision({
         intent: "clarify",
         memorySearch: false,
         memoryEntities: [],
@@ -2299,7 +2457,9 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
         operations: [],
         question: "我没听明白要做什么，能再说具体一点吗？",
         failed: true,
-      }, content);
+      }, content, senderNum);
+      fallbackPlan = normalizePlannerExpiredHandheldReplacement(fallbackPlan, content);
+      fallbackPlan = normalizePlannerExplicitItemAddDecision(fallbackPlan, content);
       return normalizePlannerBroadDestructiveDecision(fallbackPlan, content);
     }
   }
@@ -2875,13 +3035,38 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
     return { ...cmd, part: mapping.group };
   }
 
+  function canonicalizeExactAssetPartToPlan(cmd, operations) {
+    if (!cmd?.item || !["itemadd", "itemdel", "itemset"].includes(cmd.type)) return cmd;
+    const target = commandPrimaryTarget(cmd);
+    const char = actionTargetCharacter(target);
+    const mapping = findItemAsset(cmd.item, char);
+    if (!char || !mapping) return cmd;
+    const operation = (operations || []).find(candidate => {
+      if (!commandWithinLoosePlanBoundary(cmd, candidate) || candidate?.parts?.length !== 1) return false;
+      const assets = (candidate.assets || []).map(asset => String(asset).toLowerCase());
+      return assets.length > 0 && assets.includes(String(mapping.asset).toLowerCase());
+    });
+    if (!operation) return cmd;
+    const plannedPart = String(operation.parts[0] || "").trim();
+    const plannedGroups = BODY_PART_GROUPS[plannedPart] ||
+      (/^Item[A-Za-z0-9]+$/.test(plannedPart) ? [plannedPart] : []);
+    if (plannedGroups.length !== 1 ||
+        !AssetGet(char.AssetFamily, plannedGroups[0], mapping.asset)) return cmd;
+    const actualGroups = itemCommandResolvedGroups(cmd);
+    if (actualGroups.length === 1 && actualGroups[0] === plannedGroups[0]) return cmd;
+    // 只有“目标、精确 Asset、唯一原生 group”均已由确定性目录锁定时才纠正。
+    // 这覆盖“放到手里却生成 ItemMouth”，不会把模糊身体部位静默改写。
+    return { ...cmd, part: plannedGroups[0] };
+  }
+
   // 宽松审查：只拦截跨对象、跨操作大类、明确禁止项与高影响未授权操作。
   // Asset、部位和 ADD/SET/DEL 细分不再要求与规划器逐字匹配。
   function filterCommandsByPlan(plan, commands) {
     const operations = Array.isArray(plan?.operations) ? plan.operations : [];
     const executable = commands
       .filter(c => !["memsearch", "bcequery"].includes(c.type))
-      .map(command => canonicalizeUnscopedExactAssetPart({ ...command }, operations));
+      .map(command => canonicalizeUnscopedExactAssetPart({ ...command }, operations))
+      .map(command => canonicalizeExactAssetPartToPlan(command, operations));
     if (!plan || plan.intent !== "action") {
       return { allowed: [], rejected: executable.map(cmd => ({ cmd, reason: "not-an-action-plan" })) };
     }
@@ -2999,6 +3184,19 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
       enrichPlannerAssetsFromExplicitMentions(plan, content),
     normalizePlannerExplicitActionTargetsForTest: (plan, content) =>
       normalizePlannerExplicitActionTargets(plan, content),
+    findUniqueMentionedRoomCharacterForTest: content => {
+      const character = findUniqueMentionedRoomCharacter(content);
+      return character ? {
+        memberNumber: Number(character.MemberNumber),
+        name: character.Nickname || character.Name,
+      } : null;
+    },
+    beginsWithMisakaInvocationForTest: beginsWithMisakaInvocation,
+    foldIdentityTextForTest: foldIdentityText,
+    normalizePlannerHandheldGiveDecisionForTest: (plan, content, senderNum) =>
+      normalizePlannerHandheldGiveDecision(JSON.parse(JSON.stringify(plan || {})), content, senderNum),
+    normalizePlannerExpiredHandheldReplacementForTest: (plan, content) =>
+      normalizePlannerExpiredHandheldReplacement(JSON.parse(JSON.stringify(plan || {})), content),
     normalizePlannerExplicitItemAddDecisionForTest: (plan, content) =>
       normalizePlannerExplicitItemAddDecision(JSON.parse(JSON.stringify(plan || {})), content),
     normalizePlannerColloquialItemAliasesForTest: (plan, content) =>
