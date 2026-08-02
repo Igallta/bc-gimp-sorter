@@ -1,4 +1,4 @@
-// MisakaChat v3.0.1 - BC 御坂自动回复系统
+// MisakaChat v3.0.2 - BC 御坂自动回复系统
 // 模块分区:
 //   [Config]      L15-55   配置 + 状态
 //   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "3.0.1";
+  const SCRIPT_VERSION = "3.0.2";
   const RELEASE_CHANNEL = "stable";
   const bootstrapOptions = window.__misakaNextBootstrapOptions || {};
   delete window.__misakaNextBootstrapOptions;
