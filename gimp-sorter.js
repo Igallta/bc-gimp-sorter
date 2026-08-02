@@ -1,11 +1,11 @@
-// GimpSorter v1.7.0 — BC Gimp Doll 自动排序 mod
+// GimpSorter v1.7.1 — BC Gimp Doll 自动排序 mod
 // 通过 bcModSdk.registerMod 注册，掉线重连后由油猴自动重新加载
-// 排序规则：GIMP → Gimp → Doll → GIMP Pet → Pet → Error，组内按编号升序
+// 排序规则：GIMP → Gimp → Doll → GIMP Pet → Pet → Error，组内先三位、后四位，再按编号升序
 // 策略：只使用 MoveLeft，行为更稳定可预测
 (function() {
   "use strict";
 
-  const version = "1.7.0";
+  const version = "1.7.1";
   if (window.__GimpSorterLoaded) {
     console.log("[GimpSorter] already loaded: " + window.__GimpSorterLoaded);
     return;
@@ -28,12 +28,12 @@
   };
 
   const dollTypes = [
-    { type: "GIMP", rank: 0, pattern: /^GIMP (\d{3})$/ },
-    { type: "Gimp", rank: 1, pattern: /^Gimp (\d{3})$/ },
-    { type: "Doll", rank: 2, pattern: /^Doll (\d{3})$/i },
-    { type: "GIMP Pet", rank: 3, pattern: /^GIMP Pet (\d{3})$/i },
-    { type: "Pet", rank: 4, pattern: /^Pet (\d{3})$/i },
-    { type: "Error", rank: 5, pattern: /^Error (\d{3})$/i },
+    { type: "GIMP", rank: 0, pattern: /^GIMP (\d{3,4})$/ },
+    { type: "Gimp", rank: 1, pattern: /^Gimp (\d{3,4})$/ },
+    { type: "Doll", rank: 2, pattern: /^Doll (\d{3,4})$/i },
+    { type: "GIMP Pet", rank: 3, pattern: /^GIMP Pet (\d{3,4})$/i },
+    { type: "Pet", rank: 4, pattern: /^Pet (\d{3,4})$/i },
+    { type: "Error", rank: 5, pattern: /^Error (\d{3,4})$/i },
   ];
 
   function log(msg) {
@@ -60,6 +60,7 @@
         return {
           type: dollType.type,
           typeRank: dollType.rank,
+          digitCount: match[1].length,
           number: parseInt(match[1], 10),
         };
       }
@@ -67,15 +68,21 @@
 
     // 除规范的全大写 GIMP 外，其余大小写变体归入 Gimp 组。
     // 这样既兼容旧名字，也保留房间要求的 GIMP → Gimp 优先级。
-    const mixedCaseGimp = /^gimp (\d{3})$/i.exec(name);
+    const mixedCaseGimp = /^gimp (\d{3,4})$/i.exec(name);
     if (mixedCaseGimp) {
-      return { type: "Gimp", typeRank: 1, number: parseInt(mixedCaseGimp[1], 10) };
+      return {
+        type: "Gimp",
+        typeRank: 1,
+        digitCount: mixedCaseGimp[1].length,
+        number: parseInt(mixedCaseGimp[1], 10),
+      };
     }
     return null;
   }
 
   function compareDolls(a, b) {
     return a.typeRank - b.typeRank ||
+      a.digitCount - b.digitCount ||
       a.dollNumber - b.dollNumber ||
       a.index - b.index;
   }
@@ -92,6 +99,7 @@
           nickname,
           dollType: identity.type,
           typeRank: identity.typeRank,
+          digitCount: identity.digitCount,
           dollNumber: identity.number,
         } : null;
       })
@@ -122,6 +130,7 @@
         index,
         dollType: entry.identity.type,
         typeRank: entry.identity.typeRank,
+        digitCount: entry.identity.digitCount,
         dollNumber: entry.identity.number,
       } : null)
       .filter(Boolean)
@@ -234,6 +243,7 @@
           nickname,
           index,
           typeRank: identity.typeRank,
+          digitCount: identity.digitCount,
           dollNumber: identity.number,
         } : null;
       }).filter(Boolean).sort(compareDolls).map(entry => entry.nickname);

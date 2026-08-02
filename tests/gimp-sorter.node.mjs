@@ -24,23 +24,23 @@ assert.ok(hooks, "test hooks should be exposed");
 let assertions = 1;
 
 const recognized = [
-  ["GIMP 104", "GIMP", 104],
-  ["Gimp 104", "Gimp", 104],
-  ["gimp 104", "Gimp", 104],
-  ["DOLL 441", "Doll", 441],
-  ["gimp pet 135", "GIMP Pet", 135],
-  ["PET 777", "Pet", 777],
-  ["error 795", "Error", 795],
+  ["GIMP 104", "GIMP", 3, 104],
+  ["Gimp 1004", "Gimp", 4, 1004],
+  ["gimp 104", "Gimp", 3, 104],
+  ["DOLL 1441", "Doll", 4, 1441],
+  ["gimp pet 135", "GIMP Pet", 3, 135],
+  ["PET 1777", "Pet", 4, 1777],
+  ["error 795", "Error", 3, 795],
 ];
-for (const [name, type, number] of recognized) {
+for (const [name, type, digitCount, number] of recognized) {
   assert.deepEqual(
     { ...hooks.parseDollIdentity(name) },
-    { type, typeRank: ["GIMP", "Gimp", "Doll", "GIMP Pet", "Pet", "Error"].indexOf(type), number },
+    { type, typeRank: ["GIMP", "Gimp", "Doll", "GIMP Pet", "Pet", "Error"].indexOf(type), digitCount, number },
   );
   assertions++;
 }
 
-for (const name of ["GIMP 12", "GIMP 1234", "GIMP Pet", "Player 104", "Doll ABC"]) {
+for (const name of ["GIMP 12", "GIMP 12345", "GIMP Pet", "Player 104", "Doll ABC"]) {
   assert.equal(hooks.parseDollIdentity(name), null, `${name} should not be sortable`);
   assertions++;
 }
@@ -53,26 +53,34 @@ const input = [
   "Doll 003",
   "Gimp 010",
   "GIMP 020",
+  "GIMP 1200",
+  "GIMP 1001",
   "GIMP 001",
   "Gimp 002",
   "Doll 001",
+  "Doll 1000",
   "GIMP Pet 001",
   "Pet 003",
   "Error 001",
+  "Error 1002",
 ];
 assert.deepEqual(Array.from(hooks.sortNames(input)), [
   "GIMP 001",
   "GIMP 020",
+  "GIMP 1001",
+  "GIMP 1200",
   "Gimp 002",
   "Gimp 010",
   "Doll 001",
   "Doll 003",
+  "Doll 1000",
   "GIMP Pet 001",
   "GIMP Pet 009",
   "Pet 001",
   "Pet 003",
   "Error 001",
   "Error 002",
+  "Error 1002",
 ]);
 assertions++;
 
@@ -92,7 +100,7 @@ for (const step of hooks.getMoveLeftPlan()) {
 }
 assertions++;
 assert.deepEqual(
-  simulatedOrder.slice(0, 12).map(character => character.Nickname),
+  simulatedOrder.slice(0, hooks.sortNames(input).length).map(character => character.Nickname),
   Array.from(hooks.sortNames(input)),
 );
 assertions++;
