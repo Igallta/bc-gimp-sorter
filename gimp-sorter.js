@@ -1,11 +1,11 @@
-// GimpSorter v1.6.5 — BC Gimp Doll 自动排序 mod
+// GimpSorter v1.7.0 — BC Gimp Doll 自动排序 mod
 // 通过 bcModSdk.registerMod 注册，掉线重连后由油猴自动重新加载
-// 排序规则：所有 GIMP 娃娃按编号从小到大排在房间最前面
+// 排序规则：GIMP → Gimp → Doll → GIMP Pet → Pet → Error，组内按编号升序
 // 策略：只使用 MoveLeft，行为更稳定可预测
 (function() {
   "use strict";
 
-  const version = "1.6.5";
+  const version = "1.7.0";
   if (window.__GimpSorterLoaded) {
     console.log("[GimpSorter] already loaded: " + window.__GimpSorterLoaded);
     return;
@@ -23,10 +23,18 @@
     enabled: true,
     pollMs: 1000,
     sortCooldownMs: 1000,  // 排序后等待服务器同步
-    gimpPattern: /^GIMP \d{3}$/,
     busy: false,
     debug: false,
   };
+
+  const dollTypes = [
+    { type: "GIMP", rank: 0, pattern: /^GIMP (\d{3})$/ },
+    { type: "Gimp", rank: 1, pattern: /^Gimp (\d{3})$/ },
+    { type: "Doll", rank: 2, pattern: /^Doll (\d{3})$/i },
+    { type: "GIMP Pet", rank: 3, pattern: /^GIMP Pet (\d{3})$/i },
+    { type: "Pet", rank: 4, pattern: /^Pet (\d{3})$/i },
+    { type: "Error", rank: 5, pattern: /^Error (\d{3})$/i },
+  ];
 
   function log(msg) {
     if (typeof ChatRoomSendLocal === "function") {
@@ -44,27 +52,56 @@
     if (config.debug) log(msg);
   }
 
-  function getGimpNumber(nickname) {
-    const m = /^GIMP (\d{3})$/.exec(nickname || "");
-    return m ? parseInt(m[1], 10) : null;
+  function parseDollIdentity(nickname) {
+    const name = String(nickname || "").trim();
+    for (const dollType of dollTypes) {
+      const match = dollType.pattern.exec(name);
+      if (match) {
+        return {
+          type: dollType.type,
+          typeRank: dollType.rank,
+          number: parseInt(match[1], 10),
+        };
+      }
+    }
+
+    // 除规范的全大写 GIMP 外，其余大小写变体归入 Gimp 组。
+    // 这样既兼容旧名字，也保留房间要求的 GIMP → Gimp 优先级。
+    const mixedCaseGimp = /^gimp (\d{3})$/i.exec(name);
+    if (mixedCaseGimp) {
+      return { type: "Gimp", typeRank: 1, number: parseInt(mixedCaseGimp[1], 10) };
+    }
+    return null;
   }
 
-  function getGimps() {
+  function compareDolls(a, b) {
+    return a.typeRank - b.typeRank ||
+      a.dollNumber - b.dollNumber ||
+      a.index - b.index;
+  }
+
+  function getDolls() {
     if (typeof ChatRoomCharacter === "undefined" || !ChatRoomCharacter) return [];
     return ChatRoomCharacter
-      .map((c, i) => ({
-        index: i,
-        memberNumber: c.MemberNumber,
-        nickname: c.Nickname || c.Name || "",
-        gimpNum: getGimpNumber(c.Nickname || c.Name || ""),
-      }))
-      .filter(c => c.gimpNum !== null);
+      .map((c, i) => {
+        const nickname = c.Nickname || c.Name || "";
+        const identity = parseDollIdentity(nickname);
+        return identity ? {
+          index: i,
+          memberNumber: c.MemberNumber,
+          nickname,
+          dollType: identity.type,
+          typeRank: identity.typeRank,
+          dollNumber: identity.number,
+        } : null;
+      })
+      .filter(Boolean);
   }
 
   function needsReorder() {
-    const gimps = getGimps();
-    if (gimps.length === 0) return false;
-    const sorted = [].concat(gimps).sort((a, b) => a.gimpNum - b.gimpNum);
+    const dolls = getDolls();
+    if (dolls.length === 0) return false;
+    const sorted = [].concat(dolls).sort(compareDolls);
     for (let i = 0; i < sorted.length; i++) {
       if (sorted[i].index !== i) return true;
     }
@@ -77,20 +114,28 @@
     const order = ChatRoomCharacter.map(c => ({
       memberNumber: c.MemberNumber,
       nickname: c.Nickname || c.Name || "",
-      gimpNum: getGimpNumber(c.Nickname || c.Name || ""),
+      identity: parseDollIdentity(c.Nickname || c.Name || ""),
     }));
-    const sortedGimps = order
-      .filter(c => c.gimpNum !== null)
-      .sort((a, b) => a.gimpNum - b.gimpNum);
+    const sortedDolls = order
+      .map((entry, index) => entry.identity ? {
+        ...entry,
+        index,
+        dollType: entry.identity.type,
+        typeRank: entry.identity.typeRank,
+        dollNumber: entry.identity.number,
+      } : null)
+      .filter(Boolean)
+      .sort(compareDolls);
     const plan = [];
 
-    for (let targetPos = 0; targetPos < sortedGimps.length; targetPos++) {
-      const target = sortedGimps[targetPos];
+    for (let targetPos = 0; targetPos < sortedDolls.length; targetPos++) {
+      const target = sortedDolls[targetPos];
       let currentPos = order.findIndex(c => c.memberNumber === target.memberNumber);
       while (currentPos > targetPos) {
         plan.push({
           memberNumber: target.memberNumber,
-          gimpNum: target.gimpNum,
+          dollType: target.dollType,
+          dollNumber: target.dollNumber,
           from: currentPos,
           to: currentPos - 1,
         });
@@ -120,7 +165,7 @@
           Action: "MoveLeft",
           Publish: false
         });
-        debug("GIMP " + step.gimpNum + " " + step.from + "→" + step.to);
+        debug(step.dollType + " " + String(step.dollNumber).padStart(3, "0") + " " + step.from + "→" + step.to);
         await sleep(50);
       }
 
@@ -152,14 +197,14 @@
         config.debug = false;
         log("debug 已关闭");
       } else if (cmd === "status") {
-        const gimps = getGimps();
-        const sorted = [].concat(gimps).sort((a, b) => a.gimpNum - b.gimpNum);
-        log("状态: " + (config.enabled ? "开启" : "关闭") + " | debug: " + (config.debug ? "开" : "关") + " | GIMP: " + gimps.length + "个 | 需排序: " + needsReorder() + " | 搬运中: " + config.busy);
-        log("目标顺序: " + sorted.map(g => g.gimpNum).join(" → "));
-        gimps.forEach(g => {
-          const targetPos = sorted.findIndex(s => s.memberNumber === g.memberNumber);
-          const ok = g.index === targetPos;
-          log("  GIMP " + g.gimpNum + " (#" + g.memberNumber + ") @ 位置" + g.index + (ok ? " ✓" : " → 目标位置" + targetPos));
+        const dolls = getDolls();
+        const sorted = [].concat(dolls).sort(compareDolls);
+        log("状态: " + (config.enabled ? "开启" : "关闭") + " | debug: " + (config.debug ? "开" : "关") + " | 娃娃: " + dolls.length + "个 | 需排序: " + needsReorder() + " | 搬运中: " + config.busy);
+        log("目标顺序: " + sorted.map(d => d.dollType + " " + String(d.dollNumber).padStart(3, "0")).join(" → "));
+        dolls.forEach(d => {
+          const targetPos = sorted.findIndex(s => s.memberNumber === d.memberNumber);
+          const ok = d.index === targetPos;
+          log("  " + d.dollType + " " + String(d.dollNumber).padStart(3, "0") + " (#" + d.memberNumber + ") @ 位置" + d.index + (ok ? " ✓" : " → 目标位置" + targetPos));
         });
       } else {
         log("用法: /gimpsorter on|off|status|debug on|debug off");
@@ -177,6 +222,23 @@
       sortOnce();
     }
   }, config.pollMs);
+
+  window.__GimpSorterTestHooks = {
+    parseDollIdentity,
+    getMoveLeftPlan,
+    needsReorder,
+    sortNames(names) {
+      return names.map((nickname, index) => {
+        const identity = parseDollIdentity(nickname);
+        return identity ? {
+          nickname,
+          index,
+          typeRank: identity.typeRank,
+          dollNumber: identity.number,
+        } : null;
+      }).filter(Boolean).sort(compareDolls).map(entry => entry.nickname);
+    },
+  };
 
   console.log("[GimpSorter] Gimp Doll 自动排序 v" + version + " 已加载（MoveLeft only）");
 })();
