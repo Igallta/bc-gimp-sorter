@@ -3,7 +3,7 @@
 为 Bondage Club 的 Gimp Dolls 房间维护的两个用户脚本：
 
 - **GimpSorter v1.7.1**：按 `GIMP → Gimp → Doll → GIMP Pet → Pet → Error` 分类；组内先排三位编号，再排四位编号，并各自按数值升序整理。
-- **MisakaChat v3.0.2**：御坂房间 Bot，提供结构化角色回复、人物与长期记忆、角色扮演、BC 原生互动、语境表情包、好友能力和受控的 BC 操作。
+- **MisakaChat v3.0.3**：御坂房间 Bot，提供结构化角色回复、人物与长期记忆、角色扮演、BC 原生互动、语境表情包、好友能力和受控的 BC 操作。
 
 当前支持 BC 的 `R*` 版本路径，不再绑定特定的 R129/R130：
 
