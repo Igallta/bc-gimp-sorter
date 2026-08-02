@@ -84,6 +84,9 @@ try {
   await evaluate(client, await readFile(new URL("../misaka-chat.js", import.meta.url), "utf8"));
   const cases = [
     { id: "chat-speech", intent: "chat", content: "御坂，晚上好呀", commandCount: 0 },
+    { id: "chat-rain-super-s", intent: "chat", content: "御搬，Rain是超级大s吗", commandCount: 0 },
+    { id: "chat-new-architecture-unstable", intent: "chat", content: "御坂的新架构不太稳定", commandCount: 0 },
+    { id: "chat-repeated-invocation", intent: "chat", content: "御坂御坂御坂御坂御坂御坂御坂御坂御坂御坂御坂御坂御坂御坂", commandCount: 0 },
     { id: "chat-action-and-speech", intent: "chat", content: "听说我把动作格式修好了，你有什么反应？", commandCount: 0 },
     { id: "roleplay-action", intent: "roleplay", content: "御坂，假装歪头看着我，再问我怎么了", commandCount: 0 },
     {

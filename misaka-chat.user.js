@@ -37,6 +37,37 @@
   const ASSET_REVISION = "7ba7340";
   const BASE_URL = `https://raw.githack.com/Igallta/bc-gimp-sorter/${ASSET_REVISION}`;
 
+  // BC 的“返回上个房间并恢复管理员房间”会在搜索阶段短暂没找到房间时
+  // 调用 ChatRoomCreate，随后由 ChatRoomRecreate 以当前玩家身份发布一次完整
+  // Room Update。御坂只是房间管理员，不应因为自动回房而重建/覆盖公共房间。
+  // 仅在 ChatSearchAutoJoinRoom 本次调用期间临时关闭管理员恢复；找到现有房间
+  // 后的正常加入不依赖该开关，账号持久设置也不会被修改。
+  function installNativeRoomRecreateGuard(attempts) {
+    attempts = attempts || 0;
+    if (typeof ChatSearchAutoJoinRoom !== "function" ||
+        typeof Player === "undefined" || !Player) {
+      if (attempts < 600) setTimeout(() => installNativeRoomRecreateGuard(attempts + 1), 50);
+      return;
+    }
+    if (Player.MemberNumber !== 194331 || window.__misakaNativeRoomRecreateGuard) return;
+    const original = ChatSearchAutoJoinRoom;
+    window.__misakaOrigChatSearchAutoJoinRoom = original;
+    window.ChatSearchAutoJoinRoom = function() {
+      const settings = Player?.ImmersionSettings;
+      const restoreAdminRoom = settings?.ReturnToChatRoomAdmin;
+      if (settings) settings.ReturnToChatRoomAdmin = false;
+      try {
+        return original.apply(this, arguments);
+      } finally {
+        if (settings) settings.ReturnToChatRoomAdmin = restoreAdminRoom;
+      }
+    };
+    window.__misakaNativeRoomRecreateGuard = true;
+    console.log("[MisakaChat] 已阻止自动回房重建管理员房间");
+  }
+
+  installNativeRoomRecreateGuard();
+
   function waitForReady(cb, attempts) {
     attempts = attempts || 0;
     if (typeof Player !== "undefined" && Player && Player.MemberNumber === 194331 &&

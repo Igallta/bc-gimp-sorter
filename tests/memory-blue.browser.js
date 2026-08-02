@@ -48,6 +48,22 @@
       expectStatus: "insufficient",
     },
     {
+      id: "fact-mealw-nickname",
+      sender: "咲",
+      text: "御坂，Mealw的昵称是什么？",
+      expectSearch: true,
+      expectStatus: "supported",
+      answerAll: [/Mealw/i, /喵酱/],
+    },
+    {
+      id: "fact-meow-identity",
+      sender: "咲",
+      text: "御坂，喵酱是什么人？",
+      expectSearch: true,
+      expectStatus: "supported",
+      answerAll: [/喵酱|Mealw/i, /魅魔/],
+    },
+    {
       id: "current-room",
       sender: "咲",
       text: "御坂，现在房间里都有谁？",

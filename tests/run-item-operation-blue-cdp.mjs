@@ -81,7 +81,9 @@ try {
   const fixture = await evaluate(client, `(() => {
     const chars = window.ChatRoomCharacter || [];
     const target = chars.find(character =>
-      /^(?:rin)$/i.test(String(character?.Nickname || character?.Name || "").trim()));
+      /^(?:rin)$/i.test(String(character?.Nickname || character?.Name || "").trim())) ||
+      chars.find(character =>
+        Number(character?.MemberNumber) !== Number(window.Player?.MemberNumber));
     const sender = chars.find(character =>
       /^(?:咲|misaki)$/i.test(String(character?.Nickname || character?.Name || "").trim())) ||
       chars.find(character => Number(character?.MemberNumber) !== Number(window.Player?.MemberNumber));
@@ -96,13 +98,13 @@ try {
       } : null,
     };
   })()`);
-  if (!fixture?.target) throw new Error("Rin is not currently present in the room");
+  if (!fixture?.target) throw new Error("No non-Misaka target is currently present in the room");
   if (!fixture?.sender) throw new Error("No non-Misaka sender is currently present in the room");
 
   const prompts = [
-    "御坂，给rin发个窝窝",
-    "御坂，给Rin一个宠物窝",
-    "御坂，给rin装备一个PetBed宠物窝",
+    `御坂，给${fixture.target.name}发个窝窝`,
+    `御坂，给${fixture.target.name}一个宠物窝`,
+    `御坂，给${fixture.target.name}装备一个PetBed宠物窝`,
   ];
   const results = [];
   for (let repetition = 1; repetition <= repeats; repetition++) {

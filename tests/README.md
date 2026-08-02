@@ -117,7 +117,12 @@ The suite never calls the mutating add-friend path and asserts that
 
 `context-blue.browser.js` covers quoted first-person requests, singular
 operation schemas, recent conversational answers, explicit corrections and
-named Activity requests that drift into clarification:
+named Activity requests that drift into clarification. It also locks down the
+rapid-call boundary that previously dropped the reply-model call after the
+planner consumed the 30th shared local quota slot. The burst uses an immediate
+mock response, so all 31 calls must reach the transport and return non-empty;
+an empty thinking response must remain a single request rather than triggering
+an automatic model retry:
 
 ```bash
 node tests/run-context-blue-cdp.mjs --repeats=3
@@ -136,7 +141,8 @@ node tests/run-context-blue-cdp.mjs --deterministic-only
 
 `run-reply-protocol-cdp.mjs` loads the local candidate in side-effect-free test
 mode and asks the real reply model for chat, action+speech, roleplay and one
-typed command envelope.
+typed command envelope. The chat cases include the two production empty-reply
+reports and repeated invocation of the Misaka name.
 It validates `misaka.reply.v1` parsing without calling `ChatRoomSendChat`,
 `ActivityRun` or any character mutation path:
 
@@ -161,6 +167,34 @@ node tests/run-item-operation-blue-cdp.mjs --repeats=3
 It asserts that every request targets Rin, resolves to `PetBed`, survives the
 plan boundary and maps semantic, native or omitted `part` values to the real
 `ItemDevices` group.
+
+## Fuzzy item semantics and mutation suite
+
+`run-item-semantics-blue-cdp.mjs` builds cases from the live room roster,
+Appearance state and BC asset catalog, then drives the real planner and reply
+model without invoking any mutating executor. It covers:
+
+- colloquial aliases, purpose descriptions and explicit Asset names;
+- corrected, ambiguous and negated targets;
+- semantic body parts and native BC groups;
+- handheld, restraint and device additions;
+- current-item removal, recoloring, property changes and device replacement.
+
+Occupied or locked slots are not treated as valid add fixtures. Positive add
+cases use a live character whose target group is free; mutation cases use a
+currently worn, suitable item.
+
+```bash
+node tests/run-item-semantics-blue-cdp.mjs --repeats=2
+```
+
+Selected cases can be repeated independently:
+
+```bash
+node tests/run-item-semantics-blue-cdp.mjs \
+  --repeats=3 \
+  --ids=fuzzy-handheld-hairbrush,modify-current-vibrator-property
+```
 
 To repeat only selected cases while limiting model cost:
 

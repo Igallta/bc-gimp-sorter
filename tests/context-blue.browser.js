@@ -32,7 +32,16 @@
         !hooks?.normalizeVisibleReplyForTest ||
         !hooks?.parseAssistantReplyForTest ||
         !hooks?.formatStructuredVisibleReplyForTest ||
-        !hooks?.normalizePlannerMemoryDecisionForTest) {
+        !hooks?.normalizePlannerMemoryDecisionForTest ||
+        !hooks?.normalizeAssistantIdentityForTest ||
+        !hooks?.enrichPlannerAssetsFromExplicitMentionsForTest ||
+        !hooks?.normalizePlannerExplicitActionTargetsForTest ||
+        !hooks?.normalizePlannerExplicitItemAddDecisionForTest ||
+        !hooks?.normalizePlannerColloquialItemAliasesForTest ||
+        !hooks?.normalizePlannerBroadDestructiveDecisionForTest ||
+        !hooks?.recoverExplicitCurrentItemOperationForTest ||
+        !hooks?.dryRunEmptyContentRecoveryForTest ||
+        !hooks?.dryRunCallBurstForTest) {
       throw new Error("MisakaChat context test hooks are unavailable");
     }
     const originalRoster = window.ChatRoomCharacter;
@@ -63,8 +72,146 @@
         JSON.stringify(embeddingProviders[0]?.keyNames) === JSON.stringify(["misaka_openai_key"]),
       actual: embeddingProviders,
     });
+    const currentRoomBehavior = hooks.normalizePlannerMemoryDecisionForTest({
+      intent: "chat",
+      memorySearch: true,
+      memoryEntities: [],
+    }, "御坂不知道为什么老是在自动更新房间", Number(a.MemberNumber));
+    results.push({
+      id: "guard-current-room-behavior-does-not-enter-long-term-memory",
+      repetition: 1,
+      passed: currentRoomBehavior.memorySearch === false,
+      actual: currentRoomBehavior,
+    });
+    const datedRoomBehavior = hooks.normalizePlannerMemoryDecisionForTest({
+      intent: "chat",
+      memorySearch: false,
+      memoryEntities: [],
+    }, "御坂，上次为什么老是在自动更新房间？", Number(a.MemberNumber));
+    results.push({
+      id: "guard-explicitly-dated-room-behavior-can-still-query-memory",
+      repetition: 1,
+      passed: datedRoomBehavior.memorySearch === true,
+      actual: datedRoomBehavior,
+    });
+    results.push({
+      id: "guard-unmentioned-player-name-cannot-become-assistant-self-reference",
+      repetition: 1,
+      passed: hooks.normalizeAssistantIdentityForTest(
+        "*轻轻歪头*\n咲觉得可能是房间信息量太大。",
+        "御坂不知道为什么老是在自动更新房间",
+      ) === "*轻轻歪头*\n我觉得可能是房间信息量太大。",
+      actual: hooks.normalizeAssistantIdentityForTest(
+        "*轻轻歪头*\n咲觉得可能是房间信息量太大。",
+        "御坂不知道为什么老是在自动更新房间",
+      ),
+    });
+    results.push({
+      id: "guard-explicit-third-person-opinion-keeps-their-name",
+      repetition: 1,
+      passed: hooks.normalizeAssistantIdentityForTest(
+        "咲觉得这个房间挺好的。",
+        "御坂，咲觉得这个房间怎么样？",
+      ) === "咲觉得这个房间挺好的。",
+      actual: hooks.normalizeAssistantIdentityForTest(
+        "咲觉得这个房间挺好的。",
+        "御坂，咲觉得这个房间怎么样？",
+      ),
+    });
 
     try {
+      const originalXHR = window.XMLHttpRequest;
+      const originalGMRequest = window.__GM_xmlhttpRequest;
+      const attemptThinkingModes = [];
+      class EmptyThinkingResponseXHR {
+        open() {}
+        setRequestHeader() {}
+        send(body) {
+          const request = JSON.parse(String(body || "{}"));
+          const thinkingMode = request?.thinking?.type || "missing";
+          attemptThinkingModes.push(thinkingMode);
+          const content = thinkingMode === "disabled"
+            ? JSON.stringify({
+                protocol: "misaka.reply.v1",
+                commands: [],
+                action: "",
+                speech: "恢复成功。",
+              })
+            : "";
+          this.status = 200;
+          this.responseText = JSON.stringify({
+            choices: [{
+              finish_reason: "stop",
+              message: {
+                reasoning_content: "已经完成思考。",
+                content,
+              },
+            }],
+          });
+          queueMicrotask(() => this.onload?.());
+        }
+        abort() { this.onabort?.(); }
+      }
+      let emptyContentRecovery = null;
+      try {
+        window.__GM_xmlhttpRequest = undefined;
+        window.XMLHttpRequest = EmptyThinkingResponseXHR;
+        emptyContentRecovery = await hooks.dryRunEmptyContentRecoveryForTest();
+      } finally {
+        window.XMLHttpRequest = originalXHR;
+        window.__GM_xmlhttpRequest = originalGMRequest;
+      }
+      results.push({
+        id: "guard-empty-thinking-content-does-not-trigger-a-second-model-call",
+        repetition: 1,
+        passed: emptyContentRecovery === null &&
+          JSON.stringify(attemptThinkingModes) === JSON.stringify(["enabled"]),
+        actual: { emptyContentRecovery, attemptThinkingModes },
+      });
+
+      class ImmediateValidXHR {
+        open() {}
+        setRequestHeader() {}
+        send() {
+          this.status = 200;
+          this.responseText = JSON.stringify({
+            choices: [{
+              finish_reason: "stop",
+              message: {
+                reasoning_content: "",
+                content: JSON.stringify({
+                  protocol: "misaka.reply.v1",
+                  commands: [],
+                  action: "",
+                  speech: "正常回复。",
+                }),
+              },
+            }],
+          });
+          queueMicrotask(() => this.onload?.());
+        }
+        abort() { this.onabort?.(); }
+      }
+      let throttleBurst = [];
+      try {
+        window.__GM_xmlhttpRequest = undefined;
+        window.XMLHttpRequest = ImmediateValidXHR;
+        throttleBurst = await hooks.dryRunCallBurstForTest(31);
+      } finally {
+        window.XMLHttpRequest = originalXHR;
+        window.__GM_xmlhttpRequest = originalGMRequest;
+      }
+      results.push({
+        id: "guard-rapid-model-calls-are-not-locally-dropped",
+        repetition: 1,
+        passed: throttleBurst.length === 31 && throttleBurst.every(Boolean),
+        actual: {
+          runs: throttleBurst.length,
+          nonEmpty: throttleBurst.filter(Boolean).length,
+          emptyIndexes: throttleBurst.map((value, index) => value ? -1 : index + 1).filter(index => index > 0),
+        },
+      });
+
       const quote = `${nameOf(c)}刚才说“御坂，加我好友”，你听到了吗？`;
       const unquoted = hooks.stripQuotedSegmentsForTest(quote);
       results.push({
@@ -72,6 +219,221 @@
         repetition: 1,
         passed: !/(?:加|添加).{0,8}(?:好友|朋友)/.test(unquoted),
         actual: unquoted,
+      });
+
+      const quotedOperationPlan = hooks.normalizePlannerQuotedReportDecisionForTest({
+        intent: "action",
+        memorySearch: false,
+        needsCatalog: true,
+        operations: [{
+          types: ["itemadd"],
+          targets: [Number(c.MemberNumber)],
+          parts: ["Mouth"],
+          assets: ["BallGag"],
+        }],
+      }, `${nameOf(c)}说“御坂，给我戴口球”，你听到了吗？`);
+      results.push({
+        id: "guard-quoted-reported-command-is-not-executed",
+        repetition: 1,
+        passed: quotedOperationPlan.intent === "chat" &&
+          quotedOperationPlan.operations.length === 0 &&
+          quotedOperationPlan.needsCatalog === false,
+        actual: quotedOperationPlan,
+      });
+
+      const ambiguousItemPlan = hooks.normalizePlannerAmbiguousSingleItemDecisionForTest({
+        intent: "action",
+        memorySearch: false,
+        needsCatalog: true,
+        operations: [{
+          types: ["itemset"],
+          targets: [Number(b.MemberNumber)],
+          parts: [],
+          assets: [],
+        }],
+      }, `御坂，${nameOf(b)}那个玩具开到最高档`);
+      results.push({
+        id: "guard-ambiguous-singular-item-does-not-expand-to-all",
+        repetition: 1,
+        passed: ambiguousItemPlan.intent === "clarify" &&
+          ambiguousItemPlan.operations.length === 0 &&
+          /哪一个/.test(ambiguousItemPlan.question),
+        actual: ambiguousItemPlan,
+      });
+
+      const explicitItemPlan = hooks.normalizePlannerAmbiguousSingleItemDecisionForTest({
+        intent: "action",
+        operations: [{
+          types: ["itemset"],
+          targets: [Number(b.MemberNumber)],
+          parts: [],
+          assets: ["FuturisticVibrator"],
+        }],
+      }, `御坂，${nameOf(b)}那个玩具开到最高档`);
+      results.push({
+        id: "guard-context-resolved-singular-item-remains-actionable",
+        repetition: 1,
+        passed: explicitItemPlan.intent === "action" &&
+          explicitItemPlan.operations[0]?.assets?.[0] === "FuturisticVibrator",
+        actual: explicitItemPlan,
+      });
+
+      const recoveredPetBedPlan = hooks.normalizePlannerExplicitItemAddDecisionForTest({
+        intent: "clarify",
+        failed: true,
+        memorySearch: false,
+        needsCatalog: false,
+        operations: [],
+        question: "你想让我做什么？",
+      }, `御坂，给${nameOf(b)}装备PetBed`);
+      results.push({
+        id: "guard-explicit-petbed-recovers-from-planner-clarify",
+        repetition: 1,
+        passed: recoveredPetBedPlan.intent === "action" &&
+          recoveredPetBedPlan.failed === false &&
+          recoveredPetBedPlan.operations[0]?.assets?.[0] === "PetBed" &&
+          recoveredPetBedPlan.operations[0]?.targets?.[0] === Number(b.MemberNumber),
+        actual: recoveredPetBedPlan,
+      });
+
+      const existingPetBedMutation = hooks.normalizePlannerExplicitItemAddDecisionForTest({
+        intent: "action",
+        operations: [{
+          types: ["itemcolor"],
+          targets: [Number(b.MemberNumber)],
+          parts: ["Devices"],
+          assets: ["PetBed"],
+        }],
+      }, `御坂，把${nameOf(b)}的PetBed改成红色`);
+      results.push({
+        id: "guard-explicit-add-recovery-does-not-overwrite-item-mutation",
+        repetition: 1,
+        passed: existingPetBedMutation.operations[0]?.types?.[0] === "itemcolor" &&
+          existingPetBedMutation.operations.length === 1,
+        actual: existingPetBedMutation,
+      });
+
+      const clarifyRemoval = hooks.normalizePlannerExplicitItemAddDecisionForTest({
+        intent: "clarify",
+        operations: [],
+        question: "你要做什么？",
+      }, `御坂，把${nameOf(b)}的BallGag取下来`);
+      results.push({
+        id: "guard-explicit-add-recovery-never-inverts-removal-into-add",
+        repetition: 1,
+        passed: clarifyRemoval.intent === "clarify" &&
+          clarifyRemoval.operations.length === 0,
+        actual: clarifyRemoval,
+      });
+
+      const ambiguousPetBedPlan = hooks.normalizePlannerExplicitItemAddDecisionForTest({
+        intent: "clarify",
+        operations: [],
+        question: "给谁？",
+      }, "御坂，给她装个窝窝");
+      results.push({
+        id: "guard-ambiguous-petbed-target-stays-clarify",
+        repetition: 1,
+        passed: ambiguousPetBedPlan.intent === "clarify" &&
+          ambiguousPetBedPlan.operations.length === 0,
+        actual: ambiguousPetBedPlan,
+      });
+
+      const colloquialPetBedPlan = hooks.normalizePlannerColloquialItemAliasesForTest({
+        intent: "action",
+        operations: [{
+          types: ["itemadd"],
+          targets: [Number(b.MemberNumber)],
+          parts: ["Devices"],
+          assets: ["LowCage"],
+        }],
+      }, `御坂，给${nameOf(b)}发个窝窝`);
+      results.push({
+        id: "guard-colloquial-wowow-means-petbed-not-lowcage",
+        repetition: 1,
+        passed: colloquialPetBedPlan.operations[0]?.assets?.[0] === "PetBed" &&
+          colloquialPetBedPlan.operations[0]?.parts?.[0] === "Devices",
+        actual: colloquialPetBedPlan,
+      });
+
+      const broadDeletePlan = hooks.normalizePlannerBroadDestructiveDecisionForTest({
+        intent: "action",
+        memorySearch: false,
+        needsCatalog: true,
+        operations: [{
+          types: ["itemdelall"],
+          targets: [Number(a.MemberNumber), Number(b.MemberNumber), Number(c.MemberNumber)],
+          parts: [],
+          assets: [],
+        }],
+      }, "御坂，把所有人的东西全脱了");
+      results.push({
+        id: "guard-broad-itemdelall-requires-confirmation",
+        repetition: 1,
+        passed: broadDeletePlan.intent === "clarify" &&
+          broadDeletePlan.operations.length === 0 &&
+          /确定/.test(broadDeletePlan.question),
+        actual: broadDeletePlan,
+      });
+
+      const confirmedBroadDelete = hooks.normalizePlannerBroadDestructiveDecisionForTest({
+        intent: "action",
+        usedPendingClarification: true,
+        operations: [{
+          types: ["itemdelall"],
+          targets: [Number(a.MemberNumber), Number(b.MemberNumber)],
+          parts: [],
+          assets: [],
+        }],
+      }, "确认执行");
+      results.push({
+        id: "guard-confirmed-broad-itemdelall-can-proceed",
+        repetition: 1,
+        passed: confirmedBroadDelete.intent === "action" &&
+          confirmedBroadDelete.operations.length === 1,
+        actual: confirmedBroadDelete,
+      });
+
+      const todaySmallTalkPlan = hooks.normalizePlannerMemoryDecisionForTest({
+        intent: "chat",
+        memorySearch: true,
+        memoryEntities: ["御坂"],
+      }, "御坂，今天发生了什么有趣的事", Number(a.MemberNumber));
+      results.push({
+        id: "guard-today-smalltalk-does-not-enter-long-term-memory",
+        repetition: 1,
+        passed: todaySmallTalkPlan.intent === "chat" &&
+          todaySmallTalkPlan.memorySearch === false,
+        actual: todaySmallTalkPlan,
+      });
+
+      const winkPlan = hooks.normalizePlannerSimpleRoleplayDecisionForTest({
+        intent: "action",
+        operations: [{
+          types: ["emote"],
+          targets: [Number(Player?.MemberNumber)],
+          parts: [],
+          assets: [],
+        }],
+      }, "御坂，朝我眨眨眼");
+      results.push({
+        id: "guard-simple-wink-is-visible-roleplay",
+        repetition: 1,
+        passed: winkPlan.intent === "roleplay" &&
+          winkPlan.operations.length === 0,
+        actual: winkPlan,
+      });
+
+      const malformedReply = hooks.parseAssistantReply(
+        '{"protocol":"misaka.reply.v1","commands":[],"action":"","speech":"Rin说最喜欢蓝色哦～"}}',
+        "chat",
+      );
+      results.push({
+        id: "guard-trailing-json-brace-keeps-valid-reply",
+        repetition: 1,
+        passed: malformedReply.protocolError === "" &&
+          /蓝色/.test(malformedReply.cleaned),
+        actual: malformedReply,
       });
 
       const normalized = hooks.normalizePlannerOperationsForTest([
@@ -83,6 +445,112 @@
         passed: normalized.length === 1 && normalized[0]?.types?.includes("moveEdge"),
         actual: normalized,
       });
+
+      const explicitHairbrushPlan = {
+        intent: "action",
+        operations: [{
+          types: ["itemadd", "itemset"],
+          targets: [Number(b.MemberNumber)],
+          parts: [],
+          assets: [],
+        }],
+      };
+      hooks.enrichPlannerAssetsFromExplicitMentionsForTest(
+        explicitHairbrushPlan,
+        `递给${nameOf(b)}一把梳子`,
+      );
+      results.push({
+        id: "guard-explicit-catalog-description-pins-unique-asset",
+        repetition: 1,
+        passed: explicitHairbrushPlan.operations[0]?.assets?.length === 1 &&
+          explicitHairbrushPlan.operations[0].assets[0] === "Hairbrush",
+        actual: explicitHairbrushPlan,
+      });
+
+      const exactRin = (window.ChatRoomCharacter || []).find(character =>
+        String(character?.Nickname || character?.Name || "").trim().toLowerCase() === "rin");
+      const aliasedRin = (window.ChatRoomCharacter || []).find(character =>
+        Number(character?.MemberNumber) !== Number(exactRin?.MemberNumber) &&
+        String(character?.Name || "").trim().toLowerCase() === "rin");
+      if (exactRin && aliasedRin) {
+        const explicitDisplayTargetPlan = {
+          intent: "action",
+          operations: [{
+            types: ["itemadd"],
+            targets: [Number(aliasedRin.MemberNumber)],
+            parts: [],
+            assets: ["Hairbrush"],
+          }],
+        };
+        hooks.normalizePlannerExplicitActionTargetsForTest(
+          explicitDisplayTargetPlan,
+          "递给Rin一把梳子",
+        );
+        results.push({
+          id: "guard-exact-display-name-beats-another-players-account-alias",
+          repetition: 1,
+          passed: explicitDisplayTargetPlan.operations[0]?.targets?.length === 1 &&
+            explicitDisplayTargetPlan.operations[0].targets[0] === Number(exactRin.MemberNumber),
+          actual: {
+            exactRin: Number(exactRin.MemberNumber),
+            aliasedRin: Number(aliasedRin.MemberNumber),
+            plan: explicitDisplayTargetPlan,
+          },
+        });
+      }
+
+      const wornForRecovery = (b.Appearance || []).find(item =>
+        item?.Asset?.Group?.Name?.startsWith("Item"));
+      if (wornForRecovery) {
+        const droppedCurrentItemPlan = {
+          intent: "clarify",
+          needsCatalog: true,
+          goal: `把${nameOf(b)}的${wornForRecovery.Asset.Description}改成红色`,
+          operations: [],
+          question: "你想让我对谁做什么？",
+        };
+        hooks.recoverExplicitCurrentItemOperationForTest(
+          droppedCurrentItemPlan,
+          `把${nameOf(b)}的${wornForRecovery.Asset.Description}改成红色`,
+        );
+        results.push({
+          id: "guard-explicit-current-item-modification-recovers-dropped-operation",
+          repetition: 1,
+          passed: droppedCurrentItemPlan.intent === "action" &&
+            droppedCurrentItemPlan.operations.length === 1 &&
+            droppedCurrentItemPlan.operations[0]?.types?.includes("itemcolor") &&
+            droppedCurrentItemPlan.operations[0]?.targets?.[0] === Number(b.MemberNumber) &&
+            droppedCurrentItemPlan.operations[0]?.assets?.[0] === wornForRecovery.Asset.Name &&
+            droppedCurrentItemPlan.question === "",
+          actual: droppedCurrentItemPlan,
+        });
+
+        const misclassifiedCurrentItemPlan = {
+          intent: "action",
+          needsCatalog: false,
+          goal: `把${nameOf(b)}的${wornForRecovery.Asset.Description}改成红色`,
+          operations: [{
+            types: ["emote"],
+            targets: [Number(b.MemberNumber)],
+            parts: [],
+            assets: [],
+          }],
+          question: "",
+        };
+        hooks.recoverExplicitCurrentItemOperationForTest(
+          misclassifiedCurrentItemPlan,
+          `把${nameOf(b)}的${wornForRecovery.Asset.Description}改成红色`,
+        );
+        results.push({
+          id: "guard-explicit-current-item-modification-replaces-wrong-operation-family",
+          repetition: 1,
+          passed: misclassifiedCurrentItemPlan.operations.length === 1 &&
+            misclassifiedCurrentItemPlan.operations[0]?.types?.includes("itemcolor") &&
+            !misclassifiedCurrentItemPlan.operations[0]?.types?.includes("emote") &&
+            misclassifiedCurrentItemPlan.needsCatalog === true,
+          actual: misclassifiedCurrentItemPlan,
+        });
+      }
 
       hooks.replaceRecentMessagesForTest([
         contextMessage(a, `${nameOf(b)}最喜欢红色。`, 3000),
@@ -288,6 +756,186 @@
         actual: unknownPart,
       });
 
+      const nativeDeviceCommand = {
+        type: "itemadd",
+        memberNumber: Number(b.MemberNumber),
+        item: "PetBed",
+        part: "ItemDevices",
+        color: "",
+      };
+      const preserveDevicePlan = {
+        intent: "action",
+        operations: [{
+          types: ["itemadd"],
+          targets: [Number(b.MemberNumber)],
+          parts: ["Devices"],
+          assets: ["PetBed"],
+        }],
+        constraints: {
+          preserveParts: ["Devices"],
+        },
+      };
+      const preservedNativeDevice = hooks.filterCommandsByPlan(
+        preserveDevicePlan,
+        [nativeDeviceCommand],
+      );
+      results.push({
+        id: "guard-semantic-preserve-part-blocks-equivalent-native-group",
+        repetition: 1,
+        passed: preservedNativeDevice.allowed.length === 0 &&
+          preservedNativeDevice.rejected.length === 1 &&
+          preservedNativeDevice.rejected[0]?.reason === "part-must-be-preserved",
+        actual: preservedNativeDevice,
+      });
+
+      const preserveArmsPlan = {
+        ...preserveDevicePlan,
+        constraints: {
+          preserveParts: ["Arms"],
+        },
+      };
+      const unrelatedNativeDevice = hooks.filterCommandsByPlan(
+        preserveArmsPlan,
+        [nativeDeviceCommand],
+      );
+      results.push({
+        id: "guard-semantic-preserve-part-does-not-block-unrelated-native-group",
+        repetition: 1,
+        passed: unrelatedNativeDevice.allowed.length === 1 &&
+          unrelatedNativeDevice.rejected.length === 0,
+        actual: unrelatedNativeDevice,
+      });
+
+      const unscopedHairbrushPlan = {
+        intent: "action",
+        operations: [{
+          types: ["itemadd", "itemset"],
+          targets: [Number(b.MemberNumber)],
+          parts: [],
+          assets: ["Hairbrush"],
+        }],
+        constraints: {
+          preserveParts: [],
+        },
+      };
+      const misplacedHairbrush = {
+        type: "itemadd",
+        memberNumber: Number(b.MemberNumber),
+        item: "Hairbrush",
+        part: "Hands",
+        color: "",
+      };
+      const canonicalHairbrush = hooks.filterCommandsByPlan(
+        unscopedHairbrushPlan,
+        [misplacedHairbrush],
+      );
+      results.push({
+        id: "guard-unscoped-exact-asset-canonicalizes-incompatible-semantic-part",
+        repetition: 1,
+        passed: canonicalHairbrush.allowed.length === 1 &&
+          canonicalHairbrush.allowed[0]?.part === "ItemHandheld" &&
+          canonicalHairbrush.rejected.length === 0,
+        actual: canonicalHairbrush,
+      });
+
+      const semanticGroupMatrix = {
+        Arms: ["ItemArms"],
+        Hands: ["ItemHands"],
+        Legs: ["ItemLegs"],
+        Feet: ["ItemFeet"],
+        Mouth: ["ItemMouth", "ItemMouth2", "ItemMouth3"],
+        Head: ["ItemHead", "ItemHood"],
+        Neck: ["ItemNeck", "ItemNeckRestraints"],
+        Torso: ["ItemTorso", "ItemTorso2"],
+        Pelvis: ["ItemPelvis"],
+        Breast: ["ItemBreast", "ItemNipples", "ItemNipplesPiercings"],
+        Eyes: ["ItemHead"],
+        Ears: ["ItemEars"],
+        Vulva: ["ItemVulva", "ItemVulvaPiercings", "ItemButt", "ItemClit"],
+        Devices: ["ItemDevices"],
+      };
+      const targetFamily = b.AssetFamily || window.Player?.AssetFamily;
+      for (const [semanticPart, nativeGroups] of Object.entries(semanticGroupMatrix)) {
+        for (const nativeGroup of nativeGroups) {
+          const asset = (window.Asset || []).find(candidate =>
+            candidate?.Group?.Name === nativeGroup &&
+            (!targetFamily || window.AssetGet?.(targetFamily, nativeGroup, candidate.Name)));
+          if (!asset) continue;
+          const native = resolveItemAddTarget(asset.Name, nativeGroup);
+          const semantic = resolveItemAddTarget(asset.Name, semanticPart);
+          const preservePlan = {
+            intent: "action",
+            operations: [{
+              types: ["itemadd"],
+              targets: [Number(b.MemberNumber)],
+              parts: [semanticPart],
+              assets: [asset.Name],
+            }],
+            constraints: {
+              preserveParts: [semanticPart],
+            },
+          };
+          const nativeCommand = {
+            type: "itemadd",
+            memberNumber: Number(b.MemberNumber),
+            item: asset.Name,
+            part: nativeGroup,
+            color: "",
+          };
+          const preserved = hooks.filterCommandsByPlan(preservePlan, [nativeCommand]);
+          results.push({
+            id: `matrix-native-and-semantic-group-equivalence:${semanticPart}:${nativeGroup}`,
+            repetition: 1,
+            passed: native?.ok === true &&
+              native?.group === nativeGroup &&
+              semantic?.ok === true &&
+              nativeGroups.includes(semantic.group) &&
+              preserved.allowed.length === 0 &&
+              preserved.rejected[0]?.reason === "part-must-be-preserved",
+            actual: { asset: asset.Name, native, semantic, preserved },
+          });
+        }
+      }
+
+      const wornItem = (b.Appearance || []).find(item =>
+        item?.Asset?.Group?.Name?.startsWith("Item"));
+      if (wornItem) {
+        const wornGroup = wornItem.Asset.Group.Name;
+        const wornSemanticPart = Object.entries(semanticGroupMatrix)
+          .find(([, groups]) => groups.includes(wornGroup))?.[0] || "";
+        if (wornSemanticPart) {
+          for (const type of ["itemdel", "itemset"]) {
+            const command = {
+              type,
+              memberNumber: Number(b.MemberNumber),
+              item: wornItem.Asset.Name,
+              part: wornGroup,
+              ...(type === "itemset" ? { property: "样式", value: "测试值" } : {}),
+            };
+            const plan = {
+              intent: "action",
+              operations: [{
+                types: [type],
+                targets: [Number(b.MemberNumber)],
+                parts: [wornSemanticPart],
+                assets: [wornItem.Asset.Name],
+              }],
+              constraints: {
+                preserveParts: [wornSemanticPart],
+              },
+            };
+            const filtered = hooks.filterCommandsByPlan(plan, [command]);
+            results.push({
+              id: `guard-${type}-native-group-respects-semantic-preserve-part`,
+              repetition: 1,
+              passed: filtered.allowed.length === 0 &&
+                filtered.rejected[0]?.reason === "part-must-be-preserved",
+              actual: { wornGroup, wornSemanticPart, filtered },
+            });
+          }
+        }
+      }
+
       const structuredMove = hooks.parseAssistantReplyForTest(JSON.stringify({
         protocol: "misaka.reply.v1",
         commands: [{
@@ -392,6 +1040,19 @@
           malformedEnvelope.protocolError === "invalid-json" &&
           !malformedEnvelope.cleaned.includes("{"),
         actual: malformedEnvelope,
+      });
+
+      const missingClosingBrace = hooks.parseAssistantReplyForTest(
+        '{"protocol":"misaka.reply.v1","commands":[],"action":"","speech":"蓝色。"',
+        "chat",
+      );
+      results.push({
+        id: "guard-json-missing-only-closing-brace-is-safely-completed",
+        repetition: 1,
+        passed: missingClosingBrace.structured === true &&
+          missingClosingBrace.protocolError === "" &&
+          missingClosingBrace.cleaned === "蓝色。",
+        actual: missingClosingBrace,
       });
 
       const directActivityPlan = hooks.normalizePlannerActivityDecisionForTest?.(
@@ -568,6 +1229,22 @@
           repetition,
           passed: correctionPassed,
           actual: correctionPlan,
+        });
+
+        hooks.replaceRecentMessagesForTest([]);
+        const roomBehaviorReply = await hooks.dryRunConversationForTest(
+          Number(a.MemberNumber), nameOf(a),
+          "御坂不知道为什么老是在自动更新房间");
+        const roomBehaviorPassed = roomBehaviorReply?.requestPlan?.intent === "chat" &&
+          roomBehaviorReply?.requestPlan?.memorySearch === false &&
+          !!roomBehaviorReply?.finalReply &&
+          !/(?:^|\n)咲(?:觉得|认为|感觉|想|知道|不知道|会|不会)/.test(
+            roomBehaviorReply.finalReply);
+        results.push({
+          id: "current-room-behavior-stays-chat-and-keeps-misaka-identity",
+          repetition,
+          passed: roomBehaviorPassed,
+          actual: roomBehaviorReply,
         });
       }
     } finally {

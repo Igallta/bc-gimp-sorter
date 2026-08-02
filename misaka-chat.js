@@ -3,7 +3,7 @@
 //   [Config]      L15-55   配置 + 状态
 //   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
 //   [Idle]        L441-527 闲聊 / Heartbeat
-//   [API]         L528-633 callLLM / 速率限制 / Token 预算
+//   [API]         L528-633 callLLM / Token 预算 / 响应诊断
 //   [Persona]     L634-664 人设 + 房间名单缓存
 //   [Actions]     L665-1459 指令解析 / 道具操作 / 移动 / ToolPolicy
 //   [Chat]        L1460-1830 消息处理 / 噪音过滤 / handleReply / sanitize
@@ -102,7 +102,6 @@
     enabled: true,
     apiBase: "https://api.deepseek.com/chat/completions",
     model: "deepseek-v4-flash",
-    fallbackModel: "deepseek-v4-flash",
     maxTokens: 8192,
     maxContext: 50,
     maxContextTokens: 20000, // context messages 的 token 预算上限(system prompt 不算)
@@ -938,7 +937,7 @@
     if (evidence.hits.length === 0) {
       return { reply: "唔……这件事我真的不记得了。", query, status: "insufficient", hitCount: 0 };
     }
-    const system = `你是御坂的专用记忆回答器。只根据真实候选回答用户问题，并保持御坂温柔、简短、略带傲娇的自然口吻。只输出 JSON：{"status":"supported|conflict|insufficient","answer":"最终回复"}。
+    const system = `你是御坂的专用记忆回答器。当前回答者永远是御坂，不是咲、Baliny 或候选原文中的任何说话者。只根据真实候选回答用户问题，并保持御坂温柔、简短、略带傲娇的自然口吻。只输出 JSON：{"status":"supported|conflict|insufficient","answer":"最终回复"}。
 规则：
 1. 候选原文真实存在，但不同候选不保证属于同一事件。
 2. 只能陈述候选直接支持的过去事实。禁止补充候选没有表达的语气、顺序、转折、次数、动机、原因或背景。
@@ -1033,8 +1032,7 @@ ${profiles}
 记忆片段:
 ${recentSemantic}`;
       const refined = await callLLM("你是严格的长期记忆提炼器。只输出指定 JSON 或‘无’，禁止把一次性事件、操作请求或技术问题保存为长期记忆。", [{role:"user", content: prompt}], {
-        model: CONFIG.fallbackModel,
-        fallbackModel: CONFIG.fallbackModel,
+        model: CONFIG.model,
       });
       const parsedRefinement = parseRefinementResult(refined);
       if (parsedRefinement) {
@@ -1127,8 +1125,7 @@ ${recentSemantic}`;
         : "";
       const userPrompt = `最近消息:\n${recent || "暂无消息"}${idleGuard}${idleHint}\n\n生成一句自然的闲聊（不超过40字），按最终回复协议输出。`;
       const reply = await callLLM(systemPrompt, [{ role: "user", content: userPrompt }], {
-        model: CONFIG.fallbackModel,
-        fallbackModel: CONFIG.fallbackModel,
+        model: CONFIG.model,
         json: true,
         // thinking 与最终回复共享输出预算；80 token 会偶发截断在半句话中。
         // 最终可见文本由结构化 action/speech 字段分别做 Unicode 安全限长。
@@ -1226,12 +1223,6 @@ ${recentSemantic}`;
   }
 
   // === [API] callLLM ===
-  // === [API] LLM 速率限制 ===
-  const rateLimiter = {
-    window: 60000, maxCalls: 30, calls: [], // 御坂有 3s 全局冷却 + 5s 单用户冷却,30 次/分钟足够
-    canCall() { const now = Date.now(); this.calls = this.calls.filter(t => now - t < this.window); return this.calls.length < this.maxCalls; },
-    record() { this.calls.push(Date.now()); }
-  };
 
   // 粗估 token 数:中文≈2 token/字,英文≈1.3 token/字,符号≈1 token/字
   function estimateTokens(text) {
@@ -1274,17 +1265,10 @@ ${recentSemantic}`;
 
   async function callLLM(systemPrompt, contextMessages, options = {}) {
     if (!isCurrent()) return null;
-    // 速率限制检查
-    if (!rateLimiter.canCall()) {
-      console.warn("[MisakaChat] LLM 速率限制: 1分钟内超过 " + rateLimiter.maxCalls + " 次调用");
-      return null;
-    }
     const apiKey = getApiKeyStatus().value;
     if (!apiKey) { console.warn("[MisakaChat] 未设置 API key"); return null; }
-    rateLimiter.record();
     const messages = [{ role: "system", content: systemPrompt }, ...contextMessages];
     const primaryModel = options.model || CONFIG.model;
-    const fallbackModel = options.fallbackModel || CONFIG.fallbackModel;
     const maxTokens = options.maxTokens || CONFIG.maxTokens;
 
     const useThinking = options.thinking !== false;
@@ -1298,14 +1282,34 @@ ${recentSemantic}`;
         resolve(value);
       };
       disposeResolver = onDispose(() => finish(null));
-      const doRequest = (url, model, isFallback) => {
+      const handleResponse = (status, responseText, model) => {
+        try {
+          const data = JSON.parse(responseText);
+          const choice = data.choices?.[0];
+          const reply = extractReply(choice?.message);
+          if (reply) {
+            finish(reply);
+            return;
+          }
+          console.warn("[MisakaChat] LLM 响应无最终内容", {
+            status: Number(status || 0),
+            model,
+            finishReason: choice?.finish_reason || "",
+            reasoningTokens: data.usage?.completion_tokens_details?.reasoning_tokens || 0,
+            completionTokens: data.usage?.completion_tokens || 0,
+            errorCode: data.error?.code || "",
+          });
+        } catch (error) {
+          console.warn("[MisakaChat] LLM 响应解析失败:", error.message);
+        }
+        finish(null);
+      };
+      const doRequest = (url, model) => {
         if (!isCurrent()) { finish(null); return; }
         // thinking 模式:思考进 reasoning_content,回复进 content
         const bodyObj = { model, messages, max_tokens: maxTokens };
         if (Number.isFinite(options.temperature)) bodyObj.temperature = options.temperature;
         if (options.json === true) bodyObj.response_format = { type: "json_object" };
-        // DeepSeek 默认会启用 thinking。仅仅省略 thinking 参数并不等于关闭；
-        // 小 token 预算的规划器会把额度全部耗在 reasoning_content，最终 content=null。
         bodyObj.thinking = { type: useThinking ? "enabled" : "disabled" };
         const reqBody = JSON.stringify(bodyObj);
         const useGM = typeof window.__GM_xmlhttpRequest !== "undefined";
@@ -1322,18 +1326,9 @@ ${recentSemantic}`;
               "Content-Type": "application/json",
               "Authorization": "Bearer " + apiKey
             }, data: reqBody, timeout: CONFIG.apiKeyTimeout,
-            onload: complete((resp) => {
-              try {
-                const data = JSON.parse(resp.responseText);
-                if (data.choices?.length > 0) { const r = extractReply(data.choices[0].message); if (r) finish(r); else if (!isFallback) doRequest(url, fallbackModel, true); else finish(null); }
-                else finish(null);
-              } catch (e) {
-                if (!isFallback) doRequest(url, fallbackModel, true);
-                else finish(null);
-              }
-            }),
-            onerror: complete(() => { if (!isFallback) doRequest(url, fallbackModel, true); else finish(null); }),
-            ontimeout: complete(() => { if (!isFallback) doRequest(url, fallbackModel, true); else finish(null); })
+            onload: complete(resp => handleResponse(resp.status, resp.responseText, model)),
+            onerror: complete(() => { console.warn("[MisakaChat] LLM 网络请求失败"); finish(null); }),
+            ontimeout: complete(() => { console.warn("[MisakaChat] LLM 请求超时"); finish(null); })
           }));
         } else {
           const xhr = new XMLHttpRequest();
@@ -1347,23 +1342,14 @@ ${recentSemantic}`;
           xhr.setRequestHeader("Content-Type", "application/json");
           xhr.setRequestHeader("Authorization", "Bearer " + apiKey);
           xhr.timeout = CONFIG.apiKeyTimeout;
-          xhr.onload = complete(() => {
-            try {
-              const data = JSON.parse(xhr.responseText);
-              if (data.choices?.length > 0) { const r = extractReply(data.choices[0].message); if (r) finish(r); else if (!isFallback) doRequest(url, fallbackModel, true); else finish(null); }
-              else finish(null);
-            } catch (e) {
-              if (!isFallback) doRequest(url, fallbackModel, true);
-              else finish(null);
-            }
-          });
-          xhr.onerror = complete(() => { if (!isFallback) doRequest(url, fallbackModel, true); else finish(null); });
-          xhr.ontimeout = complete(() => { if (!isFallback) doRequest(url, fallbackModel, true); else finish(null); });
+          xhr.onload = complete(() => handleResponse(xhr.status, xhr.responseText, model));
+          xhr.onerror = complete(() => { console.warn("[MisakaChat] LLM 网络请求失败"); finish(null); });
+          xhr.ontimeout = complete(() => { console.warn("[MisakaChat] LLM 请求超时"); finish(null); });
           xhr.onabort = complete(() => finish(null));
           xhr.send(reqBody);
         }
       };
-      doRequest(CONFIG.apiBase, primaryModel, false);
+      doRequest(CONFIG.apiBase, primaryModel);
     });
   }
 
@@ -1469,6 +1455,37 @@ ${recentSemantic}`;
     })).filter(op => op.types.length > 0 && op.targets.length > 0);
   }
 
+  function enrichPlannerAssetsFromExplicitMentions(plan, content) {
+    if (plan?.intent !== "action" || plan?.constraints?.replaceExisting ||
+        plan?.constraints?.noStack || typeof Asset === "undefined" ||
+        !Array.isArray(Asset)) return plan;
+    const source = stripQuotedSegments(content);
+    const sourceLower = source.toLowerCase();
+    const itemTypes = new Set(["itemadd", "itemdel", "itemset", "itemcolor"]);
+    for (const operation of plan.operations || []) {
+      if (operation.assets?.length || !operation.types?.some(type => itemTypes.has(type))) continue;
+      const allowedGroups = (operation.parts || []).flatMap(part => BODY_PART_GROUPS[part] || []);
+      const target = actionTargetCharacter(Number(operation.targets?.[0]));
+      const candidates = Asset.filter(asset => {
+        const group = asset?.Group?.Name || "";
+        if (!group.startsWith("Item")) return false;
+        if (allowedGroups.length > 0 && !allowedGroups.includes(group)) return false;
+        if (target && !AssetGet(target.AssetFamily, group, asset.Name)) return false;
+        const names = [
+          String(asset.Name || "").trim(),
+          String(asset.Description || "").trim(),
+          String(assetCnName(asset) || "").trim(),
+        ].filter(name => name.length >= 2);
+        return names.some(name => /^[\x00-\x7F]+$/.test(name)
+          ? sourceLower.includes(name.toLowerCase())
+          : source.includes(name));
+      });
+      const uniqueAssets = [...new Set(candidates.map(asset => asset.Name))];
+      if (uniqueAssets.length === 1) operation.assets = uniqueAssets;
+    }
+    return plan;
+  }
+
   function stripQuotedSegments(content) {
     let text = String(content || "");
     const pairedQuotes = [
@@ -1477,6 +1494,278 @@ ${recentSemantic}`;
     ];
     for (const pattern of pairedQuotes) text = text.replace(pattern, " ");
     return text.replace(/\s+/g, " ").trim();
+  }
+
+  function hasPairedQuotedSegment(content) {
+    return /“[^”]*”|‘[^’]*’|「[^」]*」|『[^』]*』|"[^"]*"|'[^']*'/.test(
+      String(content || ""),
+    );
+  }
+
+  function normalizePlannerQuotedReportDecision(plan, content) {
+    if (!plan || !hasPairedQuotedSegment(content)) return plan;
+    const outside = stripQuotedSegments(content);
+    const reportsSpeech = /(?:说|表示|提到|引用|原话|转述)/.test(outside);
+    const asksPerception = /(?:听到|听见|看见|看到|注意到|记得).*(?:吗|没|没有|是否|么)|(?:吗|没|没有|是否|么).*(?:听到|听见|看见|看到|注意到|记得)/.test(outside);
+    if (!reportsSpeech || !asksPerception) return plan;
+    plan.intent = "chat";
+    plan.memorySearch = false;
+    plan.memoryEntities = [];
+    plan.stickerId = "";
+    plan.needsCatalog = false;
+    plan.operations = [];
+    plan.goal = "";
+    plan.activity = { target: null, request: "" };
+    plan.question = "";
+    plan.quotedReportOnly = true;
+    return plan;
+  }
+
+  function normalizePlannerAmbiguousSingleItemDecision(plan, content) {
+    if (plan?.intent !== "action" || !Array.isArray(plan.operations)) return plan;
+    const text = stripQuotedSegments(content);
+    if (!/(?:那个|这个|那件|这件)(?:玩具|东西|道具|设备)/.test(text) ||
+        /(?:全部|所有|都|一起|每个|每件)/.test(text)) return plan;
+    const mutations = plan.operations.filter(operation =>
+      (operation?.types || []).some(type =>
+        ["itemdel", "itemset", "itemcolor"].includes(type)));
+    if (mutations.length === 0) return plan;
+    const assets = [...new Set(mutations.flatMap(operation => operation.assets || []))];
+    if (assets.length === 1) return plan;
+    plan.intent = "clarify";
+    plan.memorySearch = false;
+    plan.memoryEntities = [];
+    plan.stickerId = "";
+    plan.needsCatalog = false;
+    plan.operations = [];
+    plan.question = "你说的是哪一个玩具？";
+    return plan;
+  }
+
+  function normalizePlannerSimpleRoleplayDecision(plan, content) {
+    if (!plan) return plan;
+    const text = stripQuotedSegments(content);
+    if (!/(?:朝|对着)?我.{0,4}眨(?:一?下|眨)?眼/.test(text)) return plan;
+    plan.intent = "roleplay";
+    plan.memorySearch = false;
+    plan.memoryEntities = [];
+    plan.stickerId = "";
+    plan.needsCatalog = false;
+    plan.operations = [];
+    plan.question = "";
+    plan.simpleRoleplay = "wink";
+    return plan;
+  }
+
+  function normalizePlannerExplicitActionTargets(plan, content) {
+    if (plan?.intent !== "action" || !Array.isArray(plan.operations) ||
+        !Array.isArray(ChatRoomCharacter)) return plan;
+    const text = stripQuotedSegments(content);
+    const matched = new Map();
+    for (const character of ChatRoomCharacter) {
+      const displayName = String(character?.Nickname || character?.Name || "").trim();
+      if (displayName.length < 2) continue;
+      const escaped = displayName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const asciiName = /^[\x00-\x7F]+$/.test(displayName);
+      const pattern = asciiName
+        ? new RegExp(`(^|[^A-Za-z0-9_])${escaped}(?=$|[^A-Za-z0-9_])`, "i")
+        : new RegExp(escaped);
+      if (pattern.test(text)) matched.set(Number(character.MemberNumber), character);
+    }
+    // 账号名可能与另一位玩家的当前显示名重复。用户直接写出唯一显示名时，
+    // 显示名优先；若同时明确提到多个人，则保留规划器对主客体的判断。
+    if (matched.size !== 1) return plan;
+    const explicitTarget = [...matched.keys()][0];
+    for (const operation of plan.operations) {
+      if (Array.isArray(operation.targets) && operation.targets.length > 0) {
+        operation.targets = [explicitTarget];
+      }
+    }
+    return plan;
+  }
+
+  function findUniqueMentionedRoomCharacter(content) {
+    if (!Array.isArray(ChatRoomCharacter)) return null;
+    const text = stripQuotedSegments(content);
+    const matches = new Map();
+    for (const character of ChatRoomCharacter) {
+      const memberNumber = Number(character?.MemberNumber);
+      if (!Number.isFinite(memberNumber)) continue;
+      const aliases = [...new Set([
+        character?.Nickname,
+        character?.Name,
+        `#${memberNumber}`,
+      ].map(value => String(value || "").trim()).filter(value => value.length >= 2))];
+      if (aliases.some(alias => {
+        const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        return /^[\x00-\x7F]+$/.test(alias)
+          ? new RegExp(`(^|[^A-Za-z0-9_])${escaped}(?=$|[^A-Za-z0-9_])`, "i").test(text)
+          : new RegExp(escaped).test(text);
+      })) matches.set(memberNumber, character);
+    }
+    return matches.size === 1 ? [...matches.values()][0] : null;
+  }
+
+  function normalizePlannerExplicitItemAddDecision(plan, content) {
+    if (!plan || !["action", "clarify"].includes(plan.intent)) return plan;
+    const hasPlannedItemOperation = (plan.operations || []).some(operation =>
+      (operation.types || []).some(type =>
+        ["itemadd", "itemdel", "itemset", "itemcolor"].includes(type)));
+    if (plan.intent === "action" && hasPlannedItemOperation) return plan;
+    const text = stripQuotedSegments(content);
+    if (!text || /(?:不要|别|不许|不准|先别|别真的|无需|不用).{0,16}(?:装|戴|塞|绑|放|递|给)/.test(text)) {
+      return plan;
+    }
+    if (/(?:取下|摘下|脱掉|去掉|移除|拿掉|卸下|改成|改为|换成|设成|设为|调到|调成|调为|颜色|强度|档位|模式|样式)/.test(text)) {
+      return plan;
+    }
+    const target = findUniqueMentionedRoomCharacter(text);
+    if (!target) return plan;
+    const requestsAdd = /(?:给|替|帮|把|用|递给|放到|塞上|戴上|戴个|装备|安装|安排|发个|拿个)/.test(text);
+    const itemPhrase = /(?:PetBed|HempRope|BallGag|Hairbrush|窝窝|宠物窝|能躺进去睡觉的小窝|麻绳|口球|球塞|梳子)/i.test(text);
+    if (!requestsAdd || !itemPhrase) return plan;
+
+    let assets = [];
+    if (/PetBed|窝窝|宠物窝|能躺进去睡觉的小窝/i.test(text) &&
+        !/(?:狗窝|铁笼|笼子|重型狗窝)/.test(text)) {
+      assets = ["PetBed"];
+    } else if (/HempRope/i.test(text)) {
+      assets = ["HempRope"];
+    } else if (/麻绳/.test(text) &&
+        typeof AssetGet === "function" &&
+        AssetGet(target.AssetFamily, "ItemArms", "HempRope")) {
+      assets = ["HempRope"];
+    } else if (/BallGag/i.test(text)) {
+      assets = ["BallGag"];
+    } else if (/(?:口球|球塞)/.test(text) &&
+        typeof AssetGet === "function" &&
+        AssetGet(target.AssetFamily, "ItemMouth", "BallGag")) {
+      assets = ["BallGag"];
+    } else if (/Hairbrush/i.test(text)) {
+      assets = ["Hairbrush"];
+    } else if (/梳子/.test(text) &&
+        typeof AssetGet === "function" &&
+        AssetGet(target.AssetFamily, "ItemHandheld", "Hairbrush")) {
+      assets = ["Hairbrush"];
+    }
+    let parts = [];
+    if (assets[0] === "PetBed") parts = ["Devices"];
+    else if (/(?:嘴|口|口球|球塞|BallGag)/i.test(text)) parts = ["Mouth"];
+    else if (/(?:手臂|胳膊|绑手|HempRope)/i.test(text)) parts = ["Arms"];
+
+    plan.intent = "action";
+    plan.failed = false;
+    plan.memorySearch = false;
+    plan.memoryEntities = [];
+    plan.stickerId = "";
+    plan.needsCatalog = true;
+    plan.operations = [{
+      types: ["itemadd", "itemset"],
+      targets: [Number(target.MemberNumber)],
+      parts,
+      assets,
+    }];
+    plan.goal = String(plan.goal || text).trim().slice(0, 200);
+    plan.question = "";
+    return plan;
+  }
+
+  function normalizePlannerColloquialItemAliases(plan, content) {
+    if (plan?.intent !== "action") return plan;
+    const text = stripQuotedSegments(content);
+    if (!/(?:PetBed|窝窝|宠物窝|能躺进去睡觉的小窝)/i.test(text) ||
+        /(?:狗窝|铁笼|笼子|重型狗窝)/.test(text)) return plan;
+    for (const operation of plan.operations || []) {
+      if (!(operation.types || []).some(type => type === "itemadd")) continue;
+      operation.assets = ["PetBed"];
+      operation.parts = ["Devices"];
+    }
+    return plan;
+  }
+
+  function normalizePlannerBroadDestructiveDecision(plan, content) {
+    if (!plan || !["action", "clarify"].includes(plan.intent)) return plan;
+    const text = stripQuotedSegments(content);
+    if (plan.intent === "action" && plan.usedPendingClarification === true &&
+        /^(?:御坂[，,：:\s]*)?(?:确认|确定|继续|是的|对|没错)(?:执行|继续)?[。.!！\s]*$/.test(text)) {
+      return plan;
+    }
+    const broadText = /(?:所有人|全部人|全房间|大家).{0,16}(?:全脱|脱光|全部脱|都脱|全解|全部解)/.test(text) ||
+      /(?:全脱|脱光|全部脱|都脱|全解|全部解).{0,16}(?:所有人|全部人|全房间|大家)/.test(text);
+    const targets = new Set((plan.operations || [])
+      .filter(operation => (operation.types || []).includes("itemdelall"))
+      .flatMap(operation => operation.targets || []));
+    if (!broadText && (plan.intent !== "action" || targets.size < 2)) return plan;
+    plan.intent = "clarify";
+    plan.failed = false;
+    plan.memorySearch = false;
+    plan.memoryEntities = [];
+    plan.stickerId = "";
+    plan.needsCatalog = false;
+    plan.operations = [];
+    plan.question = `这会清除${targets.size || "多"}个人身上的全部可移除道具，确定要继续吗？`;
+    plan.broadDestructiveConfirmation = true;
+    return plan;
+  }
+
+  function recoverExplicitCurrentItemOperation(plan, content) {
+    const hasItemOperation = (plan?.operations || []).some(operation =>
+      (operation?.types || []).some(type =>
+        ["itemadd", "itemdel", "itemset", "itemcolor"].includes(type)));
+    if (!plan || plan.failed || !["action", "clarify"].includes(plan.intent) ||
+        hasItemOperation ||
+        !Array.isArray(ChatRoomCharacter)) return plan;
+    const text = stripQuotedSegments(content);
+    const mentionedCharacters = ChatRoomCharacter.filter(character => {
+      const displayName = String(character?.Nickname || character?.Name || "").trim();
+      if (displayName.length < 2) return false;
+      const escaped = displayName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const asciiName = /^[\x00-\x7F]+$/.test(displayName);
+      const pattern = asciiName
+        ? new RegExp(`(^|[^A-Za-z0-9_])${escaped}(?=$|[^A-Za-z0-9_])`, "i")
+        : new RegExp(escaped);
+      return pattern.test(text);
+    });
+    if (mentionedCharacters.length !== 1) return plan;
+    const target = mentionedCharacters[0];
+    const mentionedItems = (target.Appearance || []).filter(item => {
+      if (!item?.Asset?.Group?.Name?.startsWith("Item")) return false;
+      const names = [
+        item.Asset.Name,
+        item.Asset.Description,
+        assetCnName(item.Asset),
+      ].map(value => String(value || "").trim()).filter(value => value.length >= 2);
+      return names.some(name => /^[\x00-\x7F]+$/.test(name)
+        ? text.toLowerCase().includes(name.toLowerCase())
+        : text.includes(name));
+    });
+    const uniqueItems = [...new Map(mentionedItems.map(item =>
+      [`${item.Asset.Group.Name}:${item.Asset.Name}`, item])).values()];
+    if (uniqueItems.length !== 1) return plan;
+    const item = uniqueItems[0];
+    let type = "";
+    if (/(?:取下|摘下|脱掉|去掉|移除|拿掉)/.test(text)) type = "itemdel";
+    else if (/(?:改成|改为|换成|设成|设为).{0,12}(?:色|#[0-9a-f]{6})|(?:颜色|色).{0,8}(?:改|换|设)/i.test(text)) {
+      type = "itemcolor";
+    } else if (/(?:强度|震动|振动|档位|模式|样式|调到|调成|调为|设成|设为)/.test(text)) {
+      type = "itemset";
+    }
+    if (!type) return plan;
+    const semanticPart = Object.keys(BODY_PART_GROUPS).find(part =>
+      (BODY_PART_GROUPS[part] || []).includes(item.Asset.Group.Name)) || "";
+    plan.intent = "action";
+    plan.memorySearch = false;
+    plan.memoryEntities = [];
+    plan.stickerId = "";
+    plan.needsCatalog = true;
+    plan.operations = [{
+      types: [type],
+      targets: [Number(target.MemberNumber)],
+      parts: semanticPart ? [semanticPart] : [],
+      assets: [item.Asset.Name],
+    }];
+    plan.question = "";
+    return plan;
   }
 
   function recentConversationHasAnswer(content, senderNum) {
@@ -1555,20 +1844,95 @@ ${recentSemantic}`;
     return asks && (past || (habitual && mentionsKnownPerson));
   }
 
+  function isExplicitDurableFactQuestion(content) {
+    const text = String(content || "")
+      .replace(/^(?:御坂|御搬|misaka)\s*[，,：:\s]*/i, "")
+      .trim();
+    if (!text) return false;
+    const match = text.match(
+      /^([A-Za-z][A-Za-z0-9_-]{1,31}|[\p{Script=Han}]{2,16})(?:的)?(?:昵称|外号|别名)(?:是|叫)?什么|^([A-Za-z][A-Za-z0-9_-]{1,31}|[\p{Script=Han}]{2,16})(?:是|算)什么人/u,
+    );
+    const subject = String(match?.[1] || match?.[2] || "").trim();
+    if (!subject) return false;
+    const lowered = subject.toLowerCase();
+    const knownNames = [];
+    for (const character of ChatRoomCharacter || []) {
+      knownNames.push(character?.Name, character?.Nickname);
+    }
+    for (const profile of Object.values(loadMemory()?.profiles || {})) {
+      knownNames.push(profile?.name);
+    }
+    if (knownNames.some(value =>
+      String(value || "").trim().toLowerCase() === lowered)) return true;
+    return [...(state.refinedMemories || []), ...(state.semanticMemories || [])]
+      .some(memory => String(memory?.text || "").toLowerCase().includes(lowered));
+  }
+
   function normalizePlannerMemoryDecision(
     plan, content, senderNum, recentAnswerAvailableAtPlanStart) {
     const explicitPastNeedsSearch = isExplicitPastQuestion(content);
+    const explicitFactNeedsSearch = isExplicitDurableFactQuestion(content);
     const recentAnswerAvailable =
       typeof recentAnswerAvailableAtPlanStart === "boolean"
         ? recentAnswerAvailableAtPlanStart
         : recentConversationHasAnswer(content, senderNum);
     // 显式过去式问句即使被模型随机判成 roleplay/action，也是在询问
     // 已发生的事实，而不是授权御坂现在执行或虚构。统一收口为 chat。
-    if (explicitPastNeedsSearch && plan.intent !== "chat") plan.intent = "chat";
+    if ((explicitPastNeedsSearch || explicitFactNeedsSearch) &&
+        plan.intent !== "chat") plan.intent = "chat";
+    const currentDaySmallTalk = /今天.{0,12}(?:发生|有).{0,10}(?:有趣|好玩).{0,4}(?:事|事情)/.test(
+      String(content || ""),
+    );
+    // “为什么老是在自动更新房间”“最近怎么总掉线”描述的是眼前仍在发生的
+    // 当前状态，而不是询问某次过去事件。habitual 规则只应用于人物之间的
+    // 历史言行，不能把系统/房间当前状态误送进长期记忆回答器。
+    const currentBehaviorText = String(content || "");
+    const explicitlyDatedPast = /(?:还记得|记不记得|之前|以前|上次|昨天|前天|前几天|上周|当时|当初|后来|曾经|过去|来着)/.test(
+      currentBehaviorText,
+    );
+    const currentBehaviorQuestion = !explicitlyDatedPast &&
+      /(?:现在|目前|最近|老(?:是)?|总是|一直|经常).{0,20}(?:自动|更新|掉线|断线|卡住|卡顿|没反应|不回复|不说话|宕机|不稳定)/.test(
+        currentBehaviorText,
+      );
     plan.memorySearch = plan.intent === "chat" &&
       !recentAnswerAvailable &&
-      (plan.memorySearch === true || explicitPastNeedsSearch);
+      !currentDaySmallTalk &&
+      !currentBehaviorQuestion &&
+      (plan.memorySearch === true || explicitPastNeedsSearch || explicitFactNeedsSearch);
     return plan;
+  }
+
+  function normalizeAssistantIdentity(reply, userContent) {
+    let text = String(reply || "");
+    const request = String(userContent || "").toLowerCase();
+    if (!text) return text;
+    // 咲/Misaki 是御坂的造主而不是御坂本人；即使她暂时不在房间名单中，
+    // 也必须保留为固定的第三人身份。其余长期认识的人从人物档案补齐。
+    const aliases = ["咲", "Misaki"];
+    for (const character of ChatRoomCharacter || []) {
+      if (Number(character?.MemberNumber) === Number(Player?.MemberNumber)) continue;
+      for (const value of [character?.Nickname, character?.Name]) {
+        const alias = String(value || "").trim();
+        if (alias.length >= 1 && !aliases.includes(alias)) aliases.push(alias);
+      }
+    }
+    for (const profile of Object.values(loadMemory()?.profiles || {})) {
+      const alias = String(profile?.name || "").trim();
+      if (alias.length >= 1 && !aliases.includes(alias)) aliases.push(alias);
+    }
+    aliases.sort((left, right) => right.length - left.length);
+    for (const alias of aliases) {
+      if (request.includes(alias.toLowerCase())) continue;
+      const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      // 只修正回复开头（或动作行之后）未被用户提及的人名自我归因。
+      // 用户真的在询问“咲觉得什么”时，因为原问题含咲，不会改写第三人称。
+      const selfAttribution = new RegExp(
+        `(^|\\n)${escaped}(?=(?:觉得|认为|感觉|想|希望|知道|不知道|明白|不明白|会|不会|可能|应该|有点|正在|刚才))`,
+        "g",
+      );
+      text = text.replace(selfAttribution, "$1我");
+    }
+    return text;
   }
 
   function normalizePlannerActivityDecision(plan, content, senderNum) {
@@ -1740,6 +2104,7 @@ activity 是对房间内真实人物进行身体互动时的默认优先选择�
 roleplay 只用于用户明确要求文字/星号动作描写、假装、表演、躲藏、探头、虚构当前无法作为房间人物定位的动作，或把手持食物递到嘴边、把某人的手腿当食物、“该怎么办/强硬一点”这类现场演出。不得因为用户没说“BC/官方/原生”就选 roleplay，也不得为了 roleplay 规划真实道具指令。
 friendship 只表示房间成员本人明确要求御坂把自己加为 BC 好友，例如“御坂加我好友”“可以把我加进好友吗”。friendship.target 必须等于当前说话者编号，friendship.explicit=true。第三人要求御坂添加别人、泛泛说“我们是朋友”、夸赞某人或普通友好聊天都不是 friendship；不得替目标本人作出好友请求。
 action 只用于确实要改变 BC 状态的移动、添加/删除/设置道具、快照、复制或游戏表情。只有执行真实 action 所必需的目标或操作仍无法确定时才选 clarify。
+用户已经说出常见且足以从实时目录选择道具的类别、用途或别名（如麻绳、口球、梳子、窝窝、能躺进去睡觉的小窝）时，必须规划 action 并设置 needsCatalog=true；若无法唯一对应精确 Asset，就把 operations.assets 留空交给主模型按完整目录选择，不能反问用户“具体哪一种道具”。
 必须利用“近期对话”理解“也要”“那个”“手一份腿两份”等指代和延续玩笑，但永远只处理最新消息，不补做历史请求。
 近期对话中带【显式纠正】的后一句是说话者对同话题较早说法的更正，应按后一句理解，不得把已纠正的两句并列成无法判断的矛盾。
 手持食物需要区分三种语义：把食物递到嘴边、喂一口、吃掉或把某人的手腿当食物，通常是 roleplay；“给B一个/一份X”“给B点吃的”表示让B实际拿到 ItemHandheld，规划 action，若上文已有明确食物则沿用，未明确时优先选择目录里常见且无害的食物而不是反复追问；“把A手里的X给B”默认给B添加同类手持物但不删除A手里的，只有明确说“拿走、转移、从A手里移交”时才规划先从A移除再给B添加。鸡腿、香肠、爆米花等可能是同一道具的不同样式，必须结合 ItemHandheld 目录中的样式选项保留在 goal 中，不要把样式名误当成不存在的 Asset。
@@ -1807,6 +2172,8 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
       // 制造无意义追问、虚构演出或意外操作。
       normalizePlannerMemoryDecision(
         plan, content, senderNum, recentAnswerAvailableAtPlanStart);
+      normalizePlannerQuotedReportDecision(plan, content);
+      normalizePlannerSimpleRoleplayDecision(plan, content);
       plan.usedPendingClarification = !!pendingClarification && plan.usedPendingClarification === true;
       const validTypes = new Set(["itemadd","itemdel","itemdelall","itemset","itemcolor","move","moveTo","moveEdge","snapshotSave","snapshotRestore","copyRestraint","emote"]);
       const validParts = new Set(["Arms","Hands","Legs","Feet","Mouth","Head","Neck","Torso","Pelvis","Breast","Eyes","Ears","Vulva","Devices"]);
@@ -1856,6 +2223,11 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
         plan.friendship = { target: null, explicit: false };
       }
       plan.operations = normalizePlannerOperations(plan.operations, roomNumbers, validTypes, validParts);
+      normalizePlannerExplicitActionTargets(plan, content);
+      normalizePlannerExplicitItemAddDecision(plan, content);
+      normalizePlannerColloquialItemAliases(plan, content);
+      normalizePlannerAmbiguousSingleItemDecision(plan, content);
+      normalizePlannerBroadDestructiveDecision(plan, content);
       if (plan.operations.some(op => op.types.some(t => ["itemadd","itemdel","itemdelall","itemset","itemcolor","snapshotRestore","copyRestraint"].includes(t)))) {
         plan.needsCatalog = true;
       }
@@ -1868,6 +2240,8 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
         noStack: rawConstraints.noStack === true,
         preserveParts: (Array.isArray(rawConstraints.preserveParts) ? rawConstraints.preserveParts : []).filter(p => validParts.has(p)),
       };
+      recoverExplicitCurrentItemOperation(plan, content);
+      enrichPlannerAssetsFromExplicitMentions(plan, content);
       if (plan.intent === "chat" || plan.intent === "roleplay" ||
           plan.intent === "activity" || plan.intent === "friendship") {
         plan.needsCatalog = false;
@@ -1916,7 +2290,17 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
       return plan;
     } catch (e) {
       console.warn("[MisakaChat] 请求规划失败:", e.message, result);
-      return { intent: "clarify", memorySearch: false, memoryEntities: [], usedPendingClarification: false, needsCatalog: false, operations: [], question: "我没听明白要做什么，能再说具体一点吗？", failed: true };
+      const fallbackPlan = normalizePlannerExplicitItemAddDecision({
+        intent: "clarify",
+        memorySearch: false,
+        memoryEntities: [],
+        usedPendingClarification: false,
+        needsCatalog: false,
+        operations: [],
+        question: "我没听明白要做什么，能再说具体一点吗？",
+        failed: true,
+      }, content);
+      return normalizePlannerBroadDestructiveDecision(fallbackPlan, content);
     }
   }
 
@@ -2041,6 +2425,58 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
   const STRUCTURED_REPLY_PROTOCOL = "misaka.reply.v1";
   const VISIBLE_ACTION_MAX_GRAPHEMES = 80;
   const VISIBLE_SPEECH_MAX_GRAPHEMES = 320;
+
+  function extractFirstBalancedJsonObject(value) {
+    const text = String(value || "");
+    const start = text.indexOf("{");
+    if (start < 0) return "";
+    let depth = 0;
+    let quoted = false;
+    let escaped = false;
+    for (let index = start; index < text.length; index++) {
+      const char = text[index];
+      if (quoted) {
+        if (escaped) escaped = false;
+        else if (char === "\\") escaped = true;
+        else if (char === '"') quoted = false;
+        continue;
+      }
+      if (char === '"') {
+        quoted = true;
+        continue;
+      }
+      if (char === "{") depth++;
+      else if (char === "}") {
+        depth--;
+        if (depth === 0) return text.slice(start, index + 1);
+      }
+    }
+    return "";
+  }
+
+  function completeTruncatedJsonObject(value) {
+    const text = String(value || "").trim();
+    if (!text.startsWith("{")) return "";
+    const stack = [];
+    let quoted = false;
+    let escaped = false;
+    for (const char of text) {
+      if (quoted) {
+        if (escaped) escaped = false;
+        else if (char === "\\") escaped = true;
+        else if (char === '"') quoted = false;
+        continue;
+      }
+      if (char === '"') quoted = true;
+      else if (char === "{") stack.push("}");
+      else if (char === "[") stack.push("]");
+      else if (char === "}" || char === "]") {
+        if (stack.pop() !== char) return "";
+      }
+    }
+    if (quoted || escaped || stack.length === 0 || /[:,\\]$/.test(text)) return "";
+    return text + stack.reverse().join("");
+  }
 
   function structuredReplyInstruction() {
     return `【最终回复协议：${STRUCTURED_REPLY_PROTOCOL}】
@@ -2169,10 +2605,15 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
     try {
       parsed = JSON.parse(unwrapped);
     } catch (e) {
-      const start = unwrapped.indexOf("{");
-      const end = unwrapped.lastIndexOf("}");
-      if (start >= 0 && end > start) {
-        try { parsed = JSON.parse(unwrapped.slice(start, end + 1)); } catch (_) {}
+      const balanced = extractFirstBalancedJsonObject(unwrapped);
+      if (balanced) {
+        try { parsed = JSON.parse(balanced); } catch (_) {}
+      }
+      if (!parsed) {
+        const completed = completeTruncatedJsonObject(unwrapped);
+        if (completed) {
+          try { parsed = JSON.parse(completed); } catch (_) {}
+        }
       }
     }
     const looksStructured = /^\s*(?:```(?:json)?\s*)?\{/i.test(raw);
@@ -2334,6 +2775,38 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
     return Number.isFinite(cmd.memberNumber) ? cmd.memberNumber : null;
   }
 
+  function itemCommandResolvedGroups(cmd) {
+    if (!cmd || !["itemadd", "itemdel", "itemset"].includes(cmd.type)) return [];
+    const target = commandPrimaryTarget(cmd);
+    const char = actionTargetCharacter(target);
+    if (!char || !cmd.item) return [];
+    if (cmd.type === "itemadd") {
+      const resolved = resolveItemAddTarget(char, cmd.item, cmd.part);
+      return resolved.ok && resolved.group ? [resolved.group] : [];
+    }
+    const worn = findItemByPart(char, cmd.item, cmd.part);
+    if (worn?.Asset?.Group?.Name) return [worn.Asset.Group.Name];
+    const resolution = resolveItemPartGroups(char, cmd.item, cmd.part);
+    return resolution.ok ? resolution.groups : [];
+  }
+
+  // 规划器使用 Arms / Devices 等语义部位，回复协议也允许 ItemArms /
+  // ItemDevices 等 BC 原生 group。所有计划边界与 preserveParts 判断都必须先
+  // 归一到经 AssetGet 验证的真实 group，不能再直接比较字符串。
+  function itemCommandTouchesPlannedParts(cmd, plannedParts) {
+    const parts = Array.isArray(plannedParts) ? plannedParts.filter(Boolean) : [];
+    if (parts.length === 0) return false;
+    const rawPart = String(cmd?.part || "").trim();
+    if (rawPart && parts.includes(rawPart)) return true;
+    const actualGroups = itemCommandResolvedGroups(cmd);
+    if (actualGroups.length === 0) return false;
+    return parts.some(part => {
+      const plannedGroups = BODY_PART_GROUPS[part] ||
+        (/^Item[A-Za-z0-9]+$/.test(part) ? [part] : []);
+      return plannedGroups.some(group => actualGroups.includes(group));
+    });
+  }
+
   function commandMatchesPlannedOperation(cmd, operation) {
     if (!cmd || !operation) return false;
     const types = Array.isArray(operation.types) ? operation.types : [];
@@ -2343,19 +2816,7 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
     if (targets.length > 0 && target !== null && !targets.includes(target)) return false;
     const parts = Array.isArray(operation.parts) ? operation.parts : [];
     if (parts.length > 0 && ["itemadd", "itemdel", "itemset"].includes(cmd.type)) {
-      if (cmd.part) {
-        if (!parts.includes(cmd.part)) return false;
-      } else if (cmd.type === "itemdel") {
-        // ITEMDEL 常省略 part，因为旧道具名称本身已经能唯一解析 group。
-        // 仍用权威 Asset 目录校验它确实属于计划部位，避免借替换操作
-        // 删除目标身上其他无关道具。
-        const mapping = findItemAsset(cmd.item, actionTargetCharacter(target));
-        const matchesPlannedPart = !!mapping?.group && parts.some(part =>
-          (BODY_PART_GROUPS[part] || []).includes(mapping.group));
-        if (!matchesPlannedPart) return false;
-      } else {
-        return false;
-      }
+      if (!itemCommandTouchesPlannedParts(cmd, parts)) return false;
     }
     // assets 是规划器已从权威目录解析出的精确目标道具。添加、设置与改色
     // 必须命中它；替换时的 ITEMDEL 仍允许删除当前旧道具。
@@ -2392,14 +2853,38 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
     return types.some(type => commandFamily(type) === family);
   }
 
+  function canonicalizeUnscopedExactAssetPart(cmd, operations) {
+    if (!cmd?.part || !["itemadd", "itemdel", "itemset"].includes(cmd.type)) return cmd;
+    const target = commandPrimaryTarget(cmd);
+    const operation = (operations || []).find(candidate => {
+      if (!commandWithinLoosePlanBoundary(cmd, candidate) || candidate?.parts?.length) return false;
+      const assets = (candidate.assets || []).map(asset => String(asset).toLowerCase());
+      const mapping = findItemAsset(cmd.item, actionTargetCharacter(target));
+      const actualAsset = String(mapping?.asset || cmd.item || "").toLowerCase();
+      return assets.length > 0 && assets.includes(actualAsset);
+    });
+    if (!operation) return cmd;
+    const char = actionTargetCharacter(target);
+    const mapping = findItemAsset(cmd.item, char);
+    if (!char || !mapping) return cmd;
+    const requested = resolveItemPartGroups(char, cmd.item, cmd.part);
+    if (requested.ok) return cmd;
+    // 用户没有限定部位、规划器已锁定精确 Asset，模型却给出与该 Asset
+    // 不兼容的语义部位时，以权威 Asset 默认 group 收口。这里不处理用户明确
+    // 指定部位的计划，避免把“戴到手上”悄悄改成别的身体部位。
+    return { ...cmd, part: mapping.group };
+  }
+
   // 宽松审查：只拦截跨对象、跨操作大类、明确禁止项与高影响未授权操作。
   // Asset、部位和 ADD/SET/DEL 细分不再要求与规划器逐字匹配。
   function filterCommandsByPlan(plan, commands) {
-    const executable = commands.filter(c => !["memsearch", "bcequery"].includes(c.type));
+    const operations = Array.isArray(plan?.operations) ? plan.operations : [];
+    const executable = commands
+      .filter(c => !["memsearch", "bcequery"].includes(c.type))
+      .map(command => canonicalizeUnscopedExactAssetPart({ ...command }, operations));
     if (!plan || plan.intent !== "action") {
       return { allowed: [], rejected: executable.map(cmd => ({ cmd, reason: "not-an-action-plan" })) };
     }
-    const operations = Array.isArray(plan.operations) ? plan.operations : [];
     const constraints = plan.constraints || {};
     const allowed = [], rejected = [];
     for (const cmd of executable) {
@@ -2407,7 +2892,13 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
       if (!operations.some(op => commandWithinLoosePlanBoundary(cmd, op))) reason = "outside-plan-boundary";
       else if (constraints.noMove && ["move", "moveTo", "moveEdge"].includes(cmd.type)) reason = "movement-forbidden";
       else if (constraints.noAdd && cmd.type === "itemadd") reason = "adding-forbidden";
-      else if ((constraints.preserveParts || []).includes(cmd.part)) reason = "part-must-be-preserved";
+      else if (["itemadd", "itemdel", "itemset"].includes(cmd.type) &&
+          itemCommandTouchesPlannedParts(cmd, constraints.preserveParts)) {
+        reason = "part-must-be-preserved";
+      } else if (cmd.type === "itemcolor" &&
+          (constraints.preserveParts || []).includes(cmd.part)) {
+        reason = "part-must-be-preserved";
+      }
       if (reason) rejected.push({ cmd, reason });
       else allowed.push(cmd);
     }
@@ -2474,6 +2965,8 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
     parseStructuredReply,
     parseAssistantReply,
     dryRunStructuredReplyForTest,
+    dryRunEmptyContentRecoveryForTest,
+    dryRunCallBurstForTest,
     buildDeterministicExactReplacementReply,
     normalizeReplacementPlanOperations,
     stripQuotedSegmentsForTest: stripQuotedSegments,
@@ -2481,9 +2974,20 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
     normalizePlannerMemoryDecisionForTest: (plan, content, senderNum) =>
       normalizePlannerMemoryDecision(
         JSON.parse(JSON.stringify(plan || {})), content, senderNum),
+    normalizeAssistantIdentityForTest: (reply, content) =>
+      normalizeAssistantIdentity(reply, content),
     normalizePlannerActivityDecisionForTest: (plan, content, senderNum) =>
       normalizePlannerActivityDecision(
         JSON.parse(JSON.stringify(plan || {})), content, senderNum),
+    normalizePlannerQuotedReportDecisionForTest: (plan, content) =>
+      normalizePlannerQuotedReportDecision(
+        JSON.parse(JSON.stringify(plan || {})), content),
+    normalizePlannerAmbiguousSingleItemDecisionForTest: (plan, content) =>
+      normalizePlannerAmbiguousSingleItemDecision(
+        JSON.parse(JSON.stringify(plan || {})), content),
+    normalizePlannerSimpleRoleplayDecisionForTest: (plan, content) =>
+      normalizePlannerSimpleRoleplayDecision(
+        JSON.parse(JSON.stringify(plan || {})), content),
     buildPlannerRecentContextForTest: buildPlannerRecentContext,
     normalizePlannerOperationsForTest: rawOperations => normalizePlannerOperations(
       rawOperations,
@@ -2491,6 +2995,18 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
       new Set(["itemadd","itemdel","itemdelall","itemset","itemcolor","move","moveTo","moveEdge","snapshotSave","snapshotRestore","copyRestraint","emote"]),
       new Set(["Arms","Hands","Legs","Feet","Mouth","Head","Neck","Torso","Pelvis","Breast","Eyes","Ears","Vulva","Devices"]),
     ),
+    enrichPlannerAssetsFromExplicitMentionsForTest: (plan, content) =>
+      enrichPlannerAssetsFromExplicitMentions(plan, content),
+    normalizePlannerExplicitActionTargetsForTest: (plan, content) =>
+      normalizePlannerExplicitActionTargets(plan, content),
+    normalizePlannerExplicitItemAddDecisionForTest: (plan, content) =>
+      normalizePlannerExplicitItemAddDecision(JSON.parse(JSON.stringify(plan || {})), content),
+    normalizePlannerColloquialItemAliasesForTest: (plan, content) =>
+      normalizePlannerColloquialItemAliases(JSON.parse(JSON.stringify(plan || {})), content),
+    normalizePlannerBroadDestructiveDecisionForTest: (plan, content) =>
+      normalizePlannerBroadDestructiveDecision(JSON.parse(JSON.stringify(plan || {})), content),
+    recoverExplicitCurrentItemOperationForTest: (plan, content) =>
+      recoverExplicitCurrentItemOperation(plan, content),
     snapshotRecentMessagesForTest: () => state.recentMessages.map(message => ({ ...message })),
     replaceRecentMessagesForTest: messages => {
       state.recentMessages = (Array.isArray(messages) ? messages : []).map(message => ({ ...message }));
@@ -2869,6 +3385,7 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
     parseStructuredReplyForTest: parseStructuredReply,
     parseAssistantReplyForTest: parseAssistantReply,
     dryRunPlannedRequestForTest,
+    dryRunConversationForTest,
     resolveItemAddTargetForTest: (itemName, part, memberNumber) => {
       const char = actionTargetCharacter(memberNumber);
       const resolved = resolveItemAddTarget(char, itemName, part);
@@ -4820,6 +5337,32 @@ function unescapeHTML(s) {
     };
   }
 
+  async function dryRunEmptyContentRecoveryForTest() {
+    return callLLM(
+      "你是结构化回复测试器，只输出指定 JSON。",
+      [{ role: "user", content: "请回复一条非空测试消息。" }],
+      {
+        thinking: true,
+        temperature: 0,
+        maxTokens: 256,
+        json: true,
+      },
+    );
+  }
+
+  async function dryRunCallBurstForTest(count = 31) {
+    const outputs = [];
+    const runs = Math.max(1, Math.min(40, Number(count) || 31));
+    for (let index = 0; index < runs; index++) {
+      outputs.push(await callLLM(
+        "你是本地限流边界测试器，只输出指定 JSON。",
+        [{ role: "user", content: `第${index + 1}次调用` }],
+        { thinking: false, temperature: 0, maxTokens: 64, json: true },
+      ));
+    }
+    return outputs;
+  }
+
   async function renderClarification(question) {
     const fallback = sanitizeReply(question || "我还没弄明白，能再说清楚一点吗？");
     const prompt = getSystemPrompt(false) +
@@ -4890,6 +5433,149 @@ function unescapeHTML(s) {
     return { requestPlan, raw, parsed, filtered, resolutions };
   }
 
+  // 黑箱抽样入口：复用正式规划器、记忆回答器、Activity 选择器和主回复模型，
+  // 但不发送消息、不执行 Activity/好友/道具变更，也不写入聊天或记忆状态。
+  async function dryRunConversationForTest(senderNum, senderName, content) {
+    const requestPlan = await planUserRequest(senderNum, senderName, content, null);
+    const result = {
+      requestPlan,
+      branch: requestPlan?.intent || "unknown",
+      finalReply: "",
+      raw: null,
+      parsed: null,
+      filtered: null,
+      resolutions: [],
+      activitySelection: null,
+      activityDryRun: null,
+      memoryResult: null,
+    };
+    if (requestPlan?.failed) {
+      result.branch = "planner-failed";
+      result.finalReply = await renderClarification(
+        requestPlan.question || "我没确认好具体操作，能再说具体一点吗？",
+      );
+      return result;
+    }
+    if (requestPlan?.quotedReportOnly) {
+      result.branch = "quoted-report";
+      result.finalReply = "听到了，不过那只是转述，我不会把它当成操作指令。";
+      return result;
+    }
+    if (requestPlan?.simpleRoleplay === "wink") {
+      result.branch = "simple-roleplay";
+      result.finalReply = "*朝你眨了眨眼*";
+      return result;
+    }
+    if (requestPlan?.intent === "clarify") {
+      result.finalReply = await renderClarification(
+        requestPlan.question || "我还没确认好具体目标或操作，能再说清楚一点吗？",
+      );
+      return result;
+    }
+    if (requestPlan?.memorySearch) {
+      result.branch = "memory";
+      result.memoryResult = await answerMemoryQuestion(requestPlan, senderName, content);
+      result.finalReply = result.memoryResult?.reply || "";
+      return result;
+    }
+    if (requestPlan?.intent === "friendship") {
+      const friendship = requestPlan.friendship || {};
+      result.branch = "friendship";
+      result.finalReply = friendship.explicit && Number(friendship.target) === Number(senderNum)
+        ? "好呀，已经加上啦～"
+        : "好友关系要由本人提出哦。";
+      return result;
+    }
+    if (requestPlan?.intent === "activity") {
+      const selection = await resolvePlannedActivity(requestPlan, senderName, content);
+      result.activitySelection = selection;
+      if (selection.ok) {
+        result.activityDryRun = executeNativeActivity(selection, { dryRun: true });
+        result.finalReply = result.activityDryRun?.ok ? "" : "这个动作现在做不了，我先不乱来。";
+        return result;
+      }
+      if (shouldFallbackActivityToRoleplay(selection.reason)) {
+        requestPlan.intent = "roleplay";
+        requestPlan.stickerId = "";
+        result.branch = "activity-roleplay-fallback";
+      } else {
+        result.finalReply = selection.reason === "target-not-in-room"
+          ? "没找到这个人，做不了。"
+          : "这个原生动作现在做不了。";
+        return result;
+      }
+    }
+
+    const recentForContext = state.recentMessages.slice(-CONFIG.maxContext);
+    const contextMessages = trimContextByTokenBudget([
+      ...recentForContext.map(message => ({
+        role: message.isSelf ? "assistant" : "user",
+        content: message.isSelf
+          ? message.content
+          : `${message.senderName}#${message.senderMemberNumber || "?"}: ${message.content}`,
+      })),
+      {
+        role: "user",
+        content: `【当前必须处理的最新消息】${senderName}#${senderNum}: ${content}\n只回复并执行这一条。历史消息只作上下文,不要补做旧请求。`,
+      },
+    ], CONFIG.maxContextTokens);
+    const systemPrompt = buildMainReplySystemPrompt(requestPlan);
+    let raw = await callLLM(systemPrompt, contextMessages, {
+      thinking: true,
+      temperature: 0,
+      maxTokens: 2048,
+      json: true,
+    });
+    let parsed = parseAssistantReply(raw || "", requestPlan.intent);
+    let filtered = filterCommandsByPlan(requestPlan, parsed.commands);
+    const initialIsQuestion = /[?？]\s*$/.test(parsed.cleaned || "");
+    const planHasExactAssets = (requestPlan.operations || []).some(operation =>
+      Array.isArray(operation.assets) && operation.assets.length > 0);
+    if (requestPlan.intent === "action" && filtered.allowed.length === 0 &&
+        (!initialIsQuestion || planHasExactAssets)) {
+      const deterministic = buildDeterministicExactReplacementReply(requestPlan);
+      if (deterministic) {
+        raw = deterministic;
+      } else {
+        const correctionPrompt = `${systemPrompt}\n\n【本轮强制纠错】\n用户明确要求你执行操作，但你上一稿的 commands 没有任何可执行对象。必须根据当前名单和道具清单，在 commands 数组中输出正确的结构化操作对象，并在 speech 中简短回复。若 operations.assets 非空，则具体道具已经确定，必须直接使用其中的精确 Asset，禁止再次追问。只有计划本身没有精确目标、部位或道具时才能追问；绝不能只用 action 或 speech 声称已经完成。`;
+        raw = await callLLM(correctionPrompt, contextMessages, {
+          thinking: false,
+          temperature: 0,
+          maxTokens: 2048,
+          json: true,
+        }) || raw;
+      }
+      parsed = parseAssistantReply(raw || "", requestPlan.intent);
+      filtered = filterCommandsByPlan(requestPlan, parsed.commands);
+    }
+    result.raw = raw;
+    result.parsed = parsed;
+    result.filtered = filtered;
+    result.finalReply = normalizeAssistantIdentity(parsed.cleaned || "", content);
+    if (requestPlan.intent === "action" && filtered.allowed.length === 0 &&
+        !/[?？]\s*$/.test(result.finalReply)) {
+      result.finalReply = "我没确认好具体操作,先不乱动。";
+    }
+    result.resolutions = filtered.allowed
+      .filter(command => command.type === "itemadd")
+      .map(command => {
+        const char = actionTargetCharacter(command.memberNumber);
+        const resolved = resolveItemAddTarget(char, command.item, command.part);
+        return {
+          command,
+          resolved: resolved.ok
+            ? {
+                ok: true,
+                group: resolved.group,
+                asset: resolved.asset,
+                partKind: resolved.partKind,
+              }
+            : resolved,
+        };
+      });
+    return result;
+  }
+
   async function handleReply(senderNum, senderName, content) {
     if (!isCurrent()) return;
     const debugId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -4939,6 +5625,20 @@ function unescapeHTML(s) {
         pushDebugTrace({ id: debugId, stage: "sent", finalReply: clarification });
         return;
       }
+      if (requestPlan.quotedReportOnly) {
+        const finalReply = "听到了，不过那只是转述，我不会把它当成操作指令。";
+        pushDebugTrace({ id: debugId, stage: "guard:quoted-report", finalReply });
+        sendReply(finalReply);
+        pushDebugTrace({ id: debugId, stage: "sent", finalReply });
+        return;
+      }
+      if (requestPlan.simpleRoleplay === "wink") {
+        const finalReply = "*朝你眨了眨眼*";
+        pushDebugTrace({ id: debugId, stage: "guard:simple-roleplay", finalReply });
+        sendReply(finalReply);
+        pushDebugTrace({ id: debugId, stage: "sent", finalReply });
+        return;
+      }
       // clarify 是规划器已经做出的安全决定，直接使用它的问题。继续调用主模型会让
       // 主模型无视计划、口头声称“收紧好了”，即使所有指令都被执行层拦住。
       if (requestPlan.intent === "clarify") {
@@ -4961,7 +5661,7 @@ function unescapeHTML(s) {
       // 也不再经历“自由草稿 → 二次查询 → 证据编辑器”的多轮链路。
       if (requestPlan.memorySearch) {
         const memoryResult = await answerMemoryQuestion(requestPlan, senderName, content);
-        const finalReply = memoryResult.reply;
+        const finalReply = normalizeAssistantIdentity(memoryResult.reply, content);
         pushDebugTrace({ id: debugId, stage: "memory:answer", ...memoryResult });
         sendReply(finalReply);
         pushDebugTrace({ id: debugId, stage: "sent", finalReply });
@@ -5087,7 +5787,8 @@ function unescapeHTML(s) {
           pushDebugTrace({ id: debugId, stage: "llm:extra-context", reply });
         }
       }
-      if (!reply) { console.warn("[MisakaChat] LLM 返回空,未回复");
+      if (!reply) {
+        console.warn("[MisakaChat] LLM 返回空,未回复");
         pushDebugTrace({ id: debugId, stage: "empty-reply" });
         return;
       }
@@ -5267,6 +5968,7 @@ function unescapeHTML(s) {
       if (!finalReply) return;
       if (!isCurrent()) return;
 
+      finalReply = normalizeAssistantIdentity(finalReply, content);
       sendReply(finalReply);
       pushDebugTrace({ id: debugId, stage: "sent", finalReply });
       if (requestPlan.stickerId) {
