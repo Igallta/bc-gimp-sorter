@@ -1,65 +1,13 @@
 #!/usr/bin/env node
 
 import { readFile } from "node:fs/promises";
+import { evaluate, findMisakaTarget as findUserSession } from "./browser-session.mjs";
 
-const cdpBase = process.env.MISAKA_CDP_URL || "http://127.0.0.1:9222";
 const playerMemberNumber = Number(process.env.MISAKA_PLAYER_MEMBER || 194331);
 const repeats = Math.max(1, Math.min(10, Number(process.argv.find(arg => arg.startsWith("--repeats="))?.split("=")[1]) || 1));
 const helpersOnly = process.argv.includes("--helpers-only");
 
-async function connectCdp(url) {
-  return new Promise((resolve, reject) => {
-    const socket = new WebSocket(url);
-    let nextId = 1;
-    const pending = new Map();
-    socket.addEventListener("open", () => resolve({
-      call(method, params = {}) {
-        return new Promise((callResolve, callReject) => {
-          const id = nextId++;
-          pending.set(id, { resolve: callResolve, reject: callReject });
-          socket.send(JSON.stringify({ id, method, params }));
-        });
-      },
-      close() { socket.close(); },
-    }));
-    socket.addEventListener("message", event => {
-      const message = JSON.parse(String(event.data));
-      if (!message.id || !pending.has(message.id)) return;
-      const waiter = pending.get(message.id);
-      pending.delete(message.id);
-      if (message.error) waiter.reject(new Error(message.error.message));
-      else waiter.resolve(message.result);
-    });
-    socket.addEventListener("error", () => reject(new Error("CDP websocket connection failed")));
-  });
-}
-
-async function evaluate(client, expression, awaitPromise = false) {
-  const result = await client.call("Runtime.evaluate", {
-    expression,
-    awaitPromise,
-    returnByValue: true,
-    userGesture: false,
-  });
-  if (result.exceptionDetails) {
-    throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
-  }
-  return result.result?.value;
-}
-
-async function findMisakaTarget() {
-  const targets = await (await fetch(`${cdpBase}/json`)).json();
-  for (const target of targets) {
-    if (target.type !== "page" || !/bondage-(?:europe|asia)\.com/i.test(target.url || "") ||
-        !target.webSocketDebuggerUrl) continue;
-    const client = await connectCdp(target.webSocketDebuggerUrl);
-    if (await evaluate(client, "Number(window.Player?.MemberNumber || 0)") === playerMemberNumber) return client;
-    client.close();
-  }
-  throw new Error(`No active Misaka #${playerMemberNumber} page found`);
-}
-
-const client = await findMisakaTarget();
+const { client } = await findUserSession();
 try {
   await evaluate(client, `window.__misakaLollipopRunnerRestore = {
     hadPlanDebug: Object.prototype.hasOwnProperty.call(window, "__misakaPlanDebug"),

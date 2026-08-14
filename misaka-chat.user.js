@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BC Misaka Auto Chat
 // @namespace    https://igallta.github.io/bc-gimp-sorter
-// @version      3.0.3
+// @version      3.0.4
 // @description  御坂 BC 自动回复系统 — LLM 驱动 + 语义记忆(IDB) + 房间上下文
 // @match        https://*.bondageprojects.elementfx.com/R*/*
 // @match        https://*.bondage-europe.com/R*/*
@@ -15,7 +15,7 @@
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @connect      api.deepseek.com
-// @connect      api.openai.com
+// @connect      openrouter.ai
 // @run-at       document-end
 // ==/UserScript==
 
@@ -24,14 +24,14 @@
 
   // 不再硬编码任何 API key — 通过 BC 控制台手动设置：
   // localStorage.setItem("misaka_apikey", "sk-xxx")
-  // localStorage.setItem("misaka_openai_key", "sk-proj-xxx")
+  // localStorage.setItem("misaka_openrouter_key", "sk-or-v1-xxx")
 
   // 把 GM 函数暴露到 window，让注入的脚本能用
   try { window.__GM_xmlhttpRequest = GM_xmlhttpRequest; } catch(e) {}
   try { window.__GM_getValue = GM_getValue; } catch(e) {}
   try { window.__GM_setValue = GM_setValue; } catch(e) {}
 
-  const SCRIPT_VERSION = "3.0.3";
+  const SCRIPT_VERSION = "3.0.4";
   // GitHub Pages 部署曾长期卡住并返回 2.5.3。资源钉住本版本对应的 commit，
   // 避免 Pages/master CDN 缓存让 loader 版本与实际主脚本不一致。
   const ASSET_REVISION = "0684a4a";

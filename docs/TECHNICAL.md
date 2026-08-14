@@ -1,8 +1,8 @@
 # MisakaChat 技术手册
 
 > 最后更新：2026-08-03
-> 当前稳定版：MisakaChat **v3.0.3** / GimpSorter **v1.7.1**
-> 当前阶段：v3.0.3 稳定手持物赠送与替换，补全单字昵称、简繁异体和御坂呼叫词下的目标识别。
+> 当前稳定版：MisakaChat **v3.0.4** / GimpSorter **v1.7.1**
+> 当前阶段：v3.0.4 切换 OpenRouter Voyage 4 Large embedding，并统一 Ubuntu 官方 existing-session 回归入口。
 
 本文是御坂项目的长期技术事实源。它不仅记录“代码现在怎么工作”，也记录“为什么会变成这样”：项目从一个整理 GIMP 娃娃站位的小脚本开始，逐步长成了一个能感知房间、理解自然语言、记住访客并真正改变 BC 状态的角色型 Bot。
 
@@ -218,7 +218,7 @@ Tampermonkey
        └─ 固定 revision 加载 misaka-chat.js
                │
                ├─ DeepSeek Chat Completions
-               ├─ OpenAI Embeddings
+               ├─ OpenRouter Voyage 4 Large Embeddings
                ├─ localStorage：配置、人物档案、计数
                ├─ IndexedDB：语义记忆、提炼记忆
                └─ BC / ModSDK：消息、人物、道具、移动
@@ -415,7 +415,7 @@ v2.10.17 沿用 v2.10.16 的单路调用，不经过普通人格回复，也不�
 | `misaka_memory` | 人物档案 |
 | `misaka_msg_count` | 长期提炼计数 |
 | `misaka_apikey` | 对话 API Key |
-| `misaka_openai_key` | OpenAI embedding Key |
+| `misaka_openrouter_key` | OpenRouter embedding Key |
 | `misaka_model` | 模型覆盖值 |
 | `misaka_persona_extra` | 人格附加备注 |
 | `misaka_activity_enabled` | BC 原生 Activity 开关 |
@@ -440,9 +440,9 @@ Key 只保存在本地浏览器，不得写入源码、提交、日志、文档�
 ### 模型
 
 - 对话：DeepSeek Chat Completions，默认 `deepseek-v4-flash`。
-- Embedding：OpenAI `text-embedding-3-large`，3,072 维。
+- Embedding：OpenRouter `voyageai/voyage-4-large`，1,024 维；查询使用 `input_type=query`，记忆文档使用 `input_type=document`。
 
-当前语义库全部是 3,072 维 OpenAI 向量。切换 embedding 模型必须检查维度和语义空间兼容，必要时备份后全量重建。
+当前 Ubuntu 语义库从空库开始，使用 1,024 维 Voyage 向量。切换 embedding 模型必须检查维度和语义空间兼容，必要时备份后全量重建。
 
 ### 导入导出
 
@@ -559,7 +559,7 @@ OpenClaw 的页面 console 拦截器使用最多 1,000 条的环形缓存。MCP 
 
 ## 13. 路线图
 
-### 当前：v3.0.3 黑箱观察
+### 当前：v3.0.4 黑箱观察
 
 1. 继续积累真实房间样本，只修稳定复现的漏查、误查、假阴性或能力误触发。
 2. Activity 继续验证不同动作、部位、距离和权限变化；自动化回归不使用真人做写入测试。

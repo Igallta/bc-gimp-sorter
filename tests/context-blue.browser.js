@@ -63,14 +63,27 @@
     const results = [];
     const embeddingProviders = hooks.inspectEmbeddingConfigForTest?.() || [];
     results.push({
-      id: "guard-embedding-uses-only-openai-key",
+      id: "guard-embedding-uses-openrouter-voyage-key",
       repetition: 1,
       passed: embeddingProviders.length === 1 &&
-        embeddingProviders[0]?.name === "OpenAI" &&
-        embeddingProviders[0]?.model === "text-embedding-3-large" &&
-        embeddingProviders[0]?.dimensions === 3072 &&
-        JSON.stringify(embeddingProviders[0]?.keyNames) === JSON.stringify(["misaka_openai_key"]),
+        embeddingProviders[0]?.name === "OpenRouter Voyage 4 Large" &&
+        embeddingProviders[0]?.base === "https://openrouter.ai/api/v1/embeddings" &&
+        embeddingProviders[0]?.model === "voyageai/voyage-4-large" &&
+        embeddingProviders[0]?.dimensions === 1024 &&
+        embeddingProviders[0]?.queryInputType === "query" &&
+        embeddingProviders[0]?.documentInputType === "document" &&
+        JSON.stringify(embeddingProviders[0]?.keyNames) === JSON.stringify(["misaka_openrouter_key"]),
       actual: embeddingProviders,
+    });
+    const queryBody = hooks.inspectEmbeddingBodyForTest?.("查询御坂记忆", "query");
+    const documentBody = hooks.inspectEmbeddingBodyForTest?.("这是一条御坂记忆", "document");
+    results.push({
+      id: "guard-voyage-query-document-input-types",
+      repetition: 1,
+      passed: queryBody?.model === "voyageai/voyage-4-large" &&
+        queryBody?.input_type === "query" && queryBody?.dimensions === 1024 &&
+        documentBody?.input_type === "document" && documentBody?.dimensions === 1024,
+      actual: { queryBody, documentBody },
     });
     const currentRoomBehavior = hooks.normalizePlannerMemoryDecisionForTest({
       intent: "chat",
