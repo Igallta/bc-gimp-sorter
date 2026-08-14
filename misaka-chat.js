@@ -205,6 +205,7 @@
     roomLog: [],          // 进出记录
     snapshots: {},        // 束缚快照 { memberNumber: { items, time } }
     pendingClarifications: {}, // 按发送者保存的待澄清请求；他人插话不会打断
+    pendingSelfEchoes: [], // sendReply 已登记、等待 BC 回显的消息碎片
   };
   onDispose(() => {
     state.semanticMemories = [];
@@ -213,6 +214,7 @@
     state.roomLog = [];
     state.snapshots = {};
     state.pendingClarifications = {};
+    state.pendingSelfEchoes = [];
     if (!TEST_MODE && window.__misakaLifecycle === lifecycle) {
       window.__misakaOnMessage = null;
       window.__misakaGlobalBusy = false;
@@ -1112,6 +1114,79 @@ ${recentSemantic}`;
     return normalized.slice(0, 2).join("\n");
   }
 
+  function splitChatReplyParts(text) {
+    let parts = String(text || "").split(/\n/).map(p => p.trim()).filter(Boolean);
+    if (parts.length === 1 && parts[0].includes("|")) {
+      parts = parts[0].split(/\|/).map(p => p.trim()).filter(Boolean);
+    }
+    return parts;
+  }
+
+  // BC 回显 Action 时通常会去掉包裹动作的星号；用规范化文本匹配，
+  // 只消费由 sendReply 登记的那一次回显，避免把同一条回复再写入上下文。
+  function normalizeSelfEchoKey(text) {
+    return String(text || "").trim().replace(/^\*+|\*+$/g, "").trim();
+  }
+
+  function prunePendingSelfEchoes(now = Date.now()) {
+    state.pendingSelfEchoes = (state.pendingSelfEchoes || []).filter(entry => entry.expiresAt > now);
+  }
+
+  function rememberPendingSelfEchoes(parts, now = Date.now()) {
+    prunePendingSelfEchoes(now);
+    const expiresAt = now + 15000;
+    for (const part of parts) {
+      const key = normalizeSelfEchoKey(part);
+      if (key) state.pendingSelfEchoes.push({ key, expiresAt });
+    }
+  }
+
+  function consumePendingSelfEcho(content, now = Date.now()) {
+    prunePendingSelfEchoes(now);
+    const key = normalizeSelfEchoKey(content);
+    if (!key) return false;
+    const index = state.pendingSelfEchoes.findIndex(entry => entry.key === key);
+    if (index < 0) return false;
+    state.pendingSelfEchoes.splice(index, 1);
+    return true;
+  }
+
+  function appendCanonicalSelfReply(text, now = Date.now()) {
+    const parts = splitChatReplyParts(text);
+    if (parts.length === 0) return { parts: [], content: "" };
+    const content = parts.join("\n");
+    state.recentMessages.push({ senderName: "御搬", content, isSelf: true, time: now });
+    if (state.recentMessages.length > CONFIG.maxContext) state.recentMessages.shift();
+    rememberPendingSelfEchoes(parts, now);
+    return { parts, content };
+  }
+
+  // 只供回归使用：模拟一条多行自回复及其 BC 回显，确保缓存中仍只有一条。
+  function simulateSelfReplyHistoryForTest(text) {
+    const originalMessages = state.recentMessages;
+    const originalPending = state.pendingSelfEchoes;
+    try {
+      state.recentMessages = [];
+      state.pendingSelfEchoes = [];
+      const sent = appendCanonicalSelfReply(text, Date.now());
+      const afterSend = state.recentMessages.map(message => ({ ...message }));
+      const echoes = sent.parts.map(part => ({
+        part,
+        consumed: consumePendingSelfEcho(part),
+      }));
+      return {
+        parts: sent.parts,
+        canonical: sent.content,
+        afterSend,
+        afterEcho: state.recentMessages.map(message => ({ ...message })),
+        echoes,
+      };
+    } finally {
+      state.recentMessages = originalMessages;
+      state.pendingSelfEchoes = originalPending;
+    }
+  }
+
   async function generateIdleLine() {
     try {
       // idle 去重:记录最近发过的 idle 内容
@@ -1212,8 +1287,6 @@ ${recentSemantic}`;
           state.lastNonSelfMsgTime = Date.now();  // 重置防再次触发
           if (typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom") {
             sendReply(line);
-            state.recentMessages.push({ senderName: "御搬", content: line, isSelf: true, time: Date.now() });
-            if (state.recentMessages.length > 50) state.recentMessages.shift();
           }
         } catch(e) { console.warn("[MisakaChat] idle 发送失败:", e.message); }
         finally {
@@ -3220,6 +3293,9 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
       normalizePlannerBroadDestructiveDecision(JSON.parse(JSON.stringify(plan || {})), content),
     recoverExplicitCurrentItemOperationForTest: (plan, content) =>
       recoverExplicitCurrentItemOperation(plan, content),
+    splitChatReplyPartsForTest: splitChatReplyParts,
+    normalizeSelfEchoKeyForTest: normalizeSelfEchoKey,
+    simulateSelfReplyHistoryForTest: simulateSelfReplyHistoryForTest,
     snapshotRecentMessagesForTest: () => state.recentMessages.map(message => ({ ...message })),
     replaceRecentMessagesForTest: messages => {
       state.recentMessages = (Array.isArray(messages) ? messages : []).map(message => ({ ...message }));
@@ -4412,8 +4488,7 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
     window.__misakaLastSentReply = sentKey;
     window.__misakaLastSentReplyTime = now;
     if (typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom") {
-      let parts = text.split(/\n/).map(p => p.trim()).filter(Boolean);
-      if (parts.length === 1 && parts[0].includes("|")) parts = parts[0].split(/\|/).map(p => p.trim()).filter(Boolean);
+      const { parts } = appendCanonicalSelfReply(text, now);
       if (parts.length >= 2) {
         let delay = 0;
         for (const p of parts) {
@@ -4425,7 +4500,6 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
           delay += 600;
         }
       } else { ElementValue("InputChat", parts[0] || text); ChatRoomSendChat(); }
-      if (state.recentMessages.length > CONFIG.maxContext) state.recentMessages.shift();
     }
     return true;
   }
@@ -5258,6 +5332,7 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
     window.__misakaLastKeyTime = now;
 
     if (senderNum === Player.MemberNumber) {
+      if (consumePendingSelfEcho(readableContent, now)) return;
       state.recentMessages.push({ senderName: "御搬", content: readableContent, isSelf: true, time: now });
       if (state.recentMessages.length > CONFIG.maxContext) state.recentMessages.shift();
       // 御坂自己的消息也存语义记忆

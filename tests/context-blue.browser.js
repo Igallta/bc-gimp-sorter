@@ -27,6 +27,7 @@
     const hooks = window.__misakaPlanDebug;
     if (!hooks?.planUserRequest || !hooks?.normalizePlannerOperationsForTest ||
         !hooks?.snapshotRecentMessagesForTest || !hooks?.replaceRecentMessagesForTest ||
+        !hooks?.simulateSelfReplyHistoryForTest ||
         !hooks?.stripQuotedSegmentsForTest || !hooks?.recentConversationHasAnswerForTest ||
         !hooks?.buildPlannerRecentContextForTest ||
         !hooks?.normalizeVisibleReplyForTest ||
@@ -84,6 +85,19 @@
         queryBody?.input_type === "query" && queryBody?.dimensions === 1024 &&
         documentBody?.input_type === "document" && documentBody?.dimensions === 1024,
       actual: { queryBody, documentBody },
+    });
+    const selfReplyHistory = hooks.simulateSelfReplyHistoryForTest(
+      "*轻轻歪头*\n晚上好呀～",
+    );
+    results.push({
+      id: "guard-self-reply-echo-is-recorded-once",
+      repetition: 1,
+      passed: selfReplyHistory?.parts?.length === 2 &&
+        selfReplyHistory?.afterSend?.length === 1 &&
+        selfReplyHistory?.afterEcho?.length === 1 &&
+        selfReplyHistory?.afterEcho?.[0]?.content === "*轻轻歪头*\n晚上好呀～" &&
+        selfReplyHistory.echoes?.every(echo => echo.consumed === true),
+      actual: selfReplyHistory,
     });
     const currentRoomBehavior = hooks.normalizePlannerMemoryDecisionForTest({
       intent: "chat",
