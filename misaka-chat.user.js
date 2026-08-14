@@ -34,7 +34,7 @@
   const SCRIPT_VERSION = "3.0.4";
   // GitHub Pages 部署曾长期卡住并返回 2.5.3。资源钉住本版本对应的 commit，
   // 避免 Pages/master CDN 缓存让 loader 版本与实际主脚本不一致。
-  const ASSET_REVISION = "0684a4a";
+  const ASSET_REVISION = "a6019e5";
   const BASE_URL = `https://raw.githack.com/Igallta/bc-gimp-sorter/${ASSET_REVISION}`;
 
   // BC 的“返回上个房间并恢复管理员房间”会在搜索阶段短暂没找到房间时
