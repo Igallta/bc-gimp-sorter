@@ -5,6 +5,9 @@ import vm from "node:vm";
 const source = fs.readFileSync(new URL("../misaka-ipad-guard.js", import.meta.url), "utf8");
 const store = new Map();
 let reloadCount = 0;
+let originalSendCount = 0;
+let inputValue = "";
+const localMessages = [];
 const hooks = new Map();
 
 const context = {
@@ -40,8 +43,13 @@ const context = {
   Player: { MemberNumber: 194331 },
   CurrentScreen: "ChatRoom",
   ServerSocket: { connected: true, disconnected: false },
-  ChatRoomMessage() {},
-  ElementValue() { return ""; },
+  ChatRoomMessage(data) { localMessages.push(data); },
+  ChatRoomSendChat() { originalSendCount += 1; },
+  ElementValue(id, value) {
+    if (id !== "InputChat") return "";
+    if (arguments.length > 1) inputValue = String(value || "");
+    return inputValue;
+  },
   bcModSdk: {
     getModsInfo() { return []; },
     registerMod() {
@@ -57,7 +65,7 @@ vm.runInNewContext(source, context, { filename: "misaka-ipad-guard.js" });
 const guard = context.window.__MisakaIPadGuard;
 const test = context.window.__MisakaIPadGuardTestHooks;
 assert.ok(guard, "guard runtime should initialize for Misaka account");
-assert.equal(guard.version, "0.1.0");
+assert.equal(guard.version, "0.1.1");
 assert.equal(guard.config.enabled, false, "auto recycle must be opt-in");
 
 assert.deepEqual(
@@ -79,8 +87,19 @@ assert.equal(pending.reason, "test");
 assert.ok(hooks.has("ChatRoomMessage"));
 assert.ok(hooks.has("ChatRoomSendChat"));
 
+assert.equal(typeof context.window.ChatRoomSendChat, "function");
+inputValue = "/ipadguard status";
+context.window.ChatRoomSendChat("not-the-command");
+assert.equal(originalSendCount, 0, "direct wrapper must consume a mobile command before BC");
+assert.equal(inputValue, "", "consumed command must clear InputChat");
+assert.match(localMessages.at(-1)?.Content || "", /v0\.1\.1/, "status command must produce a local reply");
+
+inputValue = "普通聊天";
+context.window.ChatRoomSendChat();
+assert.equal(originalSendCount, 1, "ordinary chat must continue to BC");
+
 assert.match(source, /location\.reload\(\)/, "recycle must reload the current BC page");
 assert.doesNotMatch(source, /ipad-recycle\.html/, "recycle must not navigate to a cross-origin trampoline");
 assert.doesNotMatch(source, /location\.replace\(/, "recycle must preserve the proven same-origin login flow");
 
-console.log("iPad guard tests: 15/15 passed");
+console.log("iPad guard tests: 18/18 passed");

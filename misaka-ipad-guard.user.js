@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Misaka iPad WebContent Guard
 // @namespace    https://igallta.github.io/bc-gimp-sorter
-// @version      0.1.0
+// @version      0.1.1
 // @description  iPadOS Safari 上为御坂提供定时同站完整刷新与诊断日志
 // @match        https://*.bondageprojects.elementfx.com/R*/*
 // @match        https://*.bondage-europe.com/R*/*
@@ -18,7 +18,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "0.1.0";
+  const VERSION = "0.1.1";
   const MEMBER_NUMBER = 194331;
   if (window.__MisakaIPadGuardLoaderStarted) return;
   window.__MisakaIPadGuardLoaderStarted = VERSION;
@@ -37,7 +37,11 @@
     script.dataset.version = VERSION;
     script.src = `https://igallta.github.io/bc-gimp-sorter/misaka-ipad-guard.js?v=${VERSION}`;
     script.onload = () => console.log(`[iPadGuard] runtime ${VERSION} loaded`);
-    script.onerror = () => console.error("[iPadGuard] runtime load failed");
+    script.onerror = () => {
+      console.error("[iPadGuard] runtime load failed; retrying");
+      script.remove();
+      if (attempt < 1200) setTimeout(() => load(attempt + 1), 1000);
+    };
     document.head.appendChild(script);
   }
 

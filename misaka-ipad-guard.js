@@ -1,9 +1,9 @@
-// Misaka iPad Guard v0.1.0
+// Misaka iPad Guard v0.1.1
 // iPadOS Safari WebContent 定时受控回收。与 MisakaChat/GimpSorter 主逻辑完全独立。
 (function () {
   "use strict";
 
-  const VERSION = "0.1.0";
+  const VERSION = "0.1.1";
   const MEMBER_NUMBER = 194331;
   const CONFIG_KEY = "misaka_ipad_guard_config_v1";
   const LOG_KEY = "misaka_ipad_guard_log_v1";
@@ -213,6 +213,24 @@
     return true;
   }
 
+  function commandFromSendArgs(args) {
+    // BC 的 ChatRoomSendChat 通常直接读取 InputChat；移动端传入的 args[0]
+    // 可能为空或是其他字符串。始终优先读取真实输入框，避免命令漏给 BC。
+    const input = getInputText();
+    if (input) return input;
+    return typeof args?.[0] === "string" ? String(args[0]).trim() : "";
+  }
+
+  function consumeCommand(args) {
+    const message = commandFromSendArgs(args);
+    if (!message.startsWith("/ipadguard") || !handleCommand(message)) return false;
+    try { ElementValue("InputChat", ""); } catch (_) {
+      const input = document.getElementById("InputChat");
+      if (input) input.value = "";
+    }
+    return true;
+  }
+
   function installHooks() {
     const existing = bcModSdk.getModsInfo().find((entry) => entry.name === "MisakaIPadGuard");
     const mod = existing
@@ -231,16 +249,21 @@
     });
 
     mod.hookFunction("ChatRoomSendChat", 20, (args, next) => {
-      let message = typeof args?.[0] === "string" ? args[0] : "";
-      if (!message) {
-        try { message = ElementValue("InputChat") || ""; } catch (_) {}
-      }
-      if (handleCommand(message)) {
-        try { ElementValue("InputChat", ""); } catch (_) {}
-        return;
-      }
+      if (consumeCommand(args)) return;
       return next(args);
     });
+
+    // iPad/Safari 上 bcModSdk 的发送 hook 偶尔没有接到移动端按钮路径。
+    // 再包装页面实际入口；普通聊天仍原样交给 SDK 链和 BC。
+    if (!window.__misakaIPadGuardSendWrapped && typeof window.ChatRoomSendChat === "function") {
+      const originalSend = window.ChatRoomSendChat;
+      window.__misakaIPadGuardOriginalSend = originalSend;
+      window.ChatRoomSendChat = function () {
+        if (consumeCommand(Array.from(arguments))) return;
+        return originalSend.apply(this, arguments);
+      };
+      window.__misakaIPadGuardSendWrapped = true;
+    }
   }
 
   function installLifecycleLogging() {
@@ -278,6 +301,7 @@
     };
     window.__MisakaIPadGuardTestHooks = { normalizeConfig, evaluateBlockReason };
     console.log(`[iPadGuard] v${VERSION} ready; auto recycle ${config.enabled ? "on" : "off"}`);
+    sendLocal(`v${VERSION} 已加载；自动回收${config.enabled ? "开启" : "关闭"}`);
   }
 
   if (typeof Player === "undefined" || Number(Player?.MemberNumber || Player?.ID) !== MEMBER_NUMBER) return;

@@ -7,7 +7,7 @@
 
 另提供一个默认关闭、仅供 iPadOS 长期挂机使用的独立守护脚本：
 
-- **Misaka iPad Guard v0.1.0**：在 WebContent 被 Jetsam 回收前进行可配置的同站完整刷新，并保存本地生命周期日志；不会修改 MisakaChat 或 GimpSorter 的业务逻辑。
+- **Misaka iPad Guard v0.1.1**：在 WebContent 被 Jetsam 回收前进行可配置的同站完整刷新，并保存本地生命周期日志；不会修改 MisakaChat 或 GimpSorter 的业务逻辑。
 
 当前支持 BC 的 `R*` 版本路径，不再绑定特定的 R129/R130：
 
