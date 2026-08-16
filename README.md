@@ -5,6 +5,10 @@
 - **GimpSorter v1.7.1**：按 `GIMP → Gimp → Doll → GIMP Pet → Pet → Error` 分类；组内先排三位编号，再排四位编号，并各自按数值升序整理。
 - **MisakaChat v3.0.3**：御坂房间 Bot，提供结构化角色回复、人物与长期记忆、角色扮演、BC 原生互动、语境表情包、好友能力和受控的 BC 操作。
 
+另提供一个默认关闭、仅供 iPadOS 长期挂机使用的独立守护脚本：
+
+- **Misaka iPad Guard v0.1.0**：在 WebContent 被 Jetsam 回收前进行可配置的同站完整刷新，并保存本地生命周期日志；不会修改 MisakaChat 或 GimpSorter 的业务逻辑。
+
 当前支持 BC 的 `R*` 版本路径，不再绑定特定的 R129/R130：
 
 ```text
@@ -23,7 +27,11 @@ Tampermonkey 分别安装：
 - [gimp-sorter.user.js](https://raw.githubusercontent.com/Igallta/bc-gimp-sorter/master/gimp-sorter.user.js)
 - [misaka-chat.user.js](https://raw.githubusercontent.com/Igallta/bc-gimp-sorter/master/misaka-chat.user.js)
 
-两个 loader 都只会在御坂账号（MemberNumber `194331`）上启动。
+iPadOS 可选安装：
+
+- [misaka-ipad-guard.user.js](https://raw.githubusercontent.com/Igallta/bc-gimp-sorter/master/misaka-ipad-guard.user.js)
+
+这些脚本都只会在御坂账号（MemberNumber `194331`）上启动；iPad Guard 默认不启用自动回收。
 
 MisakaChat 的对话和 embedding 凭据不写入仓库。安装后通过 `/misaka key`、`/misaka embedkey` 或浏览器本地存储配置。
 
@@ -50,6 +58,26 @@ MisakaChat 的对话和 embedding 凭据不写入仓库。安装后通过 `/misa
 /misaka persona <text>
 /misaka forget
 ```
+
+### iPad Guard
+
+首次安装后保持默认关闭，先手动验证一次同站完整刷新：
+
+```text
+/ipadguard status
+/ipadguard recycle
+```
+
+确认仍为御坂账号、自动返回原房间且两个主脚本重新加载后再开启：
+
+```text
+/ipadguard on
+/ipadguard interval 45
+/ipadguard off
+/ipadguard log
+```
+
+自动刷新会优先等待房间安静、输入框为空且御坂不忙；房间持续活跃时最多延期 10 分钟。刷新始终停留在当前 BC 站点，不经过跨站页面，也不保存登录凭据。
 
 `/misaka forget` 会清空人物档案、语义记忆和提炼长期记忆，使用前应先导出备份。
 
