@@ -23,18 +23,12 @@ The report is returned and retained at:
 window.__misakaMemoryBlueLastReport
 ```
 
-By default, the repository runner attaches to the user's currently open Chrome
-through OpenClaw's official existing-session profile (`profile=user`). It does
-not require the legacy `/json` endpoint or a hard-coded 9222 target; keep the
-Bondage Club room open and the user's Chrome remote-debugging switch enabled:
+With the CDP Chrome already running, the repository runner hot-loads the local
+candidate and runs the suite without touching the page UI:
 
 ```bash
 node tests/run-memory-blue-cdp.mjs --repeats=3
 ```
-
-Set `MISAKA_CDP_URL` only when deliberately using a legacy raw-CDP endpoint.
-The runner then uses that endpoint through the shared adapter in
-`tests/browser-session.mjs`.
 
 It exits non-zero when any case fails and prints the complete JSON report.
 Individual cases can be repeated during diagnosis:

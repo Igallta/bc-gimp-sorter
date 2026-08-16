@@ -2,8 +2,8 @@
 
 import { readFile } from "node:fs/promises";
 import process from "node:process";
-import { evaluate, findMisakaTarget as findUserSession } from "./browser-session.mjs";
 
+const cdpBase = process.env.MISAKA_CDP_URL || "http://127.0.0.1:9222";
 const playerMemberNumber = Number(process.env.MISAKA_PLAYER_MEMBER || 194331);
 const repeatsArg = process.argv.find(arg => arg.startsWith("--repeats="));
 const repeats = Math.max(1, Math.min(10, Number(repeatsArg?.split("=")[1]) || 3));
@@ -14,7 +14,84 @@ const ids = idsArg
 const chatUrl = new URL("../misaka-chat.js", import.meta.url);
 const suiteUrl = new URL("./memory-blue.browser.js", import.meta.url);
 
-const { client } = await findUserSession();
+async function findBcTarget() {
+  const response = await fetch(`${cdpBase}/json`);
+  if (!response.ok) throw new Error(`CDP target list failed: HTTP ${response.status}`);
+  const targets = await response.json();
+  const candidates = targets.filter(item =>
+    item.type === "page" &&
+    /^https:\/\/[^/]*bondage-(?:europe|asia)\.com\//i.test(item.url || "")
+  );
+  for (const candidate of candidates) {
+    if (!candidate?.webSocketDebuggerUrl) continue;
+    const client = await connectCdp(candidate.webSocketDebuggerUrl);
+    try {
+      const memberNumber = await evaluate(
+        client,
+        "Number(window.Player?.MemberNumber || 0)",
+      );
+      if (memberNumber === playerMemberNumber) return candidate;
+    } finally {
+      client.close();
+    }
+  }
+  throw new Error(`No active Bondage Club page found for player #${playerMemberNumber}`);
+}
+
+function connectCdp(url) {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(url);
+    let nextId = 1;
+    const pending = new Map();
+
+    socket.addEventListener("open", () => {
+      resolve({
+        call(method, params = {}) {
+          return new Promise((callResolve, callReject) => {
+            const id = nextId++;
+            pending.set(id, { resolve: callResolve, reject: callReject });
+            socket.send(JSON.stringify({ id, method, params }));
+          });
+        },
+        close() {
+          socket.close();
+        },
+      });
+    });
+    socket.addEventListener("message", event => {
+      const message = JSON.parse(String(event.data));
+      if (!message.id || !pending.has(message.id)) return;
+      const waiter = pending.get(message.id);
+      pending.delete(message.id);
+      if (message.error) waiter.reject(new Error(message.error.message));
+      else waiter.resolve(message.result);
+    });
+    socket.addEventListener("error", () => reject(new Error("CDP websocket connection failed")));
+    socket.addEventListener("close", () => {
+      for (const waiter of pending.values()) waiter.reject(new Error("CDP websocket closed"));
+      pending.clear();
+    });
+  });
+}
+
+async function evaluate(client, expression, awaitPromise = false) {
+  const result = await client.call("Runtime.evaluate", {
+    expression,
+    awaitPromise,
+    returnByValue: true,
+    userGesture: false,
+  });
+  if (result.exceptionDetails) {
+    const description = result.exceptionDetails.exception?.description ||
+      result.exceptionDetails.text ||
+      "Runtime.evaluate failed";
+    throw new Error(description);
+  }
+  return result.result?.value;
+}
+
+const target = await findBcTarget();
+const client = await connectCdp(target.webSocketDebuggerUrl);
 
 try {
   // Always exercise the local candidate rather than whichever installed

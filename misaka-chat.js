@@ -1,4 +1,4 @@
-// MisakaChat v3.0.4 - BC 御坂自动回复系统
+// MisakaChat v3.0.3 - BC 御坂自动回复系统
 // 模块分区:
 //   [Config]      L15-55   配置 + 状态
 //   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "3.0.4";
+  const SCRIPT_VERSION = "3.0.3";
   const RELEASE_CHANNEL = "stable";
   const bootstrapOptions = window.__misakaNextBootstrapOptions || {};
   delete window.__misakaNextBootstrapOptions;
@@ -120,13 +120,11 @@
     idleCheckMs: 60000,  // 每分钟检查一次 idle
     embeddingProviders: [
       {
-        name: "OpenRouter Voyage 4 Large",
-        base: "https://openrouter.ai/api/v1/embeddings",
-        model: "voyageai/voyage-4-large",
-        keyNames: ["misaka_openrouter_key"],
-        dimensions: 1024,
-        queryInputType: "query",
-        documentInputType: "document",
+        name: "OpenAI",
+        base: "https://api.openai.com/v1/embeddings",
+        model: "text-embedding-3-large",
+        keyNames: ["misaka_openai_key"],
+        dimensions: 3072,
       },
     ],
     maxMemoryEntries: 5000, // 约 30 天对话量
@@ -481,8 +479,7 @@
   }
 
   // === [Memory] Semantic Memory (Embedding-based) ===
-  // 语义库使用 OpenRouter 的 Voyage 4 Large；查询和文档必须使用不同的
-  // input_type，才能保持 Voyage 推荐的 query/document 语义空间。
+  // 语义库一直使用 OpenAI text-embedding-3-large 的 3,072 维向量。
   // 对话用的 misaka_apikey 不得作为 embedding key 回退。
   function getEmbeddingProviderStatus() {
     for (const provider of CONFIG.embeddingProviders) {
@@ -494,22 +491,14 @@
     return { provider: CONFIG.embeddingProviders[0], key: { value: "", source: "missing" } };
   }
 
-  function resolveEmbeddingInputType(provider, kind) {
-    if (kind === "document") return provider.documentInputType || "document";
-    return provider.queryInputType || "query";
-  }
-
-  function buildEmbeddingBody(provider, text, kind = "query") {
+  function buildEmbeddingBody(provider, text) {
     const body = { model: provider.model, input: text.slice(0, 2000) };
-    if (provider.queryInputType || provider.documentInputType) {
-      body.input_type = resolveEmbeddingInputType(provider, kind);
-    }
     if (provider.dimensions) body.dimensions = provider.dimensions;
     return JSON.stringify(body);
   }
 
-  function requestEmbedding(provider, key, text, kind = "query") {
-    const reqBody = buildEmbeddingBody(provider, text, kind);
+  function requestEmbedding(provider, key, text) {
+    const reqBody = buildEmbeddingBody(provider, text);
     const useGM = typeof window.__GM_xmlhttpRequest !== "undefined";
     return new Promise((resolve, reject) => {
       if (useGM) {
@@ -555,9 +544,8 @@
     });
   }
 
-  async function getEmbedding(text, kind = "query") {
-    const cacheKey = CONFIG.embeddingProviders.map(p => `${p.model}:${p.dimensions || 0}`).join("|") +
-      `:${kind}::` + text.slice(0, 200);
+  async function getEmbedding(text) {
+    const cacheKey = CONFIG.embeddingProviders.map(p => p.model).join("|") + "::" + text.slice(0, 200);
     if (embeddingCache.has(cacheKey)) {
       const cached = embeddingCache.get(cacheKey);
       embeddingCache.delete(cacheKey);
@@ -569,12 +557,9 @@
         const key = readStoredSecret(keyName);
         if (!key.value) continue;
         try {
-          const resp = await requestEmbedding(provider, key, text, kind);
+          const resp = await requestEmbedding(provider, key, text);
           if (resp && resp.data && resp.data[0] && resp.data[0].embedding) {
             const result = resp.data[0].embedding;
-            if (!Array.isArray(result) || (provider.dimensions && result.length !== provider.dimensions)) {
-              throw new Error(`${provider.name} embedding dimension mismatch`);
-            }
             if (embeddingCache.size >= EMBEDDING_CACHE_MAX) {
               const firstKey = embeddingCache.keys().next().value;
               embeddingCache.delete(firstKey);
@@ -634,7 +619,7 @@
     if (state.semanticMemories.length >= CONFIG.maxMemoryEntries) {
       smartForget();
     }
-    const emb = await getEmbedding(text, "document");
+    const emb = await getEmbedding(text);
     if (!emb) return;  // embedding 失败就不存
     const entry = {
       text: text.slice(0, 500),
@@ -1059,7 +1044,7 @@ ${recentSemantic}`;
         }
         // 候选只与 refined_mem 比较，避免误接到原始 semantic_mem。
         let refinedEmb = null;
-        try { refinedEmb = await getEmbedding(refinedContent(refinedText), "document"); } catch(e) {}
+        try { refinedEmb = await getEmbedding(refinedContent(refinedText)); } catch(e) {}
         const refDup = await findRefinedDuplicate(refinedText, refinedEmb);
         if (refDup) {
           console.log("[MisakaChat] 提炼记忆去重跳过:", refined.slice(0, 40));
@@ -3243,21 +3228,7 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
       model: provider.model,
       keyNames: [...provider.keyNames],
       dimensions: provider.dimensions,
-      queryInputType: provider.queryInputType || "",
-      documentInputType: provider.documentInputType || "",
     })),
-    inspectEmbeddingBodyForTest: (text, kind = "query") => JSON.parse(
-      buildEmbeddingBody(CONFIG.embeddingProviders[0], String(text || ""), kind)
-    ),
-    probeEmbeddingForTest: async (text, kind = "query") => {
-      const vector = await getEmbedding(String(text || "御坂 embedding probe"), kind);
-      return {
-        ok: Array.isArray(vector),
-        dimensions: Array.isArray(vector) ? vector.length : 0,
-        kind,
-        model: CONFIG.embeddingProviders[0]?.model || "",
-      };
-    },
     // 只读现场回归入口：复用真实规划、检索与回答链，不暴露密钥或执行函数。
     planUserRequest,
     buildPlannerMemoryQuery,
@@ -6232,18 +6203,7 @@ function unescapeHTML(s) {
     if (sub === "on") { CONFIG.enabled = true; sendLocal("✅ 自动回复已开启"); }
     else if (sub === "off") { CONFIG.enabled = false; sendLocal("⏹ 自动回复已关闭"); }
     else if (sub === "key" && parts[1]) { localStorage.setItem(storageKey("apikey"), parts[1]); sendLocal("🔑 API key 已保存"); }
-    else if (sub === "embedkey" && parts[1]) {
-      const keyName = CONFIG.embeddingProviders[0]?.keyNames?.[0] || "misaka_openrouter_key";
-      let savedToGM = false;
-      try {
-        if (typeof window.__GM_setValue === "function") {
-          window.__GM_setValue(keyName, parts[1]);
-          savedToGM = true;
-        }
-      } catch (e) {}
-      if (!savedToGM) localStorage.setItem(keyName, parts[1]);
-      sendLocal(`🔎 ${CONFIG.embeddingProviders[0]?.name || "Embedding"} key 已保存`);
-    }
+    else if (sub === "embedkey" && parts[1]) { localStorage.setItem("misaka_openai_key", parts[1]); sendLocal("🔎 OpenAI embedding key 已保存"); }
     else if (sub === "model" && parts[1]) { localStorage.setItem(storageKey("model"), parts[1]); CONFIG.model = parts[1]; sendLocal("🤖 模型已切换: " + parts[1]); }
     else if (sub === "activity" && ["on", "off"].includes(parts[1])) {
       CONFIG.activityEnabled = parts[1] === "on";
@@ -6314,7 +6274,7 @@ function unescapeHTML(s) {
       localStorage.setItem(storageKey("persona_extra"), parts.slice(1).join(" "));
       sendLocal("📝 人设附加备注已更新");
     } else {
-      sendLocal("用法: /misaka on|off|activity on|off|sticker on|off|friend on|off|key <key>|embedkey <openrouter-key>|model <name>|status|trace|forget|memory|persona <text>|export|import");
+      sendLocal("用法: /misaka on|off|activity on|off|sticker on|off|friend on|off|key <key>|embedkey <openai-key>|model <name>|status|trace|forget|memory|persona <text>|export|import");
     }
     return true;
   }
