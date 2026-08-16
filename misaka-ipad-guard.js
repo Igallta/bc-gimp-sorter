@@ -1,9 +1,9 @@
-// Misaka iPad Guard v0.1.2
+// Misaka iPad Guard v0.1.3
 // iPadOS Safari WebContent 定时受控回收。与 MisakaChat/GimpSorter 主逻辑完全独立。
 (function () {
   "use strict";
 
-  const VERSION = "0.1.2";
+  const VERSION = "0.1.3";
   const MEMBER_NUMBER = 194331;
   const CONFIG_KEY = "misaka_ipad_guard_config_v1";
   const LOG_KEY = "misaka_ipad_guard_log_v1";

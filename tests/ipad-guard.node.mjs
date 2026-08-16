@@ -66,7 +66,7 @@ vm.runInNewContext(source, context, { filename: "misaka-ipad-guard.js" });
 const guard = context.window.__MisakaIPadGuard;
 const test = context.window.__MisakaIPadGuardTestHooks;
 assert.ok(guard, "guard runtime should initialize for Misaka account");
-assert.equal(guard.version, "0.1.2");
+assert.equal(guard.version, "0.1.3");
 assert.equal(guard.config.enabled, false, "auto recycle must be opt-in");
 
 assert.deepEqual(
@@ -93,7 +93,7 @@ inputValue = "/ipadguard status";
 context.window.ChatRoomSendChat("not-the-command");
 assert.equal(originalSendCount, 0, "direct wrapper must consume a mobile command before BC");
 assert.equal(inputValue, "", "consumed command must clear InputChat");
-assert.match(localMessages.at(-1)?.Content || "", /v0\.1\.2/, "status command must produce a local reply");
+assert.match(localMessages.at(-1)?.Content || "", /v0\.1\.3/, "status command must produce a local reply");
 
 inputValue = "普通聊天";
 context.window.ChatRoomSendChat();
@@ -133,9 +133,9 @@ assert.equal(typeof scheduledLoaderRetry, "function", "loader must keep waiting 
 loaderContext.CurrentScreen = "ChatRoom";
 scheduledLoaderRetry();
 assert.ok(appendedLoaderScript, "loader must inject after entering ChatRoom");
-assert.match(appendedLoaderScript.src || "", /v=0\.1\.2/, "loader must request the current runtime version");
+assert.match(appendedLoaderScript.src || "", /v=0\.1\.3/, "loader must request the current runtime version");
 assert.match(appendedLoaderScript.src || "", /raw\.githack\.com\/Igallta\/bc-gimp-sorter\/0887205\//, "loader must pin the released runtime revision");
-loaderContext.window.__MisakaIPadGuard = { version: "0.1.2" };
+loaderContext.window.__MisakaIPadGuard = { version: "0.1.3" };
 appendedLoaderScript.onload();
 
 console.log("iPad guard tests: 24/24 passed");
