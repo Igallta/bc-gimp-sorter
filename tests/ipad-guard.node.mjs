@@ -3,6 +3,7 @@ import fs from "node:fs";
 import vm from "node:vm";
 
 const source = fs.readFileSync(new URL("../misaka-ipad-guard.js", import.meta.url), "utf8");
+const loaderSource = fs.readFileSync(new URL("../misaka-ipad-guard.user.js", import.meta.url), "utf8");
 const store = new Map();
 let reloadCount = 0;
 let originalSendCount = 0;
@@ -65,7 +66,7 @@ vm.runInNewContext(source, context, { filename: "misaka-ipad-guard.js" });
 const guard = context.window.__MisakaIPadGuard;
 const test = context.window.__MisakaIPadGuardTestHooks;
 assert.ok(guard, "guard runtime should initialize for Misaka account");
-assert.equal(guard.version, "0.1.1");
+assert.equal(guard.version, "0.1.2");
 assert.equal(guard.config.enabled, false, "auto recycle must be opt-in");
 
 assert.deepEqual(
@@ -92,7 +93,7 @@ inputValue = "/ipadguard status";
 context.window.ChatRoomSendChat("not-the-command");
 assert.equal(originalSendCount, 0, "direct wrapper must consume a mobile command before BC");
 assert.equal(inputValue, "", "consumed command must clear InputChat");
-assert.match(localMessages.at(-1)?.Content || "", /v0\.1\.1/, "status command must produce a local reply");
+assert.match(localMessages.at(-1)?.Content || "", /v0\.1\.2/, "status command must produce a local reply");
 
 inputValue = "普通聊天";
 context.window.ChatRoomSendChat();
@@ -102,4 +103,38 @@ assert.match(source, /location\.reload\(\)/, "recycle must reload the current BC
 assert.doesNotMatch(source, /ipad-recycle\.html/, "recycle must not navigate to a cross-origin trampoline");
 assert.doesNotMatch(source, /location\.replace\(/, "recycle must preserve the proven same-origin login flow");
 
-console.log("iPad guard tests: 18/18 passed");
+let scheduledLoaderRetry = null;
+let appendedLoaderScript = null;
+const loaderContext = {
+  console,
+  setTimeout(fn) { scheduledLoaderRetry = fn; return 1; },
+  CurrentScreen: "Login",
+  Player: { MemberNumber: 194331 },
+  bcModSdk: {},
+  ChatRoomSendChat() {},
+  ChatRoomMessage() {},
+  document: {
+    getElementById() { return null; },
+    createElement() {
+      return {
+        dataset: {},
+        remove() { appendedLoaderScript = null; },
+      };
+    },
+    head: {
+      appendChild(script) { appendedLoaderScript = script; },
+    },
+  },
+};
+loaderContext.window = loaderContext;
+vm.runInNewContext(loaderSource, loaderContext, { filename: "misaka-ipad-guard.user.js" });
+assert.equal(appendedLoaderScript, null, "loader must not inject before ChatRoom is ready");
+assert.equal(typeof scheduledLoaderRetry, "function", "loader must keep waiting for ChatRoom");
+loaderContext.CurrentScreen = "ChatRoom";
+scheduledLoaderRetry();
+assert.ok(appendedLoaderScript, "loader must inject after entering ChatRoom");
+assert.match(appendedLoaderScript.src || "", /v=0\.1\.2/, "loader must request the current runtime version");
+loaderContext.window.__MisakaIPadGuard = { version: "0.1.2" };
+appendedLoaderScript.onload();
+
+console.log("iPad guard tests: 24/24 passed");
