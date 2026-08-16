@@ -20,6 +20,7 @@
 
   const VERSION = "0.1.2";
   const MEMBER_NUMBER = 194331;
+  const ASSET_REVISION = "0887205";
   if (window.__MisakaIPadGuardLoaderStarted) return;
   window.__MisakaIPadGuardLoaderStarted = VERSION;
 
@@ -46,7 +47,7 @@
     const script = document.createElement("script");
     script.id = "misaka-ipad-guard-script";
     script.dataset.version = VERSION;
-    script.src = `https://igallta.github.io/bc-gimp-sorter/misaka-ipad-guard.js?v=${VERSION}`;
+    script.src = `https://raw.githack.com/Igallta/bc-gimp-sorter/${ASSET_REVISION}/misaka-ipad-guard.js?v=${VERSION}`;
     script.onload = () => {
       if (window.__MisakaIPadGuard) {
         console.log(`[iPadGuard] runtime ${VERSION} loaded`);
