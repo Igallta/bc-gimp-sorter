@@ -20,7 +20,7 @@
 
   const VERSION = "0.1.3";
   const MEMBER_NUMBER = 194331;
-  const ASSET_REVISION = "0887205";
+  const ASSET_REVISION = "1798028";
   if (window.__MisakaIPadGuardLoaderStarted) return;
   window.__MisakaIPadGuardLoaderStarted = VERSION;
 

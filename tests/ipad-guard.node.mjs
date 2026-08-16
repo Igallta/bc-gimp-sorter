@@ -134,7 +134,7 @@ loaderContext.CurrentScreen = "ChatRoom";
 scheduledLoaderRetry();
 assert.ok(appendedLoaderScript, "loader must inject after entering ChatRoom");
 assert.match(appendedLoaderScript.src || "", /v=0\.1\.3/, "loader must request the current runtime version");
-assert.match(appendedLoaderScript.src || "", /raw\.githack\.com\/Igallta\/bc-gimp-sorter\/0887205\//, "loader must pin the released runtime revision");
+assert.match(appendedLoaderScript.src || "", /raw\.githack\.com\/Igallta\/bc-gimp-sorter\/1798028\//, "loader must pin the released runtime revision");
 loaderContext.window.__MisakaIPadGuard = { version: "0.1.3" };
 appendedLoaderScript.onload();
 
