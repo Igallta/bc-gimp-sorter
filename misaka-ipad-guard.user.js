@@ -20,7 +20,7 @@
 
   const VERSION = "0.2.4";
   const MEMBER_NUMBER = 194331;
-  const ASSET_REVISION = "be631b8";
+  const ASSET_REVISION = "8ad7e55";
   const pageWindow = typeof unsafeWindow === "object" && unsafeWindow ? unsafeWindow : window;
 
   if (pageWindow.__MisakaIPadGuardLoaderStarted === VERSION) return;
