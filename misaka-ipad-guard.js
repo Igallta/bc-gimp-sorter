@@ -1,9 +1,9 @@
-// Misaka iPad Guard v0.2.3
+// Misaka iPad Guard v0.2.4
 // iPadOS Safari WebContent 跨站受控回收。与 MisakaChat/GimpSorter 主逻辑完全独立。
 (function () {
   "use strict";
 
-  const VERSION = "0.2.3";
+  const VERSION = "0.2.4";
   const MEMBER_NUMBER = 194331;
   const WCE_LOGIN_NAME = "MSK002";
   const QUICK_LOGIN_LABELS = new Set([
@@ -110,6 +110,49 @@
   let quickLoginAttempted = false;
   let quickLoginResultLogged = false;
   let wrongAccountHandled = false;
+  let lastLoginTarget = null;
+  let pointerBeforeLogin = null;
+
+  function updateLoginStatus(message, allowRetry = false) {
+    let panel = document.getElementById("misaka-ipad-guard-login-status");
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.id = "misaka-ipad-guard-login-status";
+      Object.assign(panel.style, {
+        position: "fixed",
+        right: "12px",
+        bottom: "12px",
+        zIndex: "2147483647",
+        maxWidth: "min(560px, calc(100vw - 24px))",
+        padding: "10px 12px",
+        border: "1px solid #00CCFF",
+        borderRadius: "8px",
+        background: "rgba(0, 24, 36, 0.92)",
+        color: "#00CCFF",
+        font: "14px/1.4 sans-serif",
+      });
+      const text = document.createElement("span");
+      text.dataset.role = "message";
+      panel.appendChild(text);
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.dataset.role = "retry";
+      retry.textContent = "手动重试";
+      Object.assign(retry.style, { marginLeft: "8px", padding: "4px 8px" });
+      retry.addEventListener("click", () => {
+        if (!lastLoginTarget || !isLoginScreen()) return;
+        quickLoginAttempted = false;
+        quickLoginResultLogged = false;
+        invokeWCEQuickLogin(lastLoginTarget, true);
+      });
+      panel.appendChild(retry);
+      document.body?.appendChild(panel);
+    }
+    const text = panel.querySelector('[data-role="message"]');
+    const retry = panel.querySelector('[data-role="retry"]');
+    if (text) text.textContent = `iPadGuard v${VERSION}：${message}`;
+    if (retry) retry.style.display = allowRetry ? "inline-block" : "none";
+  }
 
   function isLoginScreen() {
     return typeof CurrentScreen !== "undefined" && CurrentScreen === "Login";
@@ -142,7 +185,9 @@
           x: Number(x), y: Number(y), width: Number(width), height: Number(height),
           label: String(label),
         };
+        lastLoginTarget = { ...state.target };
         appendLog("wce-quick-login-found", { label: String(label) });
+        updateLoginStatus(`已找到 WCE 账号 ${String(label)}，准备登录…`);
       }
       return original.call(this, x, y, width, height, label, ...rest);
     };
@@ -154,20 +199,93 @@
     });
   }
 
-  function currentLoginClickHandler() {
+  function currentLoginClickHandlers() {
+    const handlers = [];
+    const seen = new Set();
+    const add = (fn, receiver, source) => {
+      if (typeof fn !== "function" || seen.has(fn)) return;
+      seen.add(fn);
+      handlers.push({ fn, receiver, source });
+    };
     const screenFunctions = window.CurrentScreenFunctions;
-    if (screenFunctions && typeof screenFunctions.Click === "function") {
-      return { fn: screenFunctions.Click, receiver: screenFunctions, source: "CurrentScreenFunctions.Click" };
+    add(screenFunctions?.Click, screenFunctions, "CurrentScreenFunctions.Click");
+    add(window.LoginClick, window, "LoginClick");
+    return handlers;
+  }
+
+  function dispatchCanvasLoginClick(target) {
+    const canvas = window.MainCanvas?.canvas || document.getElementById("MainCanvas");
+    if (!canvas || typeof canvas.dispatchEvent !== "function") return false;
+    try {
+      const rect = typeof canvas.getBoundingClientRect === "function"
+        ? canvas.getBoundingClientRect()
+        : { left: 0, top: 0, width: 2000, height: 1000 };
+      const eventOptions = {
+        bubbles: true,
+        cancelable: true,
+        clientX: rect.left + (target.x + target.width / 2) * rect.width / 2000,
+        clientY: rect.top + (target.y + target.height / 2) * rect.height / 1000,
+      };
+      const event = typeof MouseEvent === "function"
+        ? new MouseEvent("click", eventOptions)
+        : new Event("click", { bubbles: true, cancelable: true });
+      canvas.dispatchEvent(event);
+      return true;
+    } catch (error) {
+      appendLog("wce-canvas-click-error", { error: String(error).slice(0, 120) });
+      return false;
     }
-    if (typeof window.LoginClick === "function") {
-      return { fn: window.LoginClick, receiver: window, source: "LoginClick" };
+  }
+
+  function restoreLoginPointer() {
+    if (!pointerBeforeLogin) return;
+    window.MouseX = pointerBeforeLogin.x;
+    window.MouseY = pointerBeforeLogin.y;
+    pointerBeforeLogin = null;
+  }
+
+  function invokeWCEQuickLogin(target, manual = false) {
+    if (quickLoginAttempted || !isLoginScreen()) return;
+    const handlers = currentLoginClickHandlers();
+    const sources = [];
+    pointerBeforeLogin = { x: window.MouseX, y: window.MouseY };
+    quickLoginAttempted = true;
+    window.MouseX = target.x + target.width / 2;
+    window.MouseY = target.y + target.height / 2;
+
+    try {
+      for (const handler of handlers) {
+        sources.push(handler.source);
+        handler.fn.call(handler.receiver, typeof Event === "function" ? new Event("click") : undefined);
+        if (window.LoginSubmitted === true || !isLoginScreen()) break;
+      }
+      if (window.LoginSubmitted !== true && isLoginScreen() && dispatchCanvasLoginClick(target)) {
+        sources.push("MainCanvas.click");
+      }
+      appendLog("wce-quick-login-attempt", {
+        memberNumber: MEMBER_NUMBER,
+        loginName: WCE_LOGIN_NAME,
+        handlers: sources,
+        manual,
+      });
+      updateLoginStatus(`已触发快速登录（${sources.join(" + ") || "无可用点击入口"}），等待结果…`);
+    } catch (error) {
+      quickLoginResultLogged = true;
+      appendLog("wce-quick-login-error", { error: String(error).slice(0, 120) });
+      updateLoginStatus(`触发失败：${String(error).slice(0, 80)}`, true);
     }
-    return null;
+
+    setTimeout(() => {
+      if (!isLoginScreen() || window.LoginSubmitted === true) return;
+      restoreLoginPointer();
+      appendLog("wce-quick-login-no-effect", { handlers: sources, manual });
+      updateLoginStatus("点击已执行，但登录未开始", true);
+    }, 2000);
   }
 
   function scheduleWCEQuickLogin() {
     if (!loginCapture?.target || loginClickScheduled || quickLoginAttempted || !isLoginScreen()) return;
-    if (!currentLoginClickHandler()) return;
+    if (currentLoginClickHandlers().length === 0 && !document.getElementById("MainCanvas")) return;
 
     loginClickScheduled = true;
     const target = { ...loginCapture.target };
@@ -175,30 +293,7 @@
     setTimeout(() => {
       loginClickScheduled = false;
       if (quickLoginAttempted || !isLoginScreen()) return;
-      const handler = currentLoginClickHandler();
-      if (!handler) return;
-
-      const previousX = window.MouseX;
-      const previousY = window.MouseY;
-      quickLoginAttempted = true;
-      window.MouseX = target.x + target.width / 2;
-      window.MouseY = target.y + target.height / 2;
-      appendLog("wce-quick-login-attempt", {
-        memberNumber: MEMBER_NUMBER,
-        loginName: WCE_LOGIN_NAME,
-        handler: handler.source,
-      });
-      try {
-        // 运行在 BC 页面环境中，并走 WCE 实际挂载到当前屏幕的点击入口。
-        // WCE 自己读取和解密保存的账号，Guard 不接触密码。
-        handler.fn.call(handler.receiver, typeof Event === "function" ? new Event("click") : undefined);
-      } catch (error) {
-        quickLoginResultLogged = true;
-        appendLog("wce-quick-login-error", { error: String(error).slice(0, 120) });
-      } finally {
-        window.MouseX = previousX;
-        window.MouseY = previousY;
-      }
+      invokeWCEQuickLogin(target, false);
     }, 250);
   }
 
@@ -207,19 +302,23 @@
     const memberNumber = Number(window.Player?.MemberNumber || window.Player?.ID);
     if (memberNumber === MEMBER_NUMBER && !isLoginScreen()) {
       quickLoginResultLogged = true;
+      restoreLoginPointer();
       appendLog("wce-quick-login-success", { memberNumber });
       return;
     }
     if (!wrongAccountHandled && memberNumber && memberNumber !== MEMBER_NUMBER && !isLoginScreen()) {
       wrongAccountHandled = true;
       quickLoginResultLogged = true;
+      restoreLoginPointer();
       appendLog("unexpected-account", { memberNumber });
       alert(`iPadGuard：WCE 快速登录后的账号 #${memberNumber} 不是御坂 #${MEMBER_NUMBER}，Guard 不会加载。`);
       return;
     }
     if (isLoginScreen() && window.LoginSubmitted === false && window.LoginErrorMessage) {
       quickLoginResultLogged = true;
+      restoreLoginPointer();
       appendLog("wce-quick-login-failed", { error: String(window.LoginErrorMessage).slice(0, 100) });
+      updateLoginStatus(`WCE 登录失败：${String(window.LoginErrorMessage).slice(0, 80)}`, true);
     }
   }
 
@@ -232,6 +331,8 @@
         if (loginTimer) clearInterval(loginTimer);
         loginTimer = null;
         restoreDrawButtonCapture();
+        restoreLoginPointer();
+        document.getElementById("misaka-ipad-guard-login-status")?.remove();
         if (window.__MisakaIPadGuardLoginRecovery === marker) {
           delete window.__MisakaIPadGuardLoginRecovery;
         }
@@ -250,6 +351,7 @@
       observeQuickLoginResult();
     };
     loginTimer = setInterval(tickLogin, 100);
+    updateLoginStatus("页面 runtime 已加载，等待 WCE 快速登录按钮…");
     tickLogin();
     console.log(`[iPadGuard] v${VERSION} login recovery ready`);
   }

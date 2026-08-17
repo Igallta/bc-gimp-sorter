@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Misaka iPad WebContent Guard
 // @namespace    https://igallta.github.io/bc-gimp-sorter
-// @version      0.2.3
+// @version      0.2.4
 // @description  iPadOS Safari 上为御坂提供跨站 WebContent 回收、WCE 快速登录与诊断日志
 // @match        https://*.bondageprojects.elementfx.com/R*/*
 // @match        https://*.bondage-europe.com/R*/*
@@ -18,7 +18,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "0.2.3";
+  const VERSION = "0.2.4";
   const MEMBER_NUMBER = 194331;
   const ASSET_REVISION = "be631b8";
   const pageWindow = typeof unsafeWindow === "object" && unsafeWindow ? unsafeWindow : window;

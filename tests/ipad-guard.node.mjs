@@ -67,7 +67,7 @@ const runtime = runtimeContext();
 const guard = runtime.context.window.__MisakaIPadGuard;
 const test = runtime.context.window.__MisakaIPadGuardTestHooks;
 assert.ok(guard, "guard runtime should initialize for Misaka account");
-assert.equal(guard.version, "0.2.3");
+assert.equal(guard.version, "0.2.4");
 const guardLocalColor = source.match(/<font color="(#[0-9A-Fa-f]{6})">\[iPadGuard\]/)?.[1];
 const misakaLocalColor = misakaChatSource.match(/<font color="(#[0-9A-Fa-f]{6})">\[MisakaChat\]/)?.[1];
 assert.equal(guardLocalColor, misakaLocalColor, "Guard local messages must use MisakaChat's exact color");
@@ -94,7 +94,7 @@ runtime.inputValue = "/ipadguard status";
 runtime.context.window.ChatRoomSendChat("not-the-command");
 assert.equal(runtime.originalSendCount, 0, "mobile command must be consumed before BC");
 assert.equal(runtime.inputValue, "", "consumed command must clear InputChat");
-assert.match(runtime.localMessages.at(-1)?.Content || "", /v0\.2\.3/);
+assert.match(runtime.localMessages.at(-1)?.Content || "", /v0\.2\.4/);
 assert.equal(guard.handleCommand("/ipadguard login"), true);
 assert.match(runtime.localMessages.at(-1)?.Content || "", /WCE.*MSK002.*194331/);
 assert.deepEqual(runtime.documentEvents, []);
@@ -146,8 +146,8 @@ function runScheduled(loader, delay) {
 const loader = loaderContext();
 assert.ok(loader.appendedScript, "page runtime must load on the login screen");
 assert.equal(loader.appendedScript.dataset.mode, "login");
-assert.match(loader.appendedScript.src || "", /v=0\.2\.3/);
-loader.page.__MisakaIPadGuardLoginRecovery = { version: "0.2.3" };
+assert.match(loader.appendedScript.src || "", /v=0\.2\.4/);
+loader.page.__MisakaIPadGuardLoginRecovery = { version: "0.2.4" };
 loader.appendedScript.onload();
 assert.doesNotMatch(loaderSource, /GM_(?:get|set|delete)Value|InputPassword|credentials/i, "Guard must not access or store WCE credentials");
 
@@ -160,7 +160,7 @@ loader.page.ChatRoomMessage = () => {};
 runScheduled(loader, 500);
 assert.ok(loader.appendedScript, "runtime must load after native login reaches ChatRoom");
 assert.equal(loader.appendedScript.dataset.mode, "chatroom");
-assert.match(loader.appendedScript.src || "", /v=0\.2\.3/);
+assert.match(loader.appendedScript.src || "", /v=0\.2\.4/);
 
 function loginRuntimeContext(label = "MSK002") {
   const store = new Map();
@@ -169,6 +169,36 @@ function loginRuntimeContext(label = "MSK002") {
   const alerts = [];
   const drawnButtons = [];
   let quickLoginClicks = 0;
+  const elements = new Map();
+  function makeElement(tag) {
+    const listeners = new Map();
+    const element = {
+      tagName: String(tag).toUpperCase(),
+      style: {},
+      dataset: {},
+      children: [],
+      textContent: "",
+      appendChild(child) {
+        this.children.push(child);
+        if (child.id) elements.set(child.id, child);
+        return child;
+      },
+      querySelector(selector) {
+        const match = selector.match(/^\[data-role="([^"]+)"\]$/);
+        if (!match) return null;
+        return this.children.find((child) => child.dataset?.role === match[1]) || null;
+      },
+      addEventListener(type, callback) { listeners.set(type, callback); },
+      dispatchEvent(event) { listeners.get(event.type)?.(event); return true; },
+      remove() { if (this.id) elements.delete(this.id); },
+    };
+    Object.defineProperty(element, "id", {
+      get() { return this._id || ""; },
+      set(value) { this._id = String(value); if (this._id) elements.set(this._id, this); },
+    });
+    return element;
+  }
+  const body = makeElement("body");
   const originalDrawButton = function (x, y, width, height, text) {
     drawnButtons.push({ x, y, width, height, text: String(text) });
   };
@@ -180,7 +210,12 @@ function loginRuntimeContext(label = "MSK002") {
       hostname: "www.bondage-europe.com",
       pathname: "/R130/BondageClub/",
     },
-    document: { hidden: false },
+    document: {
+      hidden: false,
+      body,
+      createElement: makeElement,
+      getElementById(id) { return elements.get(id) || null; },
+    },
     localStorage: {
       getItem(key) { return store.has(key) ? store.get(key) : null; },
       setItem(key, value) { store.set(key, String(value)); },
@@ -197,6 +232,9 @@ function loginRuntimeContext(label = "MSK002") {
       Click() {
         if (context.MouseX >= 10 && context.MouseX <= 360 && context.MouseY >= 60 && context.MouseY <= 120) {
           quickLoginClicks += 1;
+          context.LoginSubmitted = true;
+          context.CurrentScreen = "ChatRoom";
+          context.Player = { MemberNumber: 194331 };
         }
       },
     },
@@ -216,6 +254,7 @@ function loginRuntimeContext(label = "MSK002") {
   loginTick.callback();
   const click = timeouts.find((entry) => entry.delay === 250);
   if (click) click.callback();
+  if (quickLoginClicks > 0) loginTick.callback();
   return {
     context, store, intervals, timeouts, alerts, drawnButtons, originalDrawButton,
     get quickLoginClicks() { return quickLoginClicks; },
@@ -228,7 +267,7 @@ assert.equal(loginRuntime.context.MouseX, 900, "synthetic click must restore the
 assert.equal(loginRuntime.context.MouseY, 700, "synthetic click must restore the previous mouse Y coordinate");
 assert.equal(loginRuntime.context.DrawButton, loginRuntime.originalDrawButton, "DrawButton capture must be removed after locating the target");
 assert.equal(loginRuntime.context.__MisakaIPadGuard, undefined, "chat-room runtime must not initialize on login");
-assert.equal(loginRuntime.context.__MisakaIPadGuardLoginRecovery.version, "0.2.3");
+assert.equal(loginRuntime.context.__MisakaIPadGuardLoginRecovery, undefined, "successful login must dispose the login recovery marker");
 assert.doesNotMatch(source, /GM_(?:get|set|delete)Value|InputPassword|credentials/i, "Guard runtime must not access or store WCE credentials");
 
 assert.equal(loginRuntimeContext("MSK003").quickLoginClicks, 0, "page runtime must not click another saved WCE account");
@@ -264,4 +303,4 @@ const invalidReturn = runTrampoline("https://evil.example/steal");
 assert.equal(invalidReturn.replacedWith, "", "trampoline must reject non-BC return URLs");
 assert.match(invalidReturn.status, /无效/);
 
-console.log("iPad guard v0.2.3 tests passed");
+console.log("iPad guard v0.2.4 tests passed");
