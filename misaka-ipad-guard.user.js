@@ -25,7 +25,7 @@
     WCE_LOGIN_NAME.toLowerCase(),
     String(MEMBER_NUMBER),
   ]);
-  const ASSET_REVISION = "f6fb623";
+  const ASSET_REVISION = "0cef213";
   const LOG_KEY = "misaka_ipad_guard_log_v1";
   const pageWindow = typeof unsafeWindow === "object" && unsafeWindow ? unsafeWindow : window;
 
