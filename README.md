@@ -2,8 +2,8 @@
 
 为 Bondage Club 的 Gimp Dolls 房间维护的两个用户脚本：
 
-- **GimpSorter v1.7.2**：按 `GIMP → Gimp → Doll → GIMP Pet → Pet → Error` 分类；组内先排三位编号，再排四位编号，并各自按数值升序整理。
-- **MisakaChat v3.0.5**：御坂房间 Bot，提供结构化角色回复、人物与长期记忆、角色扮演、BC 原生互动、语境表情包、好友能力和受控的 BC 操作。
+- **GimpSorter v1.7.3**：按 `GIMP → Gimp → Doll → GIMP Pet → Pet → Error` 分类；组内先排三位编号，再排四位编号，并各自按数值升序整理。
+- **MisakaChat v3.0.6**：御坂房间 Bot，提供结构化角色回复、人物与长期记忆、角色扮演、BC 原生互动、语境表情包、好友能力和受控的 BC 操作。
 
 另提供一个默认关闭、仅供 iPadOS 长期挂机使用的独立守护脚本：
 
