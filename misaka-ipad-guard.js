@@ -1,10 +1,11 @@
-// Misaka iPad Guard v0.1.3
-// iPadOS Safari WebContent 定时受控回收。与 MisakaChat/GimpSorter 主逻辑完全独立。
+// Misaka iPad Guard v0.2.0
+// iPadOS Safari WebContent 跨站受控回收。与 MisakaChat/GimpSorter 主逻辑完全独立。
 (function () {
   "use strict";
 
-  const VERSION = "0.1.3";
+  const VERSION = "0.2.0";
   const MEMBER_NUMBER = 194331;
+  const RECYCLE_URL = "https://igallta.github.io/bc-gimp-sorter/ipad-recycle.html";
   const CONFIG_KEY = "misaka_ipad_guard_config_v1";
   const LOG_KEY = "misaka_ipad_guard_log_v1";
   const PENDING_KEY = "misaka_ipad_guard_pending_v1";
@@ -113,6 +114,7 @@
   }
 
   function recycle(reason) {
+    const returnUrl = location.href;
     const pending = {
       startedAt: Date.now(),
       reason: String(reason || "manual"),
@@ -121,10 +123,12 @@
     };
     writeJSON(PENDING_KEY, pending);
     appendLog("recycle-start", pending);
-    // 同站完整刷新已在 iPad 实机验证可保留御坂登录态并由 BC 自动回原房间。
-    // reload 会销毁当前 Document、DOM、定时器和 JS 堆，同时避免跨站后落入登录页。
+    // 先离开 BC origin，迫使 Safari 丢弃旧站点的 WebContent；trampoline
+    // 随后返回原地址。若 BC 落在登录页，油猴 loader 会精确点击 WCE 为
+    // 御坂绘制的快速登录按钮，再由 ReturnToChatRoom 自动回房。
     window.addEventListener("unload", () => {}, { once: true });
-    location.reload();
+    const target = `${RECYCLE_URL}#return=${encodeURIComponent(returnUrl)}&started=${Date.now()}`;
+    location.replace(target);
   }
 
   function evaluateBlockReason(now) {
@@ -195,6 +199,8 @@
         appendLog("interval-changed", { intervalMinutes: value });
         sendLocal(`自动回收间隔已设为 ${value} 分钟`);
       }
+    } else if (sub === "login") {
+      sendLocal("自动登录由 WCE 快速登录提供；请确认登录页存在编号 194331 的白色按钮");
     } else if (sub === "recycle") {
       sendLocal("2 秒后执行手动受控回收");
       setTimeout(() => recycle("manual"), 2000);
@@ -208,7 +214,7 @@
     } else if (sub === "status") {
       sendLocal(`v${VERSION} ${isIPad() ? "iPad" : "非iPad"} | 自动回收 ${config.enabled ? "开启" : "关闭"} | 间隔 ${config.intervalMinutes} 分钟 | 下次约 ${minutesUntil(nextRecycleAt)} 分钟 | Socket ${socketConnected() === false ? "断开" : "正常"}`);
     } else {
-      sendLocal("用法: /ipadguard on|off|status|recycle|interval <分钟>|log|clear");
+      sendLocal("用法: /ipadguard on|off|status|recycle|interval <分钟>|login|log|clear");
     }
     return true;
   }
@@ -301,7 +307,7 @@
     };
     window.__MisakaIPadGuardTestHooks = { normalizeConfig, evaluateBlockReason };
     console.log(`[iPadGuard] v${VERSION} ready; auto recycle ${config.enabled ? "on" : "off"}`);
-    sendLocal(`v${VERSION} 已加载；自动回收${config.enabled ? "开启" : "关闭"}`);
+    sendLocal(`v${VERSION} 已加载；跨站回收${config.enabled ? "开启" : "关闭"}`);
   }
 
   if (typeof Player === "undefined" || Number(Player?.MemberNumber || Player?.ID) !== MEMBER_NUMBER) return;
