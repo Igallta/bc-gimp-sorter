@@ -1,9 +1,9 @@
-// Misaka iPad Guard v0.2.1
+// Misaka iPad Guard v0.2.2
 // iPadOS Safari WebContent 跨站受控回收。与 MisakaChat/GimpSorter 主逻辑完全独立。
 (function () {
   "use strict";
 
-  const VERSION = "0.2.1";
+  const VERSION = "0.2.2";
   const MEMBER_NUMBER = 194331;
   const RECYCLE_URL = "https://igallta.github.io/bc-gimp-sorter/ipad-recycle.html";
   const CONFIG_KEY = "misaka_ipad_guard_config_v1";
@@ -93,7 +93,7 @@
     try {
       if (typeof CurrentScreen === "undefined" || CurrentScreen !== "ChatRoom") return;
       ChatRoomMessage({
-        Content: `<font color="#72D6FF">[iPadGuard] ${message}</font>`,
+        Content: `<font color="#00CCFF">[iPadGuard] ${message}</font>`,
         Type: "LocalMessage",
         Sender: Player.MemberNumber,
       });
