@@ -1,9 +1,9 @@
-// Misaka iPad Guard v0.2.4
+// Misaka iPad Guard v0.3.0
 // iPadOS Safari WebContent 跨站受控回收。与 MisakaChat/GimpSorter 主逻辑完全独立。
 (function () {
   "use strict";
 
-  const VERSION = "0.2.4";
+  const VERSION = "0.3.0";
   const MEMBER_NUMBER = 194331;
   const WCE_LOGIN_NAME = "MSK002";
   const QUICK_LOGIN_LABELS = new Set([
@@ -380,8 +380,8 @@
     writeJSON(PENDING_KEY, pending);
     appendLog("recycle-start", pending);
     // 先离开 BC origin，迫使 Safari 丢弃旧站点的 WebContent；trampoline
-    // 随后返回原地址。若 BC 落在登录页，油猴 loader 会精确点击 WCE 为
-    // 御坂绘制的快速登录按钮，再由 ReturnToChatRoom 自动回房。
+    // 随后返回原地址。若 BC 落在登录页，油猴 loader 会读取 GM 私有存储
+    // 中的密码并调用 BC 原生登录，再由 ReturnToChatRoom 自动回房。
     window.addEventListener("unload", () => {}, { once: true });
     const target = `${RECYCLE_URL}#return=${encodeURIComponent(returnUrl)}&started=${Date.now()}`;
     location.replace(target);
@@ -456,7 +456,8 @@
         sendLocal(`自动回收间隔已设为 ${value} 分钟`);
       }
     } else if (sub === "login") {
-      sendLocal("自动登录由 WCE 快速登录提供；请确认登录页存在 MSK002 白色按钮（登录后校验 #194331）");
+      document.dispatchEvent(new Event("misaka-ipad-guard-open-login-config"));
+      sendLocal("已打开自动登录配置；账号固定为 MSK002，登录后校验 #194331");
     } else if (sub === "recycle") {
       sendLocal("2 秒后执行手动受控回收");
       setTimeout(() => recycle("manual"), 2000);
@@ -566,10 +567,6 @@
     sendLocal(`v${VERSION} 已加载；跨站回收${config.enabled ? "开启" : "关闭"}`);
   }
 
-  if (isLoginScreen()) {
-    initLoginRecovery();
-    return;
-  }
   if (typeof Player === "undefined" || Number(Player?.MemberNumber || Player?.ID) !== MEMBER_NUMBER) return;
   if (typeof bcModSdk === "undefined") return;
   init();

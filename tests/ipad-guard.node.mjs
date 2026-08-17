@@ -60,14 +60,20 @@ function runtimeContext() {
   context.window = context;
   context.window.addEventListener = () => {};
   vm.runInNewContext(source, context, { filename: "misaka-ipad-guard.js" });
-  return { context, store, localMessages, hooks, documentEvents, get replacedWith() { return replacedWith; }, get originalSendCount() { return originalSendCount; }, set inputValue(value) { inputValue = value; }, get inputValue() { return inputValue; } };
+  return {
+    context, store, localMessages, hooks, documentEvents,
+    get replacedWith() { return replacedWith; },
+    get originalSendCount() { return originalSendCount; },
+    set inputValue(value) { inputValue = value; },
+    get inputValue() { return inputValue; },
+  };
 }
 
 const runtime = runtimeContext();
 const guard = runtime.context.window.__MisakaIPadGuard;
 const test = runtime.context.window.__MisakaIPadGuardTestHooks;
 assert.ok(guard, "guard runtime should initialize for Misaka account");
-assert.equal(guard.version, "0.2.4");
+assert.equal(guard.version, "0.3.0");
 const guardLocalColor = source.match(/<font color="(#[0-9A-Fa-f]{6})">\[iPadGuard\]/)?.[1];
 const misakaLocalColor = misakaChatSource.match(/<font color="(#[0-9A-Fa-f]{6})">\[MisakaChat\]/)?.[1];
 assert.equal(guardLocalColor, misakaLocalColor, "Guard local messages must use MisakaChat's exact color");
@@ -75,7 +81,6 @@ assert.equal(guard.config.enabled, false, "auto recycle must be opt-in");
 assert.deepEqual(
   JSON.parse(JSON.stringify(test.normalizeConfig({ enabled: true, intervalMinutes: 2, quietSeconds: 9999 }))),
   { enabled: true, intervalMinutes: 15, quietSeconds: 600, maxDeferMinutes: 10 },
-  "config values should be clamped",
 );
 assert.equal(guard.handleCommand("hello"), false);
 assert.equal(guard.handleCommand("/ipadguard on"), true);
@@ -85,8 +90,7 @@ assert.equal(JSON.parse(runtime.store.get("misaka_ipad_guard_config_v1")).enable
 guard.recycle("test");
 assert.match(runtime.replacedWith, /^https:\/\/igallta\.github\.io\/bc-gimp-sorter\/ipad-recycle\.html#return=/);
 assert.match(decodeURIComponent(runtime.replacedWith), /https:\/\/www\.bondage-europe\.com\/R130\/BondageClub\//);
-const pending = JSON.parse(runtime.store.get("misaka_ipad_guard_pending_v1"));
-assert.equal(pending.reason, "test");
+assert.equal(JSON.parse(runtime.store.get("misaka_ipad_guard_pending_v1")).reason, "test");
 assert.ok(runtime.hooks.has("ChatRoomMessage"));
 assert.ok(runtime.hooks.has("ChatRoomSendChat"));
 
@@ -94,44 +98,100 @@ runtime.inputValue = "/ipadguard status";
 runtime.context.window.ChatRoomSendChat("not-the-command");
 assert.equal(runtime.originalSendCount, 0, "mobile command must be consumed before BC");
 assert.equal(runtime.inputValue, "", "consumed command must clear InputChat");
-assert.match(runtime.localMessages.at(-1)?.Content || "", /v0\.2\.4/);
+assert.match(runtime.localMessages.at(-1)?.Content || "", /v0\.3\.0/);
 assert.equal(guard.handleCommand("/ipadguard login"), true);
-assert.match(runtime.localMessages.at(-1)?.Content || "", /WCE.*MSK002.*194331/);
-assert.deepEqual(runtime.documentEvents, []);
+assert.ok(runtime.documentEvents.includes("misaka-ipad-guard-open-login-config"));
+assert.match(runtime.localMessages.at(-1)?.Content || "", /MSK002.*194331/);
 runtime.inputValue = "普通聊天";
 runtime.context.window.ChatRoomSendChat();
 assert.equal(runtime.originalSendCount, 1, "ordinary chat must continue to BC");
-assert.match(source, /location\.replace\(target\)/, "recycle must navigate to the cross-origin trampoline");
-assert.doesNotMatch(source, /location\.reload\(\)/, "recycle must not use same-origin reload");
+assert.match(source, /location\.replace\(target\)/, "recycle must use the cross-origin trampoline");
+assert.doesNotMatch(source, /location\.reload\(\)/);
 
-function loaderContext({ screen = "Login" } = {}) {
+function makeElementFactory(elements) {
+  return function makeElement(tag) {
+    const listeners = new Map();
+    const element = {
+      tagName: String(tag).toUpperCase(), style: {}, dataset: {}, children: [], textContent: "", value: "",
+      appendChild(child) { this.children.push(child); if (child.id) elements.set(child.id, child); return child; },
+      append(...children) { children.forEach((child) => this.appendChild(child)); },
+      addEventListener(type, callback) { listeners.set(type, callback); },
+      dispatchEvent(event) { listeners.get(event.type)?.(event); return true; },
+      remove() { if (this.id) elements.delete(this.id); },
+      focus() {},
+    };
+    Object.defineProperty(element, "id", {
+      get() { return this._id || ""; },
+      set(value) { this._id = String(value); if (this._id) elements.set(this._id, this); },
+    });
+    return element;
+  };
+}
+
+function loaderContext({ screen = "Login", password = "", enabled = false, fail = false, connected = true, memberNumber = 194331 } = {}) {
   const scheduled = [];
+  const gmStore = new Map([
+    ["misaka_ipad_guard_login_enabled_v1", enabled],
+    ["misaka_ipad_guard_login_password_v1", password],
+  ]);
+  const menuCommands = [];
+  const loginCalls = [];
+  const elements = new Map();
+  const makeElement = makeElementFactory(elements);
+  class MockInput {
+    constructor(id) { this.id = id; this._value = ""; this.events = []; elements.set(id, this); }
+    get value() { return this._value; }
+    set value(value) { this._value = String(value); }
+    dispatchEvent(event) { this.events.push(event.type); return true; }
+  }
+  const body = makeElement("body");
+  const nameInput = new MockInput("InputName");
+  const passwordInput = new MockInput("InputPassword");
   let appendedScript = null;
   const page = {
     CurrentModule: screen === "Login" ? "Online" : "Character",
     CurrentScreen: screen,
-    Player: screen === "ChatRoom" ? { MemberNumber: 194331 } : null,
+    Player: screen === "ChatRoom" ? { MemberNumber: memberNumber } : null,
+    ServerIsConnected: connected,
+    LoginSubmitted: false,
+    LoginErrorMessage: "",
+    LoginDoLogin(name, pass) {
+      loginCalls.push({ name, pass });
+      if (fail) {
+        this.LoginSubmitted = false;
+        this.LoginErrorMessage = "InvalidNamePassword";
+      } else {
+        this.LoginSubmitted = true;
+      }
+    },
   };
+  const documentListeners = new Map();
   const context = {
-    console, Date, JSON, Math, Number, String, URL,
+    console, Date, JSON, Math, Number, String, URL, Object,
     unsafeWindow: page,
     window: {},
+    HTMLInputElement: MockInput,
+    Event: class Event { constructor(type, options = {}) { this.type = type; this.bubbles = !!options.bubbles; } },
     setTimeout(callback, delay = 0) { scheduled.push({ callback, delay }); return scheduled.length; },
+    GM_getValue(key, fallback) { return gmStore.has(key) ? gmStore.get(key) : fallback; },
+    GM_setValue(key, value) { gmStore.set(key, value); },
+    GM_deleteValue(key) { gmStore.delete(key); },
+    GM_registerMenuCommand(label, callback) { menuCommands.push({ label, callback }); },
     document: {
+      body,
       getElementById(id) {
         if (id === "misaka-ipad-guard-script") return appendedScript;
-        return null;
+        return elements.get(id) || null;
       },
-      createElement(tag) {
-        if (tag === "script") return { dataset: {}, remove() { appendedScript = null; } };
-        return {};
-      },
+      createElement: makeElement,
+      addEventListener(type, callback) { documentListeners.set(type, callback); },
+      dispatchEvent(event) { documentListeners.get(event.type)?.(event); return true; },
       head: { appendChild(script) { appendedScript = script; } },
     },
   };
   vm.runInNewContext(loaderSource, context, { filename: "misaka-ipad-guard.user.js" });
   return {
-    context, page, scheduled,
+    context, page, scheduled, gmStore, menuCommands, loginCalls, nameInput, passwordInput, elements,
     get appendedScript() { return appendedScript; },
   };
 }
@@ -143,136 +203,69 @@ function runScheduled(loader, delay) {
   callback();
 }
 
-const loader = loaderContext();
-assert.ok(loader.appendedScript, "page runtime must load on the login screen");
-assert.equal(loader.appendedScript.dataset.mode, "login");
-assert.match(loader.appendedScript.src || "", /v=0\.2\.4/);
-loader.page.__MisakaIPadGuardLoginRecovery = { version: "0.2.4" };
-loader.appendedScript.onload();
-assert.doesNotMatch(loaderSource, /GM_(?:get|set|delete)Value|InputPassword|credentials/i, "Guard must not access or store WCE credentials");
+const unconfigured = loaderContext();
+assert.equal(unconfigured.appendedScript, null, "chat runtime must not load on login screen");
+assert.equal(unconfigured.loginCalls.length, 0, "missing credentials must never attempt login");
+assert.match(unconfigured.elements.get("misaka-ipad-guard-login-status")?.textContent || "", /未配置/);
+assert.equal(unconfigured.menuCommands.length, 2);
+unconfigured.context.document.dispatchEvent(new unconfigured.context.Event("misaka-ipad-guard-open-login-config"));
+const configOverlay = unconfigured.elements.get("misaka-ipad-guard-login-config");
+assert.ok(configOverlay, "chat command event must open the private credential dialog");
+const descendants = (root) => [root, ...(root.children || []).flatMap(descendants)];
+const configNodes = descendants(configOverlay);
+const configPassword = configNodes.find((node) => node.tagName === "INPUT");
+const saveButton = configNodes.find((node) => node.tagName === "BUTTON" && node.textContent === "保存并启用");
+assert.equal(configPassword?.type, "password", "credential dialog must mask the password");
+configPassword.value = "saved-secret";
+saveButton.dispatchEvent(new unconfigured.context.Event("click"));
+assert.equal(unconfigured.gmStore.get("misaka_ipad_guard_login_enabled_v1"), true);
+assert.equal(unconfigured.gmStore.get("misaka_ipad_guard_login_password_v1"), "saved-secret");
+unconfigured.menuCommands.find((entry) => /清除/.test(entry.label)).callback();
+assert.equal(unconfigured.gmStore.has("misaka_ipad_guard_login_password_v1"), false, "menu clear must delete password");
+assert.equal(unconfigured.gmStore.has("misaka_ipad_guard_login_enabled_v1"), false, "menu clear must disable login");
 
-loader.page.CurrentModule = "Online";
-loader.page.CurrentScreen = "ChatRoom";
-loader.page.Player = { MemberNumber: 194331 };
-loader.page.bcModSdk = {};
-loader.page.ChatRoomSendChat = () => {};
-loader.page.ChatRoomMessage = () => {};
-runScheduled(loader, 500);
-assert.ok(loader.appendedScript, "runtime must load after native login reaches ChatRoom");
-assert.equal(loader.appendedScript.dataset.mode, "chatroom");
-assert.match(loader.appendedScript.src || "", /v=0\.2\.4/);
+const disconnected = loaderContext({ enabled: true, password: "secret", connected: false });
+assert.equal(disconnected.loginCalls.length, 0, "login must wait for the BC server connection");
+assert.match(disconnected.elements.get("misaka-ipad-guard-login-status")?.textContent || "", /等待.*服务器/);
 
-function loginRuntimeContext(label = "MSK002") {
-  const store = new Map();
-  const intervals = [];
-  const timeouts = [];
-  const alerts = [];
-  const drawnButtons = [];
-  let quickLoginClicks = 0;
-  const elements = new Map();
-  function makeElement(tag) {
-    const listeners = new Map();
-    const element = {
-      tagName: String(tag).toUpperCase(),
-      style: {},
-      dataset: {},
-      children: [],
-      textContent: "",
-      appendChild(child) {
-        this.children.push(child);
-        if (child.id) elements.set(child.id, child);
-        return child;
-      },
-      querySelector(selector) {
-        const match = selector.match(/^\[data-role="([^"]+)"\]$/);
-        if (!match) return null;
-        return this.children.find((child) => child.dataset?.role === match[1]) || null;
-      },
-      addEventListener(type, callback) { listeners.set(type, callback); },
-      dispatchEvent(event) { listeners.get(event.type)?.(event); return true; },
-      remove() { if (this.id) elements.delete(this.id); },
-    };
-    Object.defineProperty(element, "id", {
-      get() { return this._id || ""; },
-      set(value) { this._id = String(value); if (this._id) elements.set(this._id, this); },
-    });
-    return element;
-  }
-  const body = makeElement("body");
-  const originalDrawButton = function (x, y, width, height, text) {
-    drawnButtons.push({ x, y, width, height, text: String(text) });
-  };
-  const context = {
-    console, Date, JSON, Math, Number, String, URL, Set,
-    navigator: { userAgent: "Mozilla/5.0 (iPad)", platform: "iPad", maxTouchPoints: 5, onLine: true },
-    location: {
-      href: "https://www.bondage-europe.com/R130/BondageClub/",
-      hostname: "www.bondage-europe.com",
-      pathname: "/R130/BondageClub/",
-    },
-    document: {
-      hidden: false,
-      body,
-      createElement: makeElement,
-      getElementById(id) { return elements.get(id) || null; },
-    },
-    localStorage: {
-      getItem(key) { return store.has(key) ? store.get(key) : null; },
-      setItem(key, value) { store.set(key, String(value)); },
-      removeItem(key) { store.delete(key); },
-    },
-    alert(message) { alerts.push(String(message)); },
-    Event: class Event { constructor(type) { this.type = type; } },
-    setInterval(callback, delay) { intervals.push({ callback, delay }); return intervals.length; },
-    clearInterval() {},
-    setTimeout(callback, delay) { timeouts.push({ callback, delay }); return timeouts.length; },
-    CurrentModule: "Online",
-    CurrentScreen: "Login",
-    CurrentScreenFunctions: {
-      Click() {
-        if (context.MouseX >= 10 && context.MouseX <= 360 && context.MouseY >= 60 && context.MouseY <= 120) {
-          quickLoginClicks += 1;
-          context.LoginSubmitted = true;
-          context.CurrentScreen = "ChatRoom";
-          context.Player = { MemberNumber: 194331 };
-        }
-      },
-    },
-    Player: null,
-    LoginSubmitted: false,
-    LoginErrorMessage: "",
-    MouseX: 900,
-    MouseY: 700,
-    DrawButton: originalDrawButton,
-    LoginClick() { throw new Error("global LoginClick fallback should not be used when CurrentScreenFunctions.Click exists"); },
-  };
-  context.window = context;
-  vm.runInNewContext(source, context, { filename: "misaka-ipad-guard.js" });
-  context.DrawButton(10, 60, 350, 60, label, "White");
-  const loginTick = intervals.find((entry) => entry.delay === 100);
-  assert.ok(loginTick, "login recovery must poll in the page runtime");
-  loginTick.callback();
-  const click = timeouts.find((entry) => entry.delay === 250);
-  if (click) click.callback();
-  if (quickLoginClicks > 0) loginTick.callback();
-  return {
-    context, store, intervals, timeouts, alerts, drawnButtons, originalDrawButton,
-    get quickLoginClicks() { return quickLoginClicks; },
-  };
-}
+const configured = loaderContext({ enabled: true, password: "test-password" });
+assert.equal(configured.nameInput.value, "MSK002");
+assert.equal(configured.passwordInput.value, "test-password");
+assert.deepEqual(configured.nameInput.events, ["input", "change"]);
+assert.deepEqual(configured.passwordInput.events, ["input", "change"]);
+runScheduled(configured, 250);
+assert.deepEqual(configured.loginCalls, [{ name: "MSK002", pass: "test-password" }]);
+runScheduled(configured, 500);
+assert.equal(configured.loginCalls.length, 1, "automatic login must run at most once per page");
 
-const loginRuntime = loginRuntimeContext();
-assert.equal(loginRuntime.quickLoginClicks, 1, "page runtime must click the exact WCE quick-login button once");
-assert.equal(loginRuntime.context.MouseX, 900, "synthetic click must restore the previous mouse X coordinate");
-assert.equal(loginRuntime.context.MouseY, 700, "synthetic click must restore the previous mouse Y coordinate");
-assert.equal(loginRuntime.context.DrawButton, loginRuntime.originalDrawButton, "DrawButton capture must be removed after locating the target");
-assert.equal(loginRuntime.context.__MisakaIPadGuard, undefined, "chat-room runtime must not initialize on login");
-assert.equal(loginRuntime.context.__MisakaIPadGuardLoginRecovery, undefined, "successful login must dispose the login recovery marker");
-assert.doesNotMatch(source, /GM_(?:get|set|delete)Value|InputPassword|credentials/i, "Guard runtime must not access or store WCE credentials");
+const failed = loaderContext({ enabled: true, password: "wrong", fail: true });
+runScheduled(failed, 250);
+runScheduled(failed, 500);
+assert.equal(failed.loginCalls.length, 1, "failed login must not loop");
+assert.match(failed.elements.get("misaka-ipad-guard-login-status")?.textContent || "", /登录失败/);
 
-assert.equal(loginRuntimeContext("MSK003").quickLoginClicks, 0, "page runtime must not click another saved WCE account");
-assert.equal(loginRuntimeContext("msk002").quickLoginClicks, 1, "WCE login-name matching may ignore display case");
-assert.equal(loginRuntimeContext("#194331").quickLoginClicks, 1, "WCE's optional exact member ID remains compatible");
+const chatLoader = loaderContext({ screen: "ChatRoom", enabled: true, password: "secret" });
+chatLoader.page.bcModSdk = {};
+chatLoader.page.ChatRoomSendChat = () => {};
+chatLoader.page.ChatRoomMessage = () => {};
+runScheduled(chatLoader, 500);
+assert.ok(chatLoader.appendedScript, "runtime must load in ChatRoom for Misaka account");
+assert.equal(chatLoader.appendedScript.dataset.mode, "chatroom");
+assert.match(chatLoader.appendedScript.src || "", /v=0\.3\.0/);
+assert.equal(chatLoader.loginCalls.length, 0);
+const wrongAccount = loaderContext({ screen: "ChatRoom", memberNumber: 999999 });
+wrongAccount.page.bcModSdk = {};
+wrongAccount.page.ChatRoomSendChat = () => {};
+wrongAccount.page.ChatRoomMessage = () => {};
+runScheduled(wrongAccount, 500);
+assert.equal(wrongAccount.appendedScript, null, "Guard runtime must reject a non-Misaka account");
+
+assert.match(loaderSource, /@grant\s+GM_getValue/);
+assert.match(loaderSource, /@grant\s+GM_setValue/);
+assert.match(loaderSource, /@grant\s+GM_deleteValue/);
+assert.match(loaderSource, /LoginDoLogin\(LOGIN_NAME, password\)/);
+assert.doesNotMatch(loaderSource, /localStorage[^\n]*(?:password|credential)/i, "password must not use page storage");
+assert.doesNotMatch(loaderSource, /WCE|DrawButton|MainCanvas\.click/, "native login must not depend on WCE clicks");
 
 const scriptMatch = recycleHTML.match(/<script>([\s\S]*?)<\/script>/);
 assert.ok(scriptMatch, "trampoline must contain its inline return script");
@@ -303,4 +296,4 @@ const invalidReturn = runTrampoline("https://evil.example/steal");
 assert.equal(invalidReturn.replacedWith, "", "trampoline must reject non-BC return URLs");
 assert.match(invalidReturn.status, /无效/);
 
-console.log("iPad guard v0.2.4 tests passed");
+console.log("iPad guard v0.3.0 tests passed");
