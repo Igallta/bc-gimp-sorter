@@ -7,7 +7,7 @@
 
 另提供一个默认关闭、仅供 iPadOS 长期挂机使用的独立守护脚本：
 
-- **Misaka iPad Guard v0.2.0**：在 WebContent 被 Jetsam 回收前跨站释放网页进程，返回 BC 后调用 WCE 已保存的快速登录并恢复原房间，同时保存本地生命周期日志；不会修改 MisakaChat 或 GimpSorter 的业务逻辑，也不会读取或另存 BC 密码。
+- **Misaka iPad Guard v0.2.1**：在 WebContent 被 Jetsam 回收前跨站释放网页进程，返回 BC 后调用 WCE 已保存的快速登录并恢复原房间，同时保存本地生命周期日志；不会修改 MisakaChat 或 GimpSorter 的业务逻辑，也不会读取或另存 BC 密码。
 
 当前支持 BC 的 `R*` 版本路径，不再绑定特定的 R129/R130：
 
@@ -61,7 +61,7 @@ MisakaChat 的对话和 embedding 凭据不写入仓库。安装后通过 `/misa
 
 ### iPad Guard
 
-首次安装前，先确认 WCE 登录页左上角存在标签为 `194331` 的白色快速登录按钮。Guard 不读取 WCE 的账号数据库或密码；返回登录页后，它只捕获 WCE 为该标签绘制的按钮坐标，并通过 WCE 已 hook 的 BC 原生 `LoginClick` 路径点击一次。保持自动回收默认关闭，先手动验证完整流程：
+首次安装前，先确认 WCE 登录页左上角存在标签为 `MSK002` 的白色快速登录按钮。Guard 不读取 WCE 的账号数据库或密码；返回登录页后，它只捕获该登录名对应的按钮坐标，并通过 WCE 已 hook 的 BC 原生 `LoginClick` 路径点击一次；登录完成后还会校验成员编号必须为 `194331`。保持自动回收默认关闭，先手动验证完整流程：
 
 ```text
 /ipadguard status
@@ -77,7 +77,7 @@ MisakaChat 的对话和 embedding 凭据不写入仓库。安装后通过 `/misa
 /ipadguard log
 ```
 
-自动回收会优先等待房间安静、输入框为空且御坂不忙；房间持续活跃时最多延期 10 分钟。回收会短暂进入同仓库的静态 trampoline 页面，再返回原 BC 地址；返回地址只放在 URL fragment 中。若停在登录页，loader 会等待 WCE 绘制 `194331` 快速登录按钮并点击一次，密码解密与登录均由 WCE 完成，回房仍由 BC 的 `ReturnToChatRoom` 完成。找不到精确标签或出现其他账号时，Guard 不会尝试通用登录。
+自动回收会优先等待房间安静、输入框为空且御坂不忙；房间持续活跃时最多延期 10 分钟。回收会短暂进入同仓库的静态 trampoline 页面，再返回原 BC 地址；返回地址只放在 URL fragment 中。若停在登录页，loader 会等待 WCE 绘制 `MSK002` 快速登录按钮并点击一次，密码解密与登录均由 WCE 完成，回房仍由 BC 的 `ReturnToChatRoom` 完成。找不到精确标签或登录后的成员编号不是 `194331` 时，Guard 不会继续加载。
 
 `/misaka forget` 会清空人物档案、语义记忆和提炼长期记忆，使用前应先导出备份。
 

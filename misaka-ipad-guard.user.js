@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Misaka iPad WebContent Guard
 // @namespace    https://igallta.github.io/bc-gimp-sorter
-// @version      0.2.0
+// @version      0.2.1
 // @description  iPadOS Safari 上为御坂提供跨站 WebContent 回收、WCE 快速登录与诊断日志
 // @match        https://*.bondageprojects.elementfx.com/R*/*
 // @match        https://*.bondage-europe.com/R*/*
@@ -18,9 +18,13 @@
 (function () {
   "use strict";
 
-  const VERSION = "0.2.0";
+  const VERSION = "0.2.1";
   const MEMBER_NUMBER = 194331;
-  const QUICK_LOGIN_LABEL = String(MEMBER_NUMBER);
+  const WCE_LOGIN_NAME = "MSK002";
+  const QUICK_LOGIN_LABELS = new Set([
+    WCE_LOGIN_NAME.toLowerCase(),
+    String(MEMBER_NUMBER),
+  ]);
   const ASSET_REVISION = "f6fb623";
   const LOG_KEY = "misaka_ipad_guard_log_v1";
   const pageWindow = typeof unsafeWindow === "object" && unsafeWindow ? unsafeWindow : window;
@@ -58,7 +62,7 @@
   }
 
   function normalizeQuickLoginLabel(label) {
-    return String(label ?? "").trim().replace(/^#/, "");
+    return String(label ?? "").trim().replace(/^#/, "").toLowerCase();
   }
 
   function restoreDrawButtonCapture() {
@@ -76,7 +80,7 @@
     state.wrapper = function (x, y, width, height, label, ...rest) {
       if (
         !state.target &&
-        normalizeQuickLoginLabel(label) === QUICK_LOGIN_LABEL &&
+        QUICK_LOGIN_LABELS.has(normalizeQuickLoginLabel(label)) &&
         Number.isFinite(Number(x)) && Number.isFinite(Number(y)) &&
         Number(width) > 0 && Number(height) > 0
       ) {
@@ -90,7 +94,10 @@
     };
     capture = state;
     pageWindow.DrawButton = state.wrapper;
-    appendBootstrapLog("wce-quick-login-wait", { memberNumber: MEMBER_NUMBER });
+    appendBootstrapLog("wce-quick-login-wait", {
+      loginName: WCE_LOGIN_NAME,
+      memberNumber: MEMBER_NUMBER,
+    });
   }
 
   function scheduleWCEQuickLogin() {

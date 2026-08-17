@@ -1,9 +1,9 @@
-// Misaka iPad Guard v0.2.0
+// Misaka iPad Guard v0.2.1
 // iPadOS Safari WebContent 跨站受控回收。与 MisakaChat/GimpSorter 主逻辑完全独立。
 (function () {
   "use strict";
 
-  const VERSION = "0.2.0";
+  const VERSION = "0.2.1";
   const MEMBER_NUMBER = 194331;
   const RECYCLE_URL = "https://igallta.github.io/bc-gimp-sorter/ipad-recycle.html";
   const CONFIG_KEY = "misaka_ipad_guard_config_v1";
@@ -200,7 +200,7 @@
         sendLocal(`自动回收间隔已设为 ${value} 分钟`);
       }
     } else if (sub === "login") {
-      sendLocal("自动登录由 WCE 快速登录提供；请确认登录页存在编号 194331 的白色按钮");
+      sendLocal("自动登录由 WCE 快速登录提供；请确认登录页存在 MSK002 白色按钮（登录后校验 #194331）");
     } else if (sub === "recycle") {
       sendLocal("2 秒后执行手动受控回收");
       setTimeout(() => recycle("manual"), 2000);
