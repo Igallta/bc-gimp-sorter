@@ -1,11 +1,11 @@
-// GimpSorter v1.7.1 — BC Gimp Doll 自动排序 mod
+// GimpSorter v1.7.2 — BC Gimp Doll 自动排序 mod
 // 通过 bcModSdk.registerMod 注册，掉线重连后由油猴自动重新加载
 // 排序规则：GIMP → Gimp → Doll → GIMP Pet → Pet → Error，组内先三位、后四位，再按编号升序
 // 策略：只使用 MoveLeft，行为更稳定可预测
 (function() {
   "use strict";
 
-  const version = "1.7.1";
+  const version = "1.7.2";
   if (window.__GimpSorterLoaded) {
     console.log("[GimpSorter] already loaded: " + window.__GimpSorterLoaded);
     return;
@@ -37,7 +37,13 @@
   ];
 
   function log(msg) {
-    if (typeof ChatRoomSendLocal === "function") {
+    if (typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom" && typeof ChatRoomMessage === "function") {
+      ChatRoomMessage({
+        Content: `<font color="#00CCFF">[GimpSorter] ${msg}</font>`,
+        Type: "LocalMessage",
+        Sender: Player.MemberNumber,
+      });
+    } else if (typeof ChatRoomSendLocal === "function") {
       ChatRoomSendLocal("[GimpSorter] " + msg);
     } else {
       console.log("[GimpSorter] " + msg);
@@ -165,7 +171,7 @@
       const plan = getMoveLeftPlan();
       if (plan.length === 0) return;
 
-      debug("本轮 MoveLeft 计划: " + plan.length + " 步");
+      debug("调试：本轮左移计划 | 步数：" + plan.length);
 
       for (const step of plan) {
         if (!config.enabled) break;
@@ -174,16 +180,16 @@
           Action: "MoveLeft",
           Publish: false
         });
-        debug(step.dollType + " " + String(step.dollNumber).padStart(3, "0") + " " + step.from + "→" + step.to);
+        debug("调试：移动 | 娃娃：" + step.dollType + " " + String(step.dollNumber).padStart(3, "0") + " | 位置：" + step.from + "→" + step.to);
         await sleep(50);
       }
 
       // 等待服务器同步位置
       await sleep(config.sortCooldownMs);
-      debug("排序循环结束，当前需排序: " + needsReorder());
+      debug("调试：排序循环结束 | 需排序：" + (needsReorder() ? "是" : "否"));
     } catch (e) {
       console.error("[GimpSorter] error:", e);
-      log("❌ 排序出错: " + e.message);
+      log("❌ 排序失败：" + e.message);
     } finally {
       config.busy = false;
     }
@@ -195,28 +201,28 @@
       const cmd = msg.slice("/gimpsorter".length).trim();
       if (cmd === "on" || cmd === "") {
         config.enabled = true;
-        log("✅ 已开启自动排序");
+        log("✅ 已开启：自动排序");
       } else if (cmd === "off") {
         config.enabled = false;
-        log("⏹ 已关闭自动排序");
+        log("⏹ 已关闭：自动排序");
       } else if (cmd === "debug on") {
         config.debug = true;
-        log("debug 已开启");
+        log("✅ 已开启：调试");
       } else if (cmd === "debug off") {
         config.debug = false;
-        log("debug 已关闭");
+        log("⏹ 已关闭：调试");
       } else if (cmd === "status") {
         const dolls = getDolls();
         const sorted = [].concat(dolls).sort(compareDolls);
-        log("状态: " + (config.enabled ? "开启" : "关闭") + " | debug: " + (config.debug ? "开" : "关") + " | 娃娃: " + dolls.length + "个 | 需排序: " + needsReorder() + " | 搬运中: " + config.busy);
-        log("目标顺序: " + sorted.map(d => d.dollType + " " + String(d.dollNumber).padStart(3, "0")).join(" → "));
+        log("状态：" + (config.enabled ? "开启" : "关闭") + " | 调试：" + (config.debug ? "开启" : "关闭") + " | 娃娃：" + dolls.length + " | 需排序：" + (needsReorder() ? "是" : "否") + " | 搬运中：" + (config.busy ? "是" : "否"));
+        log("目标顺序：" + sorted.map(d => d.dollType + " " + String(d.dollNumber).padStart(3, "0")).join(" → "));
         dolls.forEach(d => {
           const targetPos = sorted.findIndex(s => s.memberNumber === d.memberNumber);
           const ok = d.index === targetPos;
-          log("  " + d.dollType + " " + String(d.dollNumber).padStart(3, "0") + " (#" + d.memberNumber + ") @ 位置" + d.index + (ok ? " ✓" : " → 目标位置" + targetPos));
+          log("娃娃：" + d.dollType + " " + String(d.dollNumber).padStart(3, "0") + " | 编号：#" + d.memberNumber + " | 当前位置：" + d.index + (ok ? " | 状态：已就位" : " | 目标位置：" + targetPos));
         });
       } else {
-        log("用法: /gimpsorter on|off|status|debug on|debug off");
+        log("用法：/gimpsorter on|off|status|debug on|debug off");
       }
       return;
     }
@@ -250,5 +256,5 @@
     },
   };
 
-  console.log("[GimpSorter] Gimp Doll 自动排序 v" + version + " 已加载（MoveLeft only）");
+  log("娃娃自动排序 " + version + " 已加载");
 })();

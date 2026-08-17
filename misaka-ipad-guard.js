@@ -1,9 +1,9 @@
-// Misaka iPad Guard v0.3.3
+// Misaka iPad Guard v0.3.4
 // iPadOS Safari WebContent 跨站受控回收。与 MisakaChat/GimpSorter 主逻辑完全独立。
 (function () {
   "use strict";
 
-  const VERSION = "0.3.3";
+  const VERSION = "0.3.4";
   const DISPLAY_NAME = "御坂进程守护";
   const MEMBER_NUMBER = 194331;
   const WCE_LOGIN_NAME = "MSK002";
@@ -438,41 +438,41 @@
       dueSince = 0;
       persistConfig();
       appendLog("enabled", { intervalMinutes: config.intervalMinutes });
-      sendLocal(`已开启；${config.intervalMinutes} 分钟后尝试受控回收`);
+      sendLocal(`✅ 已开启：自动回收 | 下次回收：${config.intervalMinutes}分钟后`);
     } else if (sub === "off") {
       config.enabled = false;
       persistConfig();
       appendLog("disabled", {});
-      sendLocal("已关闭自动回收");
+      sendLocal("⏹ 已关闭：自动回收");
     } else if (sub === "interval") {
       const value = clampNumber(parts[1], NaN, 15, 240);
       if (!Number.isFinite(value)) {
-        sendLocal("用法: /ipadguard interval <15-240分钟>");
+        sendLocal("用法：/ipadguard interval <15-240分钟>");
       } else {
         config.intervalMinutes = value;
         nextRecycleAt = Date.now() + value * 60_000;
         dueSince = 0;
         persistConfig();
         appendLog("interval-changed", { intervalMinutes: value });
-        sendLocal(`自动回收间隔已设为 ${value} 分钟`);
+        sendLocal(`✅ 已设置：自动回收间隔 | 间隔：${value}分钟`);
       }
     } else if (sub === "login") {
       document.dispatchEvent(new Event("misaka-ipad-guard-open-login-config"));
-      sendLocal("已打开自动登录配置；账号固定为 MSK002，登录后校验 #194331");
+      sendLocal("✅ 已打开：自动登录配置 | 账号：MSK002 | 登录校验：#194331");
     } else if (sub === "recycle") {
-      sendLocal("2 秒后执行手动受控回收");
+      sendLocal("已安排手动回收：2秒后执行");
       setTimeout(() => recycle("manual"), 2000);
     } else if (sub === "log") {
       const records = readJSON(LOG_KEY, []);
       window.__misakaIPadGuardLogExport = JSON.stringify(records, null, 2);
-      sendLocal(`已导出 ${Array.isArray(records) ? records.length : 0} 条日志到 window.__misakaIPadGuardLogExport`);
+      sendLocal(`✅ 已导出诊断日志 | 数量：${Array.isArray(records) ? records.length : 0} | 位置：window.__misakaIPadGuardLogExport`);
     } else if (sub === "clear") {
       localStorage.removeItem(LOG_KEY);
-      sendLocal("诊断日志已清空");
+      sendLocal("✅ 已清空：诊断日志");
     } else if (sub === "status") {
-      sendLocal(`${DISPLAY_NAME} ${VERSION} | ${isIPad() ? "iPad" : "非iPad"} | 自动回收 ${config.enabled ? "开启" : "关闭"} | 间隔 ${config.intervalMinutes} 分钟 | 下次约 ${minutesUntil(nextRecycleAt)} 分钟 | Socket ${socketConnected() === false ? "断开" : "正常"}`);
+      sendLocal(`状态：${config.enabled ? "开启" : "关闭"} | 间隔：${config.intervalMinutes}分钟 | 下次回收：${minutesUntil(nextRecycleAt)}分钟 | 连接：${socketConnected() === false ? "断开" : "正常"}`);
     } else {
-      sendLocal("用法: /ipadguard on|off|status|recycle|interval <分钟>|login|log|clear");
+      sendLocal("用法：/ipadguard on|off|status|recycle|interval <分钟>|login|log|clear");
     }
     return true;
   }
@@ -565,7 +565,7 @@
     };
     window.__MisakaIPadGuardTestHooks = { normalizeConfig, evaluateBlockReason };
     console.log(`[iPadGuard] v${VERSION} ready; auto recycle ${config.enabled ? "on" : "off"}`);
-    sendLocal(`${DISPLAY_NAME} ${VERSION} 已加载；跨站回收${config.enabled ? "开启" : "关闭"}`);
+    sendLocal(`${DISPLAY_NAME} ${VERSION} 已加载`);
   }
 
   if (typeof Player === "undefined" || Number(Player?.MemberNumber || Player?.ID) !== MEMBER_NUMBER) return;

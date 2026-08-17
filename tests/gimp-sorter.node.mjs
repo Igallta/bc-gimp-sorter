@@ -22,6 +22,10 @@ vm.runInContext(source, context, { filename: "gimp-sorter.js" });
 const hooks = windowObject.__GimpSorterTestHooks;
 assert.ok(hooks, "test hooks should be exposed");
 let assertions = 1;
+assert.match(source, /<font color="#00CCFF">\[GimpSorter\]/, "local messages must share MisakaChat's color");
+assertions++;
+assert.match(source, /log\("娃娃自动排序 " \+ version \+ " 已加载"\)/, "startup copy must follow the shared product/version style");
+assertions++;
 
 const recognized = [
   ["GIMP 104", "GIMP", 3, 104],

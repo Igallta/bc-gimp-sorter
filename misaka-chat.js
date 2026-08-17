@@ -1,4 +1,4 @@
-// MisakaChat v3.0.3 - BC 御坂自动回复系统
+// MisakaChat v3.0.5 - BC 御坂自动回复系统
 // 模块分区:
 //   [Config]      L15-55   配置 + 状态
 //   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "3.0.3";
+  const SCRIPT_VERSION = "3.0.5";
   const RELEASE_CHANNEL = "stable";
   const bootstrapOptions = window.__misakaNextBootstrapOptions || {};
   delete window.__misakaNextBootstrapOptions;
@@ -5091,7 +5091,7 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
       if (policy.dangerous) {
         const who = policy.target;
         const actionDesc = { move:"移动", moveTo:"移动", moveEdge:"移动", itemadd:"添加道具", itemdel:"移除道具", itemdelall:"解除全部", itemcolor:"改色", itemset:"设置属性", snapshotSave:"保存快照", snapshotRestore:"恢复快照", copyRestraint:"复制束缚", emote:"设置表情" }[cmd.type] || cmd.type;
-        sendLocal(`⚠️ 御坂即将对真人 ${who} 执行 ${actionDesc} 操作`);
+        sendLocal(`⚠️ 即将执行真人操作 | 对象：${who} | 操作：${actionDesc}`);
         console.warn(`[MisakaChat] 危险操作通知: ${cmd.type} -> ${who}`);
       }
       if (cmd.type === "move") {
@@ -6200,81 +6200,81 @@ function unescapeHTML(s) {
     const cmd = msg.slice("/misaka".length).trim();
     const parts = cmd.split(/\s+/);
     const sub = parts[0];
-    if (sub === "on") { CONFIG.enabled = true; sendLocal("✅ 自动回复已开启"); }
-    else if (sub === "off") { CONFIG.enabled = false; sendLocal("⏹ 自动回复已关闭"); }
-    else if (sub === "key" && parts[1]) { localStorage.setItem(storageKey("apikey"), parts[1]); sendLocal("🔑 API key 已保存"); }
-    else if (sub === "embedkey" && parts[1]) { localStorage.setItem("misaka_openai_key", parts[1]); sendLocal("🔎 OpenAI embedding key 已保存"); }
-    else if (sub === "model" && parts[1]) { localStorage.setItem(storageKey("model"), parts[1]); CONFIG.model = parts[1]; sendLocal("🤖 模型已切换: " + parts[1]); }
+    if (sub === "on") { CONFIG.enabled = true; sendLocal("✅ 已开启：自动回复"); }
+    else if (sub === "off") { CONFIG.enabled = false; sendLocal("⏹ 已关闭：自动回复"); }
+    else if (sub === "key" && parts[1]) { localStorage.setItem(storageKey("apikey"), parts[1]); sendLocal("✅ 已保存：API key"); }
+    else if (sub === "embedkey" && parts[1]) { localStorage.setItem("misaka_openai_key", parts[1]); sendLocal("✅ 已保存：OpenAI embedding key"); }
+    else if (sub === "model" && parts[1]) { localStorage.setItem(storageKey("model"), parts[1]); CONFIG.model = parts[1]; sendLocal("✅ 已切换：模型 | 当前模型：" + parts[1]); }
     else if (sub === "activity" && ["on", "off"].includes(parts[1])) {
       CONFIG.activityEnabled = parts[1] === "on";
       localStorage.setItem(storageKey("activity_enabled"), String(CONFIG.activityEnabled));
-      sendLocal(`🎭 BC 原生互动已${CONFIG.activityEnabled ? "开启" : "关闭"}`);
+      sendLocal(`${CONFIG.activityEnabled ? "✅ 已开启" : "⏹ 已关闭"}：原生互动`);
     }
     else if (sub === "sticker" && ["on", "off"].includes(parts[1])) {
       const wantsEnabled = parts[1] === "on";
       CONFIG.stickerEnabled = wantsEnabled && getStickerCatalog().length > 0;
       localStorage.setItem(storageKey("sticker_enabled"), String(CONFIG.stickerEnabled));
       if (wantsEnabled && !CONFIG.stickerEnabled) {
-        sendLocal("🖼 尚未配置正式表情包目录，暂时不能开启");
+        sendLocal("⚠️ 无法开启表情包：尚未配置正式目录");
       } else {
-        sendLocal(`🖼 御坂表情包已${CONFIG.stickerEnabled ? "开启" : "关闭"}`);
+        sendLocal(`${CONFIG.stickerEnabled ? "✅ 已开启" : "⏹ 已关闭"}：表情包`);
       }
     }
     else if (sub === "friend" && ["on", "off"].includes(parts[1])) {
       CONFIG.autoFriendEnabled = parts[1] === "on";
       localStorage.setItem(storageKey("auto_friend_enabled"), String(CONFIG.autoFriendEnabled));
-      sendLocal(`🤝 自动加好友已${CONFIG.autoFriendEnabled ? "开启" : "关闭"}`);
+      sendLocal(`${CONFIG.autoFriendEnabled ? "✅ 已开启" : "⏹ 已关闭"}：自动加好友`);
     }
     else if (sub === "status") {
       const key = getApiKeyStatus();
       const embed = getEmbeddingProviderStatus();
-      sendLocal(`状态: ${CONFIG.enabled?"开启":"关闭"} | Activity ${CONFIG.activityEnabled?"开启":"关闭"} | Sticker ${CONFIG.stickerEnabled?"开启":"关闭"} | AutoFriend ${CONFIG.autoFriendEnabled?"开启":"关闭"} | 版本 ${SCRIPT_VERSION} ${RELEASE_CHANNEL} / loader ${window.__misakaUserLoaderLoaded || "手动"} | key ${key.source} | 模型 ${CONFIG.model} | embedding ${embed.provider.name}/${embed.provider.model} via ${embed.key.source} | 语义 ${state.semanticMemories.length} | 提炼 ${state.refinedMemories.length} | 认识 ${Object.keys(loadMemory().profiles||{}).length} 人`);
+      sendLocal(`状态：${CONFIG.enabled?"开启":"关闭"} | 原生互动：${CONFIG.activityEnabled?"开启":"关闭"} | 表情包：${CONFIG.stickerEnabled?"开启":"关闭"} | 自动加好友：${CONFIG.autoFriendEnabled?"开启":"关闭"} | 模型：${CONFIG.model} | 语义记忆：${state.semanticMemories.length} | 提炼记忆：${state.refinedMemories.length} | 人物：${Object.keys(loadMemory().profiles||{}).length}`);
     } else if (sub === "forget") {
       localStorage.setItem(storageKey("memory"), "{}");
       state.semanticMemories = [];
       state.refinedMemories = [];
       IDB.clearAll();
-      sendLocal("🧹 记忆已清空(含 IndexedDB 语义记忆)");
+      sendLocal("✅ 已清空：全部记忆");
     }
     else if (sub === "export") {
       IDB.exportAll().then(data => {
         window.__misakaExportData = JSON.stringify(data);
         console.log("[MisakaChat] 导出数据已存入 window.__misakaExportData");
-        sendLocal(`📦 已导出 ${data.semantic.length} 语义 + ${data.refined.length} 提炼到控制台`);
+        sendLocal(`✅ 已导出记忆 | 语义记忆：${data.semantic.length} | 提炼记忆：${data.refined.length} | 位置：window.__misakaExportData`);
       });
     }
     else if (sub === "import") {
       const blob = window.__misakaExportData;
-      if (!blob) { sendLocal("❌ 没有找到导出数据(先 export)"); }
+      if (!blob) { sendLocal("⚠️ 未找到可导入的数据；请先执行 /misaka export"); }
       else {
         try {
           const data = JSON.parse(blob);
           IDB.importAll(data).then(() => {
             state.semanticMemories = data.semantic || [];
             state.refinedMemories = data.refined || [];
-            sendLocal(`✅ 已导入 ${data.semantic?.length || 0} 语义 + ${data.refined?.length || 0} 提炼`);
+            sendLocal(`✅ 已导入记忆 | 语义记忆：${data.semantic?.length || 0} | 提炼记忆：${data.refined?.length || 0}`);
           });
-        } catch(e) { sendLocal("❌ 导入失败: " + e.message); }
+        } catch(e) { sendLocal("❌ 导入记忆失败：" + e.message); }
       }
     }
     else if (sub === "memory") {
       const mem = loadMemory();
       const profiles = Object.entries(mem.profiles || {});
-      if (profiles.length === 0) sendLocal("记忆为空");
-      else profiles.forEach(([mn, info]) => sendLocal(`  ${info.name} (#${mn}): ${info.chatCount||0}次 | ${info.lastChat||""}`));
+      if (profiles.length === 0) sendLocal("人物记忆：空");
+      else profiles.forEach(([mn, info]) => sendLocal(`人物：${info.name} | 编号：#${mn} | 互动：${info.chatCount||0}次 | 最近聊天：${info.lastChat||"未知"}`));
     } else if (sub === "trace") {
       try {
         const records = JSON.parse(localStorage.getItem(storageKey("capability_trace")) || "[]");
         window.__misakaCapabilityTraceExport = JSON.stringify(Array.isArray(records) ? records : [], null, 2);
-        sendLocal(`🔎 已导出 ${Array.isArray(records) ? records.length : 0} 条能力 trace 到 window.__misakaCapabilityTraceExport`);
+        sendLocal(`✅ 已导出能力记录 | 数量：${Array.isArray(records) ? records.length : 0} | 位置：window.__misakaCapabilityTraceExport`);
       } catch (e) {
-        sendLocal("❌ trace 导出失败");
+        sendLocal("❌ 导出能力记录失败");
       }
     } else if (sub === "persona" && parts[1]) {
       localStorage.setItem(storageKey("persona_extra"), parts.slice(1).join(" "));
-      sendLocal("📝 人设附加备注已更新");
+      sendLocal("✅ 已更新：人设附加备注");
     } else {
-      sendLocal("用法: /misaka on|off|activity on|off|sticker on|off|friend on|off|key <key>|embedkey <openai-key>|model <name>|status|trace|forget|memory|persona <text>|export|import");
+      sendLocal("用法：/misaka on|off|activity on|off|sticker on|off|friend on|off|key <key>|embedkey <openai-key>|model <name>|status|trace|forget|memory|persona <text>|export|import");
     }
     return true;
   }
