@@ -73,12 +73,12 @@ const runtime = runtimeContext();
 const guard = runtime.context.window.__MisakaIPadGuard;
 const test = runtime.context.window.__MisakaIPadGuardTestHooks;
 assert.ok(guard, "guard runtime should initialize for Misaka account");
-assert.equal(guard.version, "0.3.2");
+assert.equal(guard.version, "0.3.3");
 const guardLocalColor = source.match(/<font color="(#[0-9A-Fa-f]{6})">\[iPadGuard\]/)?.[1];
 const misakaLocalColor = misakaChatSource.match(/<font color="(#[0-9A-Fa-f]{6})">\[MisakaChat\]/)?.[1];
 assert.equal(guardLocalColor, misakaLocalColor, "Guard local messages must use MisakaChat's exact color");
 assert.ok(
-  runtime.localMessages.some((message) => String(message?.Content || "").includes("[iPadGuard] 御坂进程守护 v0.3.2 已加载")),
+  runtime.localMessages.some((message) => String(message?.Content || "").includes("[iPadGuard] 御坂进程守护 0.3.3 已加载")),
   "Guard startup message must follow MisakaChat's product-name/version style",
 );
 assert.equal(guard.config.enabled, false, "auto recycle must be opt-in");
@@ -102,7 +102,7 @@ runtime.inputValue = "/ipadguard status";
 runtime.context.window.ChatRoomSendChat("not-the-command");
 assert.equal(runtime.originalSendCount, 0, "mobile command must be consumed before BC");
 assert.equal(runtime.inputValue, "", "consumed command must clear InputChat");
-assert.match(runtime.localMessages.at(-1)?.Content || "", /\[iPadGuard\] 御坂进程守护 v0\.3\.2/);
+assert.match(runtime.localMessages.at(-1)?.Content || "", /\[iPadGuard\] 御坂进程守护 0\.3\.3/);
 assert.equal(guard.handleCommand("/ipadguard login"), true);
 assert.ok(runtime.documentEvents.includes("misaka-ipad-guard-open-login-config"));
 assert.match(runtime.localMessages.at(-1)?.Content || "", /MSK002.*194331/);
@@ -261,7 +261,7 @@ chatLoader.page.ChatRoomMessage = () => {};
 runScheduled(chatLoader, 500);
 assert.ok(chatLoader.appendedScript, "runtime must load in ChatRoom for Misaka account");
 assert.equal(chatLoader.appendedScript.dataset.mode, "chatroom");
-assert.match(chatLoader.appendedScript.src || "", /v=0\.3\.2/);
+assert.match(chatLoader.appendedScript.src || "", /v=0\.3\.3/);
 assert.equal(chatLoader.loginCalls.length, 0);
 const wrongAccount = loaderContext({ screen: "ChatRoom", memberNumber: 999999 });
 wrongAccount.page.bcModSdk = {};
@@ -306,4 +306,4 @@ const invalidReturn = runTrampoline("https://evil.example/steal");
 assert.equal(invalidReturn.replacedWith, "", "trampoline must reject non-BC return URLs");
 assert.match(invalidReturn.status, /无效/);
 
-console.log("iPad guard v0.3.2 tests passed");
+console.log("iPad guard v0.3.3 tests passed");

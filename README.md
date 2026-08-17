@@ -7,7 +7,7 @@
 
 另提供一个默认关闭、仅供 iPadOS 长期挂机使用的独立守护脚本：
 
-- **Misaka iPad Guard v0.3.2**：在 WebContent 被 Jetsam 回收前跨站释放网页进程，返回 BC 后先等待 5 秒供插件加载，再使用 Tampermonkey 私有存储中的御坂密码调用 BC 原生登录并恢复原房间，同时保存本地生命周期日志；聊天框提示统一采用 `[iPadGuard] 御坂进程守护 v版本` 风格及 MisakaChat 的蓝色，不会修改 MisakaChat 或 GimpSorter 的业务逻辑。
+- **Misaka iPad Guard v0.3.3**：在 WebContent 被 Jetsam 回收前跨站释放网页进程，返回 BC 后先等待 5 秒供插件加载，再使用 Tampermonkey 私有存储中的御坂密码调用 BC 原生登录并恢复原房间，同时保存本地生命周期日志；聊天框提示统一采用 `[iPadGuard] 御坂进程守护 版本号` 风格及 MisakaChat 的蓝色，不会修改 MisakaChat 或 GimpSorter 的业务逻辑。
 
 当前支持 BC 的 `R*` 版本路径，不再绑定特定的 R129/R130：
 
