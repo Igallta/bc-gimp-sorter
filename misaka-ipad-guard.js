@@ -1,9 +1,9 @@
-// Misaka iPad Guard v0.3.0
+// Misaka iPad Guard v0.3.1
 // iPadOS Safari WebContent 跨站受控回收。与 MisakaChat/GimpSorter 主逻辑完全独立。
 (function () {
   "use strict";
 
-  const VERSION = "0.3.0";
+  const VERSION = "0.3.1";
   const MEMBER_NUMBER = 194331;
   const WCE_LOGIN_NAME = "MSK002";
   const QUICK_LOGIN_LABELS = new Set([

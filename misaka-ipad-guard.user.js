@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Misaka iPad WebContent Guard
 // @namespace    https://igallta.github.io/bc-gimp-sorter
-// @version      0.3.0
+// @version      0.3.1
 // @description  iPadOS Safari 上为御坂提供跨站 WebContent 回收、原生自动登录与诊断日志
 // @match        https://*.bondageprojects.elementfx.com/R*/*
 // @match        https://*.bondage-europe.com/R*/*
@@ -22,9 +22,10 @@
 (function () {
   "use strict";
 
-  const VERSION = "0.3.0";
+  const VERSION = "0.3.1";
   const MEMBER_NUMBER = 194331;
   const LOGIN_NAME = "MSK002";
+  const LOGIN_DELAY_MS = 5_000;
   const LOGIN_ENABLED_KEY = "misaka_ipad_guard_login_enabled_v1";
   const LOGIN_PASSWORD_KEY = "misaka_ipad_guard_login_password_v1";
   const ASSET_REVISION = "e7465a6";
@@ -36,6 +37,8 @@
   let runtimeLoading = false;
   let autoLoginAttempted = false;
   let loginFailureShown = false;
+  let loginDelayScheduled = false;
+  let loginDelayElapsed = false;
 
   function loginConfigured() {
     return GM_getValue(LOGIN_ENABLED_KEY, false) === true &&
@@ -78,6 +81,17 @@
     if (pageWindow.CurrentScreen !== "Login" || autoLoginAttempted) return;
     if (!loginConfigured()) {
       updateLoginStatus("自动登录未配置；请从 Tampermonkey 菜单或房间内 /ipadguard login 设置密码");
+      return;
+    }
+    if (!loginDelayElapsed) {
+      if (!loginDelayScheduled) {
+        loginDelayScheduled = true;
+        updateLoginStatus("已返回 BC，等待插件加载；5 秒后自动登录…");
+        setTimeout(() => {
+          loginDelayElapsed = true;
+          maybeAutoLogin();
+        }, LOGIN_DELAY_MS);
+      }
       return;
     }
     if (pageWindow.ServerIsConnected !== true) {
@@ -197,6 +211,8 @@
       passwordInput.value = "";
       autoLoginAttempted = false;
       loginFailureShown = false;
+      loginDelayScheduled = false;
+      loginDelayElapsed = false;
       closeCredentialDialog();
       if (pageWindow.CurrentScreen === "Login") maybeAutoLogin();
     });
@@ -206,6 +222,8 @@
       passwordInput.value = "";
       autoLoginAttempted = false;
       loginFailureShown = false;
+      loginDelayScheduled = false;
+      loginDelayElapsed = false;
       closeCredentialDialog();
       if (pageWindow.CurrentScreen === "Login") updateLoginStatus("自动登录凭据已清除", "error");
     });
@@ -265,6 +283,8 @@
     GM_deleteValue(LOGIN_ENABLED_KEY);
     autoLoginAttempted = false;
     loginFailureShown = false;
+    loginDelayScheduled = false;
+    loginDelayElapsed = false;
     if (pageWindow.CurrentScreen === "Login") updateLoginStatus("自动登录凭据已清除", "error");
   });
   document.addEventListener("misaka-ipad-guard-open-login-config", showCredentialDialog);

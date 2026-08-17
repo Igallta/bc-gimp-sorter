@@ -73,7 +73,7 @@ const runtime = runtimeContext();
 const guard = runtime.context.window.__MisakaIPadGuard;
 const test = runtime.context.window.__MisakaIPadGuardTestHooks;
 assert.ok(guard, "guard runtime should initialize for Misaka account");
-assert.equal(guard.version, "0.3.0");
+assert.equal(guard.version, "0.3.1");
 const guardLocalColor = source.match(/<font color="(#[0-9A-Fa-f]{6})">\[iPadGuard\]/)?.[1];
 const misakaLocalColor = misakaChatSource.match(/<font color="(#[0-9A-Fa-f]{6})">\[MisakaChat\]/)?.[1];
 assert.equal(guardLocalColor, misakaLocalColor, "Guard local messages must use MisakaChat's exact color");
@@ -98,7 +98,7 @@ runtime.inputValue = "/ipadguard status";
 runtime.context.window.ChatRoomSendChat("not-the-command");
 assert.equal(runtime.originalSendCount, 0, "mobile command must be consumed before BC");
 assert.equal(runtime.inputValue, "", "consumed command must clear InputChat");
-assert.match(runtime.localMessages.at(-1)?.Content || "", /v0\.3\.0/);
+assert.match(runtime.localMessages.at(-1)?.Content || "", /v0\.3\.1/);
 assert.equal(guard.handleCommand("/ipadguard login"), true);
 assert.ok(runtime.documentEvents.includes("misaka-ipad-guard-open-login-config"));
 assert.match(runtime.localMessages.at(-1)?.Content || "", /MSK002.*194331/);
@@ -225,10 +225,15 @@ assert.equal(unconfigured.gmStore.has("misaka_ipad_guard_login_password_v1"), fa
 assert.equal(unconfigured.gmStore.has("misaka_ipad_guard_login_enabled_v1"), false, "menu clear must disable login");
 
 const disconnected = loaderContext({ enabled: true, password: "secret", connected: false });
+assert.match(disconnected.elements.get("misaka-ipad-guard-login-status")?.textContent || "", /等待插件加载.*5 秒/);
+runScheduled(disconnected, 5000);
 assert.equal(disconnected.loginCalls.length, 0, "login must wait for the BC server connection");
 assert.match(disconnected.elements.get("misaka-ipad-guard-login-status")?.textContent || "", /等待.*服务器/);
 
 const configured = loaderContext({ enabled: true, password: "test-password" });
+assert.equal(configured.nameInput.value, "", "credentials must not be filled before the plugin grace period");
+assert.match(configured.elements.get("misaka-ipad-guard-login-status")?.textContent || "", /等待插件加载.*5 秒/);
+runScheduled(configured, 5000);
 assert.equal(configured.nameInput.value, "MSK002");
 assert.equal(configured.passwordInput.value, "test-password");
 assert.deepEqual(configured.nameInput.events, ["input", "change"]);
@@ -239,6 +244,7 @@ runScheduled(configured, 500);
 assert.equal(configured.loginCalls.length, 1, "automatic login must run at most once per page");
 
 const failed = loaderContext({ enabled: true, password: "wrong", fail: true });
+runScheduled(failed, 5000);
 runScheduled(failed, 250);
 runScheduled(failed, 500);
 assert.equal(failed.loginCalls.length, 1, "failed login must not loop");
@@ -251,7 +257,7 @@ chatLoader.page.ChatRoomMessage = () => {};
 runScheduled(chatLoader, 500);
 assert.ok(chatLoader.appendedScript, "runtime must load in ChatRoom for Misaka account");
 assert.equal(chatLoader.appendedScript.dataset.mode, "chatroom");
-assert.match(chatLoader.appendedScript.src || "", /v=0\.3\.0/);
+assert.match(chatLoader.appendedScript.src || "", /v=0\.3\.1/);
 assert.equal(chatLoader.loginCalls.length, 0);
 const wrongAccount = loaderContext({ screen: "ChatRoom", memberNumber: 999999 });
 wrongAccount.page.bcModSdk = {};
@@ -296,4 +302,4 @@ const invalidReturn = runTrampoline("https://evil.example/steal");
 assert.equal(invalidReturn.replacedWith, "", "trampoline must reject non-BC return URLs");
 assert.match(invalidReturn.status, /无效/);
 
-console.log("iPad guard v0.3.0 tests passed");
+console.log("iPad guard v0.3.1 tests passed");
