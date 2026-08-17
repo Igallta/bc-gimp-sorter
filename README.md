@@ -7,7 +7,7 @@
 
 另提供一个默认关闭、仅供 iPadOS 长期挂机使用的独立守护脚本：
 
-- **Misaka iPad Guard v0.2.2**：在 WebContent 被 Jetsam 回收前跨站释放网页进程，返回 BC 后调用 WCE 已保存的快速登录并恢复原房间，同时保存本地生命周期日志；本地提示颜色与 MisakaChat 保持一致，不会修改 MisakaChat 或 GimpSorter 的业务逻辑，也不会读取或另存 BC 密码。
+- **Misaka iPad Guard v0.2.3**：在 WebContent 被 Jetsam 回收前跨站释放网页进程，返回 BC 后由页面 runtime 调用 WCE 已保存的快速登录并恢复原房间，同时保存本地生命周期日志；本地提示颜色与 MisakaChat 保持一致，不会修改 MisakaChat 或 GimpSorter 的业务逻辑，也不会读取或另存 BC 密码。
 
 当前支持 BC 的 `R*` 版本路径，不再绑定特定的 R129/R130：
 

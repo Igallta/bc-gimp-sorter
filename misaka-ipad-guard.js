@@ -1,10 +1,15 @@
-// Misaka iPad Guard v0.2.2
+// Misaka iPad Guard v0.2.3
 // iPadOS Safari WebContent 跨站受控回收。与 MisakaChat/GimpSorter 主逻辑完全独立。
 (function () {
   "use strict";
 
-  const VERSION = "0.2.2";
+  const VERSION = "0.2.3";
   const MEMBER_NUMBER = 194331;
+  const WCE_LOGIN_NAME = "MSK002";
+  const QUICK_LOGIN_LABELS = new Set([
+    WCE_LOGIN_NAME.toLowerCase(),
+    String(MEMBER_NUMBER),
+  ]);
   const RECYCLE_URL = "https://igallta.github.io/bc-gimp-sorter/ipad-recycle.html";
   const CONFIG_KEY = "misaka_ipad_guard_config_v1";
   const LOG_KEY = "misaka_ipad_guard_log_v1";
@@ -98,6 +103,155 @@
         Sender: Player.MemberNumber,
       });
     } catch (_) {}
+  }
+
+  let loginCapture = null;
+  let loginClickScheduled = false;
+  let quickLoginAttempted = false;
+  let quickLoginResultLogged = false;
+  let wrongAccountHandled = false;
+
+  function isLoginScreen() {
+    return typeof CurrentScreen !== "undefined" && CurrentScreen === "Login";
+  }
+
+  function normalizeQuickLoginLabel(label) {
+    return String(label ?? "").trim().replace(/^#/, "").toLowerCase();
+  }
+
+  function restoreDrawButtonCapture() {
+    if (!loginCapture) return;
+    if (window.DrawButton === loginCapture.wrapper) window.DrawButton = loginCapture.original;
+    loginCapture = null;
+  }
+
+  function installDrawButtonCapture() {
+    if (loginCapture || quickLoginAttempted || !isLoginScreen()) return;
+    if (typeof window.DrawButton !== "function") return;
+
+    const original = window.DrawButton;
+    const state = { original, wrapper: null, target: null };
+    state.wrapper = function (x, y, width, height, label, ...rest) {
+      if (
+        !state.target &&
+        QUICK_LOGIN_LABELS.has(normalizeQuickLoginLabel(label)) &&
+        Number.isFinite(Number(x)) && Number.isFinite(Number(y)) &&
+        Number(width) > 0 && Number(height) > 0
+      ) {
+        state.target = {
+          x: Number(x), y: Number(y), width: Number(width), height: Number(height),
+          label: String(label),
+        };
+        appendLog("wce-quick-login-found", { label: String(label) });
+      }
+      return original.call(this, x, y, width, height, label, ...rest);
+    };
+    loginCapture = state;
+    window.DrawButton = state.wrapper;
+    appendLog("wce-quick-login-wait", {
+      loginName: WCE_LOGIN_NAME,
+      memberNumber: MEMBER_NUMBER,
+    });
+  }
+
+  function currentLoginClickHandler() {
+    const screenFunctions = window.CurrentScreenFunctions;
+    if (screenFunctions && typeof screenFunctions.Click === "function") {
+      return { fn: screenFunctions.Click, receiver: screenFunctions, source: "CurrentScreenFunctions.Click" };
+    }
+    if (typeof window.LoginClick === "function") {
+      return { fn: window.LoginClick, receiver: window, source: "LoginClick" };
+    }
+    return null;
+  }
+
+  function scheduleWCEQuickLogin() {
+    if (!loginCapture?.target || loginClickScheduled || quickLoginAttempted || !isLoginScreen()) return;
+    if (!currentLoginClickHandler()) return;
+
+    loginClickScheduled = true;
+    const target = { ...loginCapture.target };
+    restoreDrawButtonCapture();
+    setTimeout(() => {
+      loginClickScheduled = false;
+      if (quickLoginAttempted || !isLoginScreen()) return;
+      const handler = currentLoginClickHandler();
+      if (!handler) return;
+
+      const previousX = window.MouseX;
+      const previousY = window.MouseY;
+      quickLoginAttempted = true;
+      window.MouseX = target.x + target.width / 2;
+      window.MouseY = target.y + target.height / 2;
+      appendLog("wce-quick-login-attempt", {
+        memberNumber: MEMBER_NUMBER,
+        loginName: WCE_LOGIN_NAME,
+        handler: handler.source,
+      });
+      try {
+        // 运行在 BC 页面环境中，并走 WCE 实际挂载到当前屏幕的点击入口。
+        // WCE 自己读取和解密保存的账号，Guard 不接触密码。
+        handler.fn.call(handler.receiver, typeof Event === "function" ? new Event("click") : undefined);
+      } catch (error) {
+        quickLoginResultLogged = true;
+        appendLog("wce-quick-login-error", { error: String(error).slice(0, 120) });
+      } finally {
+        window.MouseX = previousX;
+        window.MouseY = previousY;
+      }
+    }, 250);
+  }
+
+  function observeQuickLoginResult() {
+    if (!quickLoginAttempted || quickLoginResultLogged) return;
+    const memberNumber = Number(window.Player?.MemberNumber || window.Player?.ID);
+    if (memberNumber === MEMBER_NUMBER && !isLoginScreen()) {
+      quickLoginResultLogged = true;
+      appendLog("wce-quick-login-success", { memberNumber });
+      return;
+    }
+    if (!wrongAccountHandled && memberNumber && memberNumber !== MEMBER_NUMBER && !isLoginScreen()) {
+      wrongAccountHandled = true;
+      quickLoginResultLogged = true;
+      appendLog("unexpected-account", { memberNumber });
+      alert(`iPadGuard：WCE 快速登录后的账号 #${memberNumber} 不是御坂 #${MEMBER_NUMBER}，Guard 不会加载。`);
+      return;
+    }
+    if (isLoginScreen() && window.LoginSubmitted === false && window.LoginErrorMessage) {
+      quickLoginResultLogged = true;
+      appendLog("wce-quick-login-failed", { error: String(window.LoginErrorMessage).slice(0, 100) });
+    }
+  }
+
+  function initLoginRecovery() {
+    if (window.__MisakaIPadGuardLoginRecovery?.version === VERSION) return;
+    let loginTimer = null;
+    const marker = {
+      version: VERSION,
+      dispose() {
+        if (loginTimer) clearInterval(loginTimer);
+        loginTimer = null;
+        restoreDrawButtonCapture();
+        if (window.__MisakaIPadGuardLoginRecovery === marker) {
+          delete window.__MisakaIPadGuardLoginRecovery;
+        }
+      },
+    };
+    window.__MisakaIPadGuardLoginRecovery = marker;
+
+    const tickLogin = () => {
+      if (!isLoginScreen()) {
+        observeQuickLoginResult();
+        marker.dispose();
+        return;
+      }
+      installDrawButtonCapture();
+      scheduleWCEQuickLogin();
+      observeQuickLoginResult();
+    };
+    loginTimer = setInterval(tickLogin, 100);
+    tickLogin();
+    console.log(`[iPadGuard] v${VERSION} login recovery ready`);
   }
 
   let config = normalizeConfig(readJSON(CONFIG_KEY, {}));
@@ -310,6 +464,10 @@
     sendLocal(`v${VERSION} 已加载；跨站回收${config.enabled ? "开启" : "关闭"}`);
   }
 
+  if (isLoginScreen()) {
+    initLoginRecovery();
+    return;
+  }
   if (typeof Player === "undefined" || Number(Player?.MemberNumber || Player?.ID) !== MEMBER_NUMBER) return;
   if (typeof bcModSdk === "undefined") return;
   init();

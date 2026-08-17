@@ -67,7 +67,7 @@ const runtime = runtimeContext();
 const guard = runtime.context.window.__MisakaIPadGuard;
 const test = runtime.context.window.__MisakaIPadGuardTestHooks;
 assert.ok(guard, "guard runtime should initialize for Misaka account");
-assert.equal(guard.version, "0.2.2");
+assert.equal(guard.version, "0.2.3");
 const guardLocalColor = source.match(/<font color="(#[0-9A-Fa-f]{6})">\[iPadGuard\]/)?.[1];
 const misakaLocalColor = misakaChatSource.match(/<font color="(#[0-9A-Fa-f]{6})">\[MisakaChat\]/)?.[1];
 assert.equal(guardLocalColor, misakaLocalColor, "Guard local messages must use MisakaChat's exact color");
@@ -94,7 +94,7 @@ runtime.inputValue = "/ipadguard status";
 runtime.context.window.ChatRoomSendChat("not-the-command");
 assert.equal(runtime.originalSendCount, 0, "mobile command must be consumed before BC");
 assert.equal(runtime.inputValue, "", "consumed command must clear InputChat");
-assert.match(runtime.localMessages.at(-1)?.Content || "", /v0\.2\.2/);
+assert.match(runtime.localMessages.at(-1)?.Content || "", /v0\.2\.3/);
 assert.equal(guard.handleCommand("/ipadguard login"), true);
 assert.match(runtime.localMessages.at(-1)?.Content || "", /WCE.*MSK002.*194331/);
 assert.deepEqual(runtime.documentEvents, []);
@@ -104,47 +104,20 @@ assert.equal(runtime.originalSendCount, 1, "ordinary chat must continue to BC");
 assert.match(source, /location\.replace\(target\)/, "recycle must navigate to the cross-origin trampoline");
 assert.doesNotMatch(source, /location\.reload\(\)/, "recycle must not use same-origin reload");
 
-function loaderContext({ label = "MSK002", screen = "Login" } = {}) {
-  const localStore = new Map();
+function loaderContext({ screen = "Login" } = {}) {
   const scheduled = [];
-  const alerts = [];
-  const drawnButtons = [];
-  let quickLoginClicks = 0;
   let appendedScript = null;
-  const originalDrawButton = function (x, y, width, height, text) {
-    drawnButtons.push({ x, y, width, height, text: String(text) });
-  };
   const page = {
-    CurrentModule: "Character",
+    CurrentModule: screen === "Login" ? "Online" : "Character",
     CurrentScreen: screen,
-    LoginSubmitted: false,
-    LoginErrorMessage: "",
-    ServerIsConnected: true,
     Player: screen === "ChatRoom" ? { MemberNumber: 194331 } : null,
-    MouseX: 900,
-    MouseY: 700,
-    DrawButton: originalDrawButton,
-    LoginClick() {
-      if (page.MouseX >= 10 && page.MouseX <= 360 && page.MouseY >= 60 && page.MouseY <= 120) {
-        quickLoginClicks += 1;
-      }
-    },
   };
   const context = {
     console, Date, JSON, Math, Number, String, URL,
     unsafeWindow: page,
     window: {},
-    navigator: { onLine: true },
-    location: { hostname: "www.bondage-europe.com", pathname: "/R130/BondageClub/" },
-    localStorage: {
-      getItem(key) { return localStore.has(key) ? localStore.get(key) : null; },
-      setItem(key, value) { localStore.set(key, String(value)); },
-      removeItem(key) { localStore.delete(key); },
-    },
-    alert(message) { alerts.push(String(message)); },
     setTimeout(callback, delay = 0) { scheduled.push({ callback, delay }); return scheduled.length; },
     document: {
-      hidden: false,
       getElementById(id) {
         if (id === "misaka-ipad-guard-script") return appendedScript;
         return null;
@@ -157,10 +130,8 @@ function loaderContext({ label = "MSK002", screen = "Login" } = {}) {
     },
   };
   vm.runInNewContext(loaderSource, context, { filename: "misaka-ipad-guard.user.js" });
-  if (screen === "Login") page.DrawButton(10, 60, 350, 60, label, "White");
   return {
-    context, page, localStore, scheduled, alerts, drawnButtons, originalDrawButton,
-    get quickLoginClicks() { return quickLoginClicks; },
+    context, page, scheduled,
     get appendedScript() { return appendedScript; },
   };
 }
@@ -173,14 +144,11 @@ function runScheduled(loader, delay) {
 }
 
 const loader = loaderContext();
-assert.equal(loader.quickLoginClicks, 0, "drawing the WCE button must not click synchronously");
-runScheduled(loader, 500);
-runScheduled(loader, 250);
-assert.equal(loader.quickLoginClicks, 1, "loader must click the exact WCE quick-login button once");
-assert.equal(loader.page.MouseX, 900, "synthetic click must restore the previous mouse X coordinate");
-assert.equal(loader.page.MouseY, 700, "synthetic click must restore the previous mouse Y coordinate");
-assert.equal(loader.page.DrawButton, loader.originalDrawButton, "DrawButton capture must be removed after locating the target");
-assert.equal(loader.appendedScript, null, "runtime must not load on the login screen");
+assert.ok(loader.appendedScript, "page runtime must load on the login screen");
+assert.equal(loader.appendedScript.dataset.mode, "login");
+assert.match(loader.appendedScript.src || "", /v=0\.2\.3/);
+loader.page.__MisakaIPadGuardLoginRecovery = { version: "0.2.3" };
+loader.appendedScript.onload();
 assert.doesNotMatch(loaderSource, /GM_(?:get|set|delete)Value|InputPassword|credentials/i, "Guard must not access or store WCE credentials");
 
 loader.page.CurrentModule = "Online";
@@ -191,21 +159,81 @@ loader.page.ChatRoomSendChat = () => {};
 loader.page.ChatRoomMessage = () => {};
 runScheduled(loader, 500);
 assert.ok(loader.appendedScript, "runtime must load after native login reaches ChatRoom");
-assert.match(loader.appendedScript.src || "", /v=0\.2\.2/);
+assert.equal(loader.appendedScript.dataset.mode, "chatroom");
+assert.match(loader.appendedScript.src || "", /v=0\.2\.3/);
 
-const wrongLabelLoader = loaderContext({ label: "MSK003" });
-runScheduled(wrongLabelLoader, 500);
-assert.equal(wrongLabelLoader.quickLoginClicks, 0, "loader must not click another saved WCE account");
+function loginRuntimeContext(label = "MSK002") {
+  const store = new Map();
+  const intervals = [];
+  const timeouts = [];
+  const alerts = [];
+  const drawnButtons = [];
+  let quickLoginClicks = 0;
+  const originalDrawButton = function (x, y, width, height, text) {
+    drawnButtons.push({ x, y, width, height, text: String(text) });
+  };
+  const context = {
+    console, Date, JSON, Math, Number, String, URL, Set,
+    navigator: { userAgent: "Mozilla/5.0 (iPad)", platform: "iPad", maxTouchPoints: 5, onLine: true },
+    location: {
+      href: "https://www.bondage-europe.com/R130/BondageClub/",
+      hostname: "www.bondage-europe.com",
+      pathname: "/R130/BondageClub/",
+    },
+    document: { hidden: false },
+    localStorage: {
+      getItem(key) { return store.has(key) ? store.get(key) : null; },
+      setItem(key, value) { store.set(key, String(value)); },
+      removeItem(key) { store.delete(key); },
+    },
+    alert(message) { alerts.push(String(message)); },
+    Event: class Event { constructor(type) { this.type = type; } },
+    setInterval(callback, delay) { intervals.push({ callback, delay }); return intervals.length; },
+    clearInterval() {},
+    setTimeout(callback, delay) { timeouts.push({ callback, delay }); return timeouts.length; },
+    CurrentModule: "Online",
+    CurrentScreen: "Login",
+    CurrentScreenFunctions: {
+      Click() {
+        if (context.MouseX >= 10 && context.MouseX <= 360 && context.MouseY >= 60 && context.MouseY <= 120) {
+          quickLoginClicks += 1;
+        }
+      },
+    },
+    Player: null,
+    LoginSubmitted: false,
+    LoginErrorMessage: "",
+    MouseX: 900,
+    MouseY: 700,
+    DrawButton: originalDrawButton,
+    LoginClick() { throw new Error("global LoginClick fallback should not be used when CurrentScreenFunctions.Click exists"); },
+  };
+  context.window = context;
+  vm.runInNewContext(source, context, { filename: "misaka-ipad-guard.js" });
+  context.DrawButton(10, 60, 350, 60, label, "White");
+  const loginTick = intervals.find((entry) => entry.delay === 100);
+  assert.ok(loginTick, "login recovery must poll in the page runtime");
+  loginTick.callback();
+  const click = timeouts.find((entry) => entry.delay === 250);
+  if (click) click.callback();
+  return {
+    context, store, intervals, timeouts, alerts, drawnButtons, originalDrawButton,
+    get quickLoginClicks() { return quickLoginClicks; },
+  };
+}
 
-const caseLabelLoader = loaderContext({ label: "msk002" });
-runScheduled(caseLabelLoader, 500);
-runScheduled(caseLabelLoader, 250);
-assert.equal(caseLabelLoader.quickLoginClicks, 1, "WCE login-name matching may ignore display case");
+const loginRuntime = loginRuntimeContext();
+assert.equal(loginRuntime.quickLoginClicks, 1, "page runtime must click the exact WCE quick-login button once");
+assert.equal(loginRuntime.context.MouseX, 900, "synthetic click must restore the previous mouse X coordinate");
+assert.equal(loginRuntime.context.MouseY, 700, "synthetic click must restore the previous mouse Y coordinate");
+assert.equal(loginRuntime.context.DrawButton, loginRuntime.originalDrawButton, "DrawButton capture must be removed after locating the target");
+assert.equal(loginRuntime.context.__MisakaIPadGuard, undefined, "chat-room runtime must not initialize on login");
+assert.equal(loginRuntime.context.__MisakaIPadGuardLoginRecovery.version, "0.2.3");
+assert.doesNotMatch(source, /GM_(?:get|set|delete)Value|InputPassword|credentials/i, "Guard runtime must not access or store WCE credentials");
 
-const hashLabelLoader = loaderContext({ label: "#194331" });
-runScheduled(hashLabelLoader, 500);
-runScheduled(hashLabelLoader, 250);
-assert.equal(hashLabelLoader.quickLoginClicks, 1, "loader may accept WCE's optional # prefix for the exact member ID");
+assert.equal(loginRuntimeContext("MSK003").quickLoginClicks, 0, "page runtime must not click another saved WCE account");
+assert.equal(loginRuntimeContext("msk002").quickLoginClicks, 1, "WCE login-name matching may ignore display case");
+assert.equal(loginRuntimeContext("#194331").quickLoginClicks, 1, "WCE's optional exact member ID remains compatible");
 
 const scriptMatch = recycleHTML.match(/<script>([\s\S]*?)<\/script>/);
 assert.ok(scriptMatch, "trampoline must contain its inline return script");
@@ -236,4 +264,4 @@ const invalidReturn = runTrampoline("https://evil.example/steal");
 assert.equal(invalidReturn.replacedWith, "", "trampoline must reject non-BC return URLs");
 assert.match(invalidReturn.status, /无效/);
 
-console.log("iPad guard v0.2.2 tests passed");
+console.log("iPad guard v0.2.3 tests passed");
