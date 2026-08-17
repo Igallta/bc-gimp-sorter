@@ -21,8 +21,7 @@
   const VERSION = "0.2.0";
   const MEMBER_NUMBER = 194331;
   const QUICK_LOGIN_LABEL = String(MEMBER_NUMBER);
-  // 发布时替换成包含 0.2.0 runtime 的固定提交，避免 Pages/master 缓存错配。
-  const ASSET_REVISION = "master";
+  const ASSET_REVISION = "f6fb623";
   const LOG_KEY = "misaka_ipad_guard_log_v1";
   const pageWindow = typeof unsafeWindow === "object" && unsafeWindow ? unsafeWindow : window;
 
