@@ -71,7 +71,10 @@
   function waitForReady(cb, attempts) {
     attempts = attempts || 0;
     if (typeof Player !== "undefined" && Player && Player.MemberNumber === 194331 &&
-        typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom") {
+        typeof bcModSdk !== "undefined" &&
+        typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom" &&
+        typeof ChatRoomMessage === "function" &&
+        typeof ChatRoomSendChat === "function") {
       cb();
     } else {
       if (attempts > 0 && attempts % 60 === 0) {

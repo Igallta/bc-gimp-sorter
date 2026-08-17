@@ -21,19 +21,23 @@
   window.__GimpSorterLoaderStarted = true;
 
   function loadScript() {
-    if (typeof bcModSdk === "undefined") {
-      setTimeout(loadScript, 500);
-      return;
-    }
-
     // 只有御坂账号加载，其他账号不受影响
     if (typeof Player === "undefined" || !(Player.MemberNumber || Player.ID)) {
-      setTimeout(loadScript, 1000);
+      setTimeout(loadScript, 500);
       return;
     }
     const memberNumber = Player.MemberNumber || Player.ID;
     if (memberNumber !== allowedMemberNumber) {
       console.log("[GimpSorter] skipped for member: " + memberNumber);
+      return;
+    }
+    const chatRoomReady =
+      typeof bcModSdk !== "undefined" &&
+      typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom" &&
+      typeof ChatRoomMessage === "function" &&
+      typeof ChatRoomSendChat === "function";
+    if (!chatRoomReady) {
+      setTimeout(loadScript, 500);
       return;
     }
     if (window.__GimpSorterLoaded || document.getElementById("gimp-sorter-script")) return;
