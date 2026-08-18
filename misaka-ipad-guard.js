@@ -18,8 +18,8 @@
     }),
     Object.freeze({
       id: "raw-githack",
-      pageUrl: "https://raw.githack.com/Igallta/bc-gimp-sorter/master/ipad-recycle.html",
-      probeUrl: "https://raw.githack.com/Igallta/bc-gimp-sorter/master/ipad-recycle-probe.svg",
+      pageUrl: "https://raw.githack.com/Igallta/bc-gimp-sorter/fc0e619/ipad-recycle.html",
+      probeUrl: "https://raw.githack.com/Igallta/bc-gimp-sorter/fc0e619/ipad-recycle-probe.svg",
     }),
   ]);
   const RECYCLE_PROBE_TIMEOUT_MS = 6_000;

@@ -150,7 +150,7 @@ const fallbackGuard = fallbackRuntime.context.window.__MisakaIPadGuard;
 assert.equal(await fallbackGuard.recycle("remote-unavailable"), true);
 assert.match(
   fallbackRuntime.replacedWith,
-  /^https:\/\/raw\.githack\.com\/Igallta\/bc-gimp-sorter\/master\/ipad-recycle\.html/,
+  /^https:\/\/raw\.githack\.com\/Igallta\/bc-gimp-sorter\/fc0e619\/ipad-recycle\.html/,
   "primary TLS failure must fall back to an independently hosted remote trampoline",
 );
 assert.equal(
