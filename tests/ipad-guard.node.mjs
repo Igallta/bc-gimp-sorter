@@ -7,17 +7,20 @@ const misakaChatSource = fs.readFileSync(new URL("../misaka-chat.js", import.met
 const loaderSource = fs.readFileSync(new URL("../misaka-ipad-guard.user.js", import.meta.url), "utf8");
 const recycleHTML = fs.readFileSync(new URL("../ipad-recycle.html", import.meta.url), "utf8");
 
-function runtimeContext() {
+function runtimeContext({ remoteProbeResults = [true] } = {}) {
   const store = new Map();
   const localMessages = [];
   const hooks = new Map();
   const documentEvents = [];
   let replacedWith = "";
+  const probeURLs = [];
+  let probeIndex = 0;
   let originalSendCount = 0;
   let inputValue = "";
   const context = {
     console, Date, JSON, Math, Number, String, URL, encodeURIComponent,
     setTimeout: () => 1,
+    clearTimeout: () => {},
     setInterval: () => 1,
     clearInterval: () => {},
     navigator: { userAgent: "Mozilla/5.0 (iPad)", platform: "iPad", maxTouchPoints: 5, onLine: true },
@@ -34,6 +37,20 @@ function runtimeContext() {
       addEventListener() {},
       dispatchEvent(event) { documentEvents.push(event.type); return true; },
       getElementById() { return null; },
+      createElement() {
+        return {
+          hidden: false, alt: "", src: "", onload: null, onerror: null,
+          remove() {},
+        };
+      },
+      body: {
+        appendChild(probe) {
+          probeURLs.push(probe.src);
+          if (remoteProbeResults[probeIndex++] === true) probe.onload?.();
+          else probe.onerror?.();
+          return probe;
+        },
+      },
     },
     localStorage: {
       getItem(key) { return store.has(key) ? store.get(key) : null; },
@@ -63,6 +80,7 @@ function runtimeContext() {
   return {
     context, store, localMessages, hooks, documentEvents,
     get replacedWith() { return replacedWith; },
+    probeURLs,
     get originalSendCount() { return originalSendCount; },
     set inputValue(value) { inputValue = value; },
     get inputValue() { return inputValue; },
@@ -73,7 +91,7 @@ const runtime = runtimeContext();
 const guard = runtime.context.window.__MisakaIPadGuard;
 const test = runtime.context.window.__MisakaIPadGuardTestHooks;
 assert.ok(guard, "guard runtime should initialize for Misaka account");
-assert.equal(guard.version, "0.3.6");
+assert.equal(guard.version, "0.3.7");
 const guardLocalColor = source.match(/<font color="(#[0-9A-Fa-f]{6})">\[iPadGuard\]/)?.[1];
 const misakaLocalColor = misakaChatSource.match(/<font color="(#[0-9A-Fa-f]{6})">\[MisakaChat\]/)?.[1];
 assert.equal(guardLocalColor, misakaLocalColor, "Guard local messages must use MisakaChat's exact color");
@@ -93,7 +111,7 @@ assert.equal(guard.handleCommand("/ipadguard on"), true);
 assert.equal(guard.config.enabled, true);
 assert.equal(JSON.parse(runtime.store.get("misaka_ipad_guard_config_v1")).enabled, true);
 
-guard.recycle("test");
+await guard.recycle("test");
 assert.match(runtime.replacedWith, /^https:\/\/igallta\.github\.io\/bc-gimp-sorter\/ipad-recycle\.html#return=/);
 assert.match(decodeURIComponent(runtime.replacedWith), /https:\/\/www\.bondage-europe\.com\/R130\/BondageClub\//);
 assert.equal(JSON.parse(runtime.store.get("misaka_ipad_guard_pending_v1")).reason, "test");
@@ -105,7 +123,7 @@ const scheduledGuard = scheduledRuntime.context.window.__MisakaIPadGuard;
 const scheduledTest = scheduledRuntime.context.window.__MisakaIPadGuardTestHooks;
 scheduledGuard.handleCommand("/ipadguard on");
 scheduledRuntime.context.ChatRoomMessage({ Type: "Action", Content: "GIMP action spam" });
-scheduledTest.checkSchedule(scheduledGuard.nextRecycleAt);
+await scheduledTest.checkSchedule(scheduledGuard.nextRecycleAt);
 assert.match(
   scheduledRuntime.replacedWith,
   /^https:\/\/igallta\.github\.io\/bc-gimp-sorter\/ipad-recycle\.html/,
@@ -117,15 +135,39 @@ const offlineGuard = offlineRuntime.context.window.__MisakaIPadGuard;
 const offlineTest = offlineRuntime.context.window.__MisakaIPadGuardTestHooks;
 offlineGuard.handleCommand("/ipadguard on");
 offlineRuntime.context.navigator.onLine = false;
-offlineTest.checkSchedule(offlineGuard.nextRecycleAt);
+await offlineTest.checkSchedule(offlineGuard.nextRecycleAt);
 assert.equal(offlineRuntime.replacedWith, "", "offline state must block recycle without a timeout");
 offlineRuntime.context.navigator.onLine = true;
-offlineTest.checkSchedule(offlineGuard.nextRecycleAt + 15_000);
+await offlineTest.checkSchedule(offlineGuard.nextRecycleAt + 15_000);
 assert.match(
   offlineRuntime.replacedWith,
   /^https:\/\/igallta\.github\.io\/bc-gimp-sorter\/ipad-recycle\.html/,
   "recycle must proceed on the next check after connectivity returns",
 );
+
+const fallbackRuntime = runtimeContext({ remoteProbeResults: [false, true] });
+const fallbackGuard = fallbackRuntime.context.window.__MisakaIPadGuard;
+assert.equal(await fallbackGuard.recycle("remote-unavailable"), true);
+assert.match(
+  fallbackRuntime.replacedWith,
+  /^https:\/\/raw\.githack\.com\/Igallta\/bc-gimp-sorter\/master\/ipad-recycle\.html/,
+  "primary TLS failure must fall back to an independently hosted remote trampoline",
+);
+assert.equal(
+  JSON.parse(fallbackRuntime.store.get("misaka_ipad_guard_pending_v1")).trampoline,
+  "raw-githack",
+  "pending diagnostics must record the selected remote fallback",
+);
+assert.match(fallbackRuntime.probeURLs[0], /^https:\/\/igallta\.github\.io\//);
+assert.match(fallbackRuntime.probeURLs[1], /^https:\/\/raw\.githack\.com\//);
+assert.doesNotMatch(source, /createObjectURL|new Blob|local-blob/, "same-origin Blob trampolines must not be used");
+
+const unavailableRuntime = runtimeContext({ remoteProbeResults: [false, false] });
+const unavailableGuard = unavailableRuntime.context.window.__MisakaIPadGuard;
+assert.equal(await unavailableGuard.recycle("all-unavailable"), false);
+assert.equal(unavailableRuntime.replacedWith, "", "Guard must stay in BC when no safe trampoline can be prepared");
+assert.equal(unavailableRuntime.store.has("misaka_ipad_guard_pending_v1"), false);
+assert.match(unavailableRuntime.localMessages.at(-1)?.Content || "", /回收准备失败.*15秒后重试/);
 
 runtime.inputValue = "/ipadguard status";
 runtime.context.window.ChatRoomSendChat("not-the-command");
@@ -138,7 +180,7 @@ assert.match(runtime.localMessages.at(-1)?.Content || "", /MSK002.*194331/);
 runtime.inputValue = "普通聊天";
 runtime.context.window.ChatRoomSendChat();
 assert.equal(runtime.originalSendCount, 1, "ordinary chat must continue to BC");
-assert.match(source, /location\.replace\(target\)/, "recycle must use the cross-origin trampoline");
+assert.match(source, /location\.replace\(`\$\{endpoint\.pageUrl\}/, "recycle must use the selected cross-origin trampoline");
 assert.doesNotMatch(source, /location\.reload\(\)/);
 
 function makeElementFactory(elements) {
@@ -290,7 +332,7 @@ chatLoader.page.ChatRoomMessage = () => {};
 runScheduled(chatLoader, 500);
 assert.ok(chatLoader.appendedScript, "runtime must load in ChatRoom for Misaka account");
 assert.equal(chatLoader.appendedScript.dataset.mode, "chatroom");
-assert.match(chatLoader.appendedScript.src || "", /v=0\.3\.6/);
+assert.match(chatLoader.appendedScript.src || "", /v=0\.3\.7/);
 assert.equal(chatLoader.loginCalls.length, 0);
 const wrongAccount = loaderContext({ screen: "ChatRoom", memberNumber: 999999 });
 wrongAccount.page.bcModSdk = {};
@@ -335,4 +377,4 @@ const invalidReturn = runTrampoline("https://evil.example/steal");
 assert.equal(invalidReturn.replacedWith, "", "trampoline must reject non-BC return URLs");
 assert.match(invalidReturn.status, /无效/);
 
-console.log("iPad guard v0.3.6 tests passed");
+console.log("iPad guard v0.3.7 tests passed");

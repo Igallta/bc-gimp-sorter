@@ -1,16 +1,28 @@
-// Misaka iPad Guard v0.3.6
+// Misaka iPad Guard v0.3.7
 // iPadOS Safari WebContent 跨站受控回收。与 MisakaChat/GimpSorter 主逻辑完全独立。
 (function () {
   "use strict";
 
-  const VERSION = "0.3.6";
+  const VERSION = "0.3.7";
   const MEMBER_NUMBER = 194331;
   const WCE_LOGIN_NAME = "MSK002";
   const QUICK_LOGIN_LABELS = new Set([
     WCE_LOGIN_NAME.toLowerCase(),
     String(MEMBER_NUMBER),
   ]);
-  const RECYCLE_URL = "https://igallta.github.io/bc-gimp-sorter/ipad-recycle.html";
+  const RECYCLE_ENDPOINTS = Object.freeze([
+    Object.freeze({
+      id: "github-pages",
+      pageUrl: "https://igallta.github.io/bc-gimp-sorter/ipad-recycle.html",
+      probeUrl: "https://igallta.github.io/bc-gimp-sorter/ipad-recycle-probe.svg",
+    }),
+    Object.freeze({
+      id: "raw-githack",
+      pageUrl: "https://raw.githack.com/Igallta/bc-gimp-sorter/master/ipad-recycle.html",
+      probeUrl: "https://raw.githack.com/Igallta/bc-gimp-sorter/master/ipad-recycle-probe.svg",
+    }),
+  ]);
+  const RECYCLE_PROBE_TIMEOUT_MS = 6_000;
   const CONFIG_KEY = "misaka_ipad_guard_config_v1";
   const LOG_KEY = "misaka_ipad_guard_log_v1";
   const PENDING_KEY = "misaka_ipad_guard_pending_v1";
@@ -358,27 +370,78 @@
   let lastDeferralReason = "";
   let lastTimerTick = Date.now();
   let timer = null;
+  let recyclePreparing = false;
 
   function persistConfig() {
     writeJSON(CONFIG_KEY, config);
   }
 
-  function recycle(reason) {
+  function probeRemoteRecyclePage(endpoint) {
+    return new Promise((resolve) => {
+      const probe = document.createElement("img");
+      let settled = false;
+      const finish = (available) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        probe.remove();
+        resolve(available);
+      };
+      const timeout = setTimeout(() => finish(false), RECYCLE_PROBE_TIMEOUT_MS);
+      probe.hidden = true;
+      probe.alt = "";
+      probe.src = `${endpoint.probeUrl}?v=${VERSION}&t=${Date.now()}`;
+      probe.onload = () => finish(true);
+      probe.onerror = () => finish(false);
+      (document.body || document.documentElement).appendChild(probe);
+    });
+  }
+
+  async function selectRecycleEndpoint() {
+    for (const endpoint of RECYCLE_ENDPOINTS) {
+      appendLog("recycle-probe-start", { id: endpoint.id, url: endpoint.pageUrl });
+      if (await probeRemoteRecyclePage(endpoint)) {
+        appendLog("recycle-probe-success", { id: endpoint.id });
+        return endpoint;
+      }
+      appendLog("recycle-probe-failed", { id: endpoint.id });
+    }
+    return null;
+  }
+
+  async function recycle(reason) {
+    if (recyclePreparing) return false;
+    recyclePreparing = true;
     const returnUrl = location.href;
-    const pending = {
-      startedAt: Date.now(),
-      reason: String(reason || "manual"),
-      returnPage: safePageLabel(),
-      version: VERSION,
-    };
-    writeJSON(PENDING_KEY, pending);
-    appendLog("recycle-start", pending);
-    // 先离开 BC origin，迫使 Safari 丢弃旧站点的 WebContent；trampoline
-    // 随后返回原地址。若 BC 落在登录页，油猴 loader 会读取 GM 私有存储
-    // 中的密码并调用 BC 原生登录，再由 ReturnToChatRoom 自动回房。
-    window.addEventListener("unload", () => {}, { once: true });
-    const target = `${RECYCLE_URL}#return=${encodeURIComponent(returnUrl)}&started=${Date.now()}`;
-    location.replace(target);
+    try {
+      const endpoint = await selectRecycleEndpoint();
+      if (!endpoint) {
+        recyclePreparing = false;
+        appendLog("recycle-prepare-failed", { reason: "no-remote-endpoint" });
+        sendLocal("⚠️ 回收准备失败；15秒后重试");
+        return false;
+      }
+      const pending = {
+        startedAt: Date.now(),
+        reason: String(reason || "manual"),
+        returnPage: safePageLabel(),
+        version: VERSION,
+        trampoline: endpoint.id,
+      };
+      writeJSON(PENDING_KEY, pending);
+      appendLog("recycle-start", pending);
+      // 先离开 BC origin，迫使 Safari 丢弃旧站点的 WebContent；trampoline
+      // 随后返回原地址。若 BC 落在登录页，油猴 loader 会读取 GM 私有存储
+      // 中的密码并调用 BC 原生登录，再由 ReturnToChatRoom 自动回房。
+      window.addEventListener("unload", () => {}, { once: true });
+      location.replace(`${endpoint.pageUrl}#return=${encodeURIComponent(returnUrl)}&started=${Date.now()}`);
+      return true;
+    } catch (error) {
+      recyclePreparing = false;
+      appendLog("recycle-prepare-failed", { error: String(error).slice(0, 200) });
+      sendLocal("⚠️ 回收准备失败；15秒后重试");
+      return false;
+    }
   }
 
   function evaluateBlockReason() {
@@ -399,7 +462,7 @@
       }
       return;
     }
-    recycle("scheduled");
+    return recycle("scheduled");
   }
 
   function onTick() {
