@@ -73,7 +73,7 @@ const runtime = runtimeContext();
 const guard = runtime.context.window.__MisakaIPadGuard;
 const test = runtime.context.window.__MisakaIPadGuardTestHooks;
 assert.ok(guard, "guard runtime should initialize for Misaka account");
-assert.equal(guard.version, "0.3.5");
+assert.equal(guard.version, "0.3.6");
 const guardLocalColor = source.match(/<font color="(#[0-9A-Fa-f]{6})">\[iPadGuard\]/)?.[1];
 const misakaLocalColor = misakaChatSource.match(/<font color="(#[0-9A-Fa-f]{6})">\[MisakaChat\]/)?.[1];
 assert.equal(guardLocalColor, misakaLocalColor, "Guard local messages must use MisakaChat's exact color");
@@ -85,8 +85,8 @@ assert.doesNotMatch(
 );
 assert.equal(guard.config.enabled, false, "auto recycle must be opt-in");
 assert.deepEqual(
-  JSON.parse(JSON.stringify(test.normalizeConfig({ enabled: true, intervalMinutes: 2, quietSeconds: 9999 }))),
-  { enabled: true, intervalMinutes: 15, quietSeconds: 600, maxDeferMinutes: 10 },
+  JSON.parse(JSON.stringify(test.normalizeConfig({ enabled: true, intervalMinutes: 2, quietSeconds: 9999, maxDeferMinutes: 99 }))),
+  { enabled: true, intervalMinutes: 15 },
 );
 assert.equal(guard.handleCommand("hello"), false);
 assert.equal(guard.handleCommand("/ipadguard on"), true);
@@ -97,8 +97,35 @@ guard.recycle("test");
 assert.match(runtime.replacedWith, /^https:\/\/igallta\.github\.io\/bc-gimp-sorter\/ipad-recycle\.html#return=/);
 assert.match(decodeURIComponent(runtime.replacedWith), /https:\/\/www\.bondage-europe\.com\/R130\/BondageClub\//);
 assert.equal(JSON.parse(runtime.store.get("misaka_ipad_guard_pending_v1")).reason, "test");
-assert.ok(runtime.hooks.has("ChatRoomMessage"));
+assert.ok(!runtime.hooks.has("ChatRoomMessage"), "room messages must not affect recycle scheduling");
 assert.ok(runtime.hooks.has("ChatRoomSendChat"));
+
+const scheduledRuntime = runtimeContext();
+const scheduledGuard = scheduledRuntime.context.window.__MisakaIPadGuard;
+const scheduledTest = scheduledRuntime.context.window.__MisakaIPadGuardTestHooks;
+scheduledGuard.handleCommand("/ipadguard on");
+scheduledRuntime.context.ChatRoomMessage({ Type: "Action", Content: "GIMP action spam" });
+scheduledTest.checkSchedule(scheduledGuard.nextRecycleAt);
+assert.match(
+  scheduledRuntime.replacedWith,
+  /^https:\/\/igallta\.github\.io\/bc-gimp-sorter\/ipad-recycle\.html/,
+  "GIMP action spam must not defer a due recycle",
+);
+
+const offlineRuntime = runtimeContext();
+const offlineGuard = offlineRuntime.context.window.__MisakaIPadGuard;
+const offlineTest = offlineRuntime.context.window.__MisakaIPadGuardTestHooks;
+offlineGuard.handleCommand("/ipadguard on");
+offlineRuntime.context.navigator.onLine = false;
+offlineTest.checkSchedule(offlineGuard.nextRecycleAt);
+assert.equal(offlineRuntime.replacedWith, "", "offline state must block recycle without a timeout");
+offlineRuntime.context.navigator.onLine = true;
+offlineTest.checkSchedule(offlineGuard.nextRecycleAt + 15_000);
+assert.match(
+  offlineRuntime.replacedWith,
+  /^https:\/\/igallta\.github\.io\/bc-gimp-sorter\/ipad-recycle\.html/,
+  "recycle must proceed on the next check after connectivity returns",
+);
 
 runtime.inputValue = "/ipadguard status";
 runtime.context.window.ChatRoomSendChat("not-the-command");
@@ -263,7 +290,7 @@ chatLoader.page.ChatRoomMessage = () => {};
 runScheduled(chatLoader, 500);
 assert.ok(chatLoader.appendedScript, "runtime must load in ChatRoom for Misaka account");
 assert.equal(chatLoader.appendedScript.dataset.mode, "chatroom");
-assert.match(chatLoader.appendedScript.src || "", /v=0\.3\.5/);
+assert.match(chatLoader.appendedScript.src || "", /v=0\.3\.6/);
 assert.equal(chatLoader.loginCalls.length, 0);
 const wrongAccount = loaderContext({ screen: "ChatRoom", memberNumber: 999999 });
 wrongAccount.page.bcModSdk = {};
@@ -308,4 +335,4 @@ const invalidReturn = runTrampoline("https://evil.example/steal");
 assert.equal(invalidReturn.replacedWith, "", "trampoline must reject non-BC return URLs");
 assert.match(invalidReturn.status, /无效/);
 
-console.log("iPad guard v0.3.5 tests passed");
+console.log("iPad guard v0.3.6 tests passed");

@@ -1,9 +1,9 @@
-// Misaka iPad Guard v0.3.5
+// Misaka iPad Guard v0.3.6
 // iPadOS Safari WebContent 跨站受控回收。与 MisakaChat/GimpSorter 主逻辑完全独立。
 (function () {
   "use strict";
 
-  const VERSION = "0.3.5";
+  const VERSION = "0.3.6";
   const MEMBER_NUMBER = 194331;
   const WCE_LOGIN_NAME = "MSK002";
   const QUICK_LOGIN_LABELS = new Set([
@@ -17,8 +17,6 @@
   const DEFAULTS = Object.freeze({
     enabled: false,
     intervalMinutes: 45,
-    quietSeconds: 90,
-    maxDeferMinutes: 10,
   });
 
   if (window.__MisakaIPadGuard) return;
@@ -39,8 +37,6 @@
     return {
       enabled: source.enabled === true,
       intervalMinutes: clampNumber(source.intervalMinutes, DEFAULTS.intervalMinutes, 15, 240),
-      quietSeconds: clampNumber(source.quietSeconds, DEFAULTS.quietSeconds, 15, 600),
-      maxDeferMinutes: clampNumber(source.maxDeferMinutes, DEFAULTS.maxDeferMinutes, 1, 60),
     };
   }
 
@@ -358,9 +354,7 @@
 
   let config = normalizeConfig(readJSON(CONFIG_KEY, {}));
   let startedAt = Date.now();
-  let lastActivityAt = Date.now();
   let nextRecycleAt = startedAt + config.intervalMinutes * 60_000;
-  let dueSince = 0;
   let lastDeferralReason = "";
   let lastTimerTick = Date.now();
   let timer = null;
@@ -387,30 +381,25 @@
     location.replace(target);
   }
 
-  function evaluateBlockReason(now) {
+  function evaluateBlockReason() {
     if (typeof CurrentScreen === "undefined" || CurrentScreen !== "ChatRoom") return "not-in-room";
     if (navigator.onLine === false) return "offline";
     if (window.__misakaReplyInProgress || window.__misakaGlobalBusy) return "misaka-busy";
     if (getInputText()) return "typing";
-    if (now - lastActivityAt < config.quietSeconds * 1000) return "room-active";
     return "";
   }
 
   function checkSchedule(now) {
     if (!config.enabled || now < nextRecycleAt) return;
-    if (!dueSince) dueSince = now;
-
     const blockReason = evaluateBlockReason(now);
-    const maxDeferAt = dueSince + config.maxDeferMinutes * 60_000;
-    if (blockReason && now < maxDeferAt) {
+    if (blockReason) {
       if (blockReason !== lastDeferralReason) {
         appendLog("recycle-deferred", { reason: blockReason });
         lastDeferralReason = blockReason;
       }
       return;
     }
-    if (blockReason === "misaka-busy" || blockReason === "typing" || blockReason === "not-in-room") return;
-    recycle(blockReason ? `deadline:${blockReason}` : "scheduled");
+    recycle("scheduled");
   }
 
   function onTick() {
@@ -434,7 +423,7 @@
     if (sub === "on") {
       config.enabled = true;
       nextRecycleAt = Date.now() + config.intervalMinutes * 60_000;
-      dueSince = 0;
+      lastDeferralReason = "";
       persistConfig();
       appendLog("enabled", { intervalMinutes: config.intervalMinutes });
       sendLocal(`✅ 已开启：自动回收 | 下次回收：${config.intervalMinutes}分钟后`);
@@ -450,7 +439,7 @@
       } else {
         config.intervalMinutes = value;
         nextRecycleAt = Date.now() + value * 60_000;
-        dueSince = 0;
+        lastDeferralReason = "";
         persistConfig();
         appendLog("interval-changed", { intervalMinutes: value });
         sendLocal(`✅ 已设置：自动回收间隔 | 间隔：${value}分钟`);
@@ -505,12 +494,6 @@
           repository: "https://github.com/Igallta/bc-gimp-sorter",
         });
 
-    mod.hookFunction("ChatRoomMessage", 20, (args, next) => {
-      const data = args?.[0];
-      if (data && data.Type !== "LocalMessage") lastActivityAt = Date.now();
-      return next(args);
-    });
-
     mod.hookFunction("ChatRoomSendChat", 20, (args, next) => {
       if (consumeCommand(args)) return;
       return next(args);
@@ -553,7 +536,6 @@
       version: VERSION,
       get config() { return { ...config }; },
       get startedAt() { return startedAt; },
-      get lastActivityAt() { return lastActivityAt; },
       get nextRecycleAt() { return nextRecycleAt; },
       handleCommand,
       recycle,
@@ -562,7 +544,7 @@
         timer = null;
       },
     };
-    window.__MisakaIPadGuardTestHooks = { normalizeConfig, evaluateBlockReason };
+    window.__MisakaIPadGuardTestHooks = { normalizeConfig, evaluateBlockReason, checkSchedule };
     console.log(`[iPadGuard] v${VERSION} ready; auto recycle ${config.enabled ? "on" : "off"}`);
   }
 

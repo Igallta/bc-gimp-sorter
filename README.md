@@ -7,7 +7,7 @@
 
 另提供一个默认关闭、仅供 iPadOS 长期挂机使用的独立守护脚本：
 
-- **Misaka iPad Guard v0.3.5**：在 WebContent 被 Jetsam 回收前跨站释放网页进程，返回 BC 后先等待 5 秒供插件加载，再使用 Tampermonkey 私有存储中的御坂密码调用 BC 原生登录并恢复原房间，同时保存本地生命周期日志；三套脚本不在进房初始化时写入聊天框，命令反馈仍采用统一的状态顺序、反馈句式与蓝色。
+- **Misaka iPad Guard v0.3.6**：在 WebContent 被 Jetsam 回收前跨站释放网页进程，返回 BC 后先等待 5 秒供插件加载，再使用 Tampermonkey 私有存储中的御坂密码调用 BC 原生登录并恢复原房间，同时保存本地生命周期日志；三套脚本不在进房初始化时写入聊天框，命令反馈仍采用统一的状态顺序、反馈句式与蓝色。
 
 当前支持 BC 的 `R*` 版本路径，不再绑定特定的 R129/R130：
 
@@ -78,7 +78,7 @@ MisakaChat 的对话和 embedding 凭据不写入仓库。安装后通过 `/misa
 /ipadguard log
 ```
 
-自动回收会优先等待房间安静、输入框为空且御坂不忙；房间持续活跃时最多延期 10 分钟。回收会短暂进入同仓库的静态 trampoline 页面，再返回原 BC 地址；返回地址只放在 URL fragment 中。若停在登录页，loader 会从登录页首次就绪起等待 5 秒，让 WCE、其他 Tampermonkey 脚本与 BC 组件完成初始化，然后填充 BC 原生表单并调用 `LoginDoLogin`。每个页面最多自动尝试一次，回房仍由 BC 的 `ReturnToChatRoom` 完成。密码错误时不会循环重试；登录后的成员编号不是 `194331` 时，Guard 不会继续加载。可随时从 Tampermonkey 菜单清除私有凭据。
+自动回收不会因房间聊天、动作或 GIMP 系统消息延期；到期时只等待输入框清空、御坂完成当前任务并确认仍在房间。回收会短暂进入同仓库的静态 trampoline 页面，再返回原 BC 地址；返回地址只放在 URL fragment 中。若停在登录页，loader 会从登录页首次就绪起等待 5 秒，让 WCE、其他 Tampermonkey 脚本与 BC 组件完成初始化，然后填充 BC 原生表单并调用 `LoginDoLogin`。每个页面最多自动尝试一次，回房仍由 BC 的 `ReturnToChatRoom` 完成。密码错误时不会循环重试；登录后的成员编号不是 `194331` 时，Guard 不会继续加载。可随时从 Tampermonkey 菜单清除私有凭据。
 
 `/misaka forget` 会清空人物档案、语义记忆和提炼长期记忆，使用前应先导出备份。
 
