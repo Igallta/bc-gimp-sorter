@@ -123,14 +123,21 @@
       const originalXHR = window.XMLHttpRequest;
       const originalGMRequest = window.__GM_xmlhttpRequest;
       const attemptThinkingModes = [];
+      const structuredRequestShapes = [];
       class EmptyThinkingResponseXHR {
-        open() {}
+        open(method, url) { this.method = method; this.url = url; }
         setRequestHeader() {}
         send(body) {
           const request = JSON.parse(String(body || "{}"));
-          const thinkingMode = request?.thinking?.type || "missing";
+          const thinkingMode = request?.reasoning?.effort || "missing";
           attemptThinkingModes.push(thinkingMode);
-          const content = thinkingMode === "disabled"
+          structuredRequestShapes.push({
+            url: this.url,
+            format: request?.text?.format?.type || "",
+            strict: request?.text?.format?.strict === true,
+            protocol: request?.text?.format?.schema?.properties?.protocol?.enum?.[0] || "",
+          });
+          const content = thinkingMode === "none"
             ? JSON.stringify({
                 protocol: "misaka.reply.v1",
                 commands: [],
@@ -140,13 +147,12 @@
             : "";
           this.status = 200;
           this.responseText = JSON.stringify({
-            choices: [{
-              finish_reason: "stop",
-              message: {
-                reasoning_content: "已经完成思考。",
-                content,
-              },
+            status: "completed",
+            output: [{
+              type: "message",
+              content: [{ type: "output_text", text: content }],
             }],
+            usage: { output_tokens: 20, output_tokens_details: { reasoning_tokens: 10 } },
           });
           queueMicrotask(() => this.onload?.());
         }
@@ -165,28 +171,41 @@
         id: "guard-empty-thinking-content-does-not-trigger-a-second-model-call",
         repetition: 1,
         passed: emptyContentRecovery === null &&
-          JSON.stringify(attemptThinkingModes) === JSON.stringify(["enabled"]),
-        actual: { emptyContentRecovery, attemptThinkingModes },
+          JSON.stringify(attemptThinkingModes) === JSON.stringify(["high"]) &&
+          structuredRequestShapes[0]?.url === "https://api.deepseek.com/responses" &&
+          structuredRequestShapes[0]?.format === "json_schema" &&
+          structuredRequestShapes[0]?.strict === true &&
+          structuredRequestShapes[0]?.protocol === "misaka.reply.v1",
+        actual: { emptyContentRecovery, attemptThinkingModes, structuredRequestShapes },
       });
 
       class ImmediateValidXHR {
-        open() {}
+        open(method, url) { this.method = method; this.url = url; }
         setRequestHeader() {}
-        send() {
+        send(body) {
+          const request = JSON.parse(String(body || "{}"));
+          structuredRequestShapes.push({
+            url: this.url,
+            format: request?.text?.format?.type || "",
+            strict: request?.text?.format?.strict === true,
+            reasoning: request?.reasoning?.effort || "",
+          });
           this.status = 200;
           this.responseText = JSON.stringify({
-            choices: [{
-              finish_reason: "stop",
-              message: {
-                reasoning_content: "",
-                content: JSON.stringify({
+            status: "completed",
+            output: [{
+              type: "message",
+              content: [{
+                type: "output_text",
+                text: JSON.stringify({
                   protocol: "misaka.reply.v1",
                   commands: [],
                   action: "",
                   speech: "正常回复。",
                 }),
-              },
+              }],
             }],
+            usage: { output_tokens: 20, output_tokens_details: { reasoning_tokens: 0 } },
           });
           queueMicrotask(() => this.onload?.());
         }

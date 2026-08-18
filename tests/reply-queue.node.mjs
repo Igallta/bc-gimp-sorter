@@ -56,8 +56,8 @@ assert.deepEqual(
 assert.deepEqual(
   JSON.parse(JSON.stringify(hooks.inspectGeneratedReplyConfigForTest())),
   {
-    maxAttempts: 5,
-    retryDelaysMs: [2000, 5000, 10000, 20000],
+    maxAttempts: 2,
+    retryDelaysMs: [2000],
     plannerMaxTokens: 4096,
     hardTimeoutMs: 600000,
   },
@@ -179,23 +179,20 @@ const validReply = JSON.stringify({
   action: "轻轻点头",
   speech: "这次生成出来了。",
 });
-const fifthAttemptSuccess = await hooks.retryGeneratedReplyForTest([
+const secondAttemptSuccess = await hooks.retryGeneratedReplyForTest([
   "   \n",
-  "{not-json",
-  JSON.stringify({ protocol: "misaka.reply.v1", commands: [], action: "", speech: "" }),
-  "",
   validReply,
 ]);
-assert.equal(fifthAttemptSuccess.reply, validReply);
-assert.equal(fifthAttemptSuccess.attempts, 5);
-assert.equal(fifthAttemptSuccess.exhausted, false,
-  "a usable fifth response must complete the current task instead of failing it");
+assert.equal(secondAttemptSuccess.reply, validReply);
+assert.equal(secondAttemptSuccess.attempts, 2);
+assert.equal(secondAttemptSuccess.exhausted, false,
+  "a usable second response must complete the current task instead of failing it");
 
-const exhausted = await hooks.retryGeneratedReplyForTest(["", " \n", "{", "{}", ""]);
+const exhausted = await hooks.retryGeneratedReplyForTest(["", " \n"]);
 assert.equal(exhausted.reply, "");
-assert.equal(exhausted.attempts, 5);
+assert.equal(exhausted.attempts, 2);
 assert.equal(exhausted.exhausted, true,
-  "five unusable responses must exhaust the task and allow the queue to continue");
+  "two unusable responses must exhaust the task and allow the queue to continue");
 
 sent.length = 0;
 assert.match(hooks.generationFailureReplyForTest(), /咲/);
@@ -205,7 +202,7 @@ assert.match(sent[0].data.Content, /御坂.*咲/);
 assert.deepEqual(
   sent[0].data.Dictionary.find(entry => entry.Tag === "ReplyId"),
   { ReplyId: "msg-generation-failed", Tag: "ReplyId" },
-  "the five-attempt failure notice must reply to the task that failed",
+  "the two-attempt failure notice must reply to the task that failed",
 );
 
 context.__misakaTestLifecycle.dispose("reply-queue-suite-complete");

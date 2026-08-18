@@ -1,4 +1,4 @@
-// MisakaChat v3.0.9 - BC 御坂自动回复系统
+// MisakaChat v3.0.10 - BC 御坂自动回复系统
 // 模块分区:
 //   [Config]      L15-55   配置 + 状态
 //   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "3.0.9";
+  const SCRIPT_VERSION = "3.0.10";
   const RELEASE_CHANNEL = "stable";
   const bootstrapOptions = window.__misakaNextBootstrapOptions || {};
   delete window.__misakaNextBootstrapOptions;
@@ -101,6 +101,7 @@
   const CONFIG = {
     enabled: true,
     apiBase: "https://api.deepseek.com/chat/completions",
+    responsesApiBase: "https://api.deepseek.com/responses",
     model: "deepseek-v4-flash",
     maxTokens: 8192,
     maxContext: 50,
@@ -109,12 +110,12 @@
     perUserCooldownMs: 5000,
     pendingReplyMax: 5,
     pendingReplyTtlMs: 300000,
-    generatedReplyMaxAttempts: 5,
-    generatedReplyRetryDelaysMs: [2000, 5000, 10000, 20000],
+    generatedReplyMaxAttempts: 2,
+    generatedReplyRetryDelaysMs: [2000],
     plannerMaxTokens: 4096,
     apiKeyTimeout: 45000,
     // 一轮 action 最多包含规划、主回复、纠错、结果验收等多次 API 调用。
-    // 规划器 + 最多五次主回复 + 退避，及少数需要 BCE 二次生成的请求。
+    // 规划器 + 最多两次主回复 + 退避，及少数需要 BCE 二次生成的请求。
     // 不能在重试仍进行时提前释放 busy，否则下一条会与旧任务并发串线。
     replyHardTimeoutMs: 600000,
     replyDelayMs: 800,
@@ -1134,13 +1135,12 @@ ${recentSemantic}`;
         ? `\n最近你已经说过:\n${recentIdle.join("\n")}\n不要重复类似内容。`
         : "";
       const userPrompt = `最近消息:\n${recent || "暂无消息"}${idleGuard}${idleHint}\n\n生成一句自然的闲聊（不超过40字），按最终回复协议输出。`;
-      const reply = await callLLM(systemPrompt, [{ role: "user", content: userPrompt }], {
+      const reply = await callLLM(systemPrompt, [{ role: "user", content: userPrompt }], structuredReplyLLMOptions({
         model: CONFIG.model,
-        json: true,
         // thinking 与最终回复共享输出预算；80 token 会偶发截断在半句话中。
         // 最终可见文本由结构化 action/speech 字段分别做 Unicode 安全限长。
         maxTokens: 1024,
-      });
+      }));
       const parsedReply = parseAssistantReply(reply || "", "chat");
       const cleaned = parsedReply.structured
         ? parsedReply.cleaned
@@ -1232,6 +1232,21 @@ ${recentSemantic}`;
     return (msg.content || "").trim() || null;
   }
 
+  function extractResponsesReply(data) {
+    if (typeof data?.output_text === "string" && data.output_text.trim()) {
+      return data.output_text.trim();
+    }
+    for (const item of data?.output || []) {
+      if (item?.type !== "message") continue;
+      for (const part of item?.content || []) {
+        if (part?.type === "output_text" && typeof part.text === "string" && part.text.trim()) {
+          return part.text.trim();
+        }
+      }
+    }
+    return null;
+  }
+
   // === [API] callLLM ===
 
   // 粗估 token 数:中文≈2 token/字,英文≈1.3 token/字,符号≈1 token/字
@@ -1280,6 +1295,9 @@ ${recentSemantic}`;
     const messages = [{ role: "system", content: systemPrompt }, ...contextMessages];
     const primaryModel = options.model || CONFIG.model;
     const maxTokens = options.maxTokens || CONFIG.maxTokens;
+    const responseSchema = options.responseSchema && typeof options.responseSchema === "object"
+      ? options.responseSchema
+      : null;
 
     const useThinking = options.thinking !== false;
     return new Promise((resolve) => {
@@ -1295,6 +1313,24 @@ ${recentSemantic}`;
       const handleResponse = (status, responseText, model) => {
         try {
           const data = JSON.parse(responseText);
+          if (responseSchema) {
+            const reply = extractResponsesReply(data);
+            if (reply) {
+              finish(reply);
+              return;
+            }
+            console.warn("[MisakaChat] Responses API 无有效结构化输出", {
+              status: Number(status || 0),
+              model,
+              responseStatus: data.status || "",
+              incompleteReason: data.incomplete_details?.reason || "",
+              reasoningTokens: data.usage?.output_tokens_details?.reasoning_tokens || 0,
+              outputTokens: data.usage?.output_tokens || 0,
+              errorCode: data.error?.code || "",
+            });
+            finish(null);
+            return;
+          }
           const choice = data.choices?.[0];
           const reply = extractReply(choice?.message);
           if (reply) {
@@ -1316,11 +1352,29 @@ ${recentSemantic}`;
       };
       const doRequest = (url, model) => {
         if (!isCurrent()) { finish(null); return; }
-        // thinking 模式:思考进 reasoning_content,回复进 content
-        const bodyObj = { model, messages, max_tokens: maxTokens };
+        let bodyObj;
+        if (responseSchema) {
+          bodyObj = {
+            model,
+            input: messages,
+            max_output_tokens: maxTokens,
+            reasoning: { effort: useThinking ? "high" : "none" },
+            text: {
+              format: {
+                type: "json_schema",
+                name: String(options.responseSchemaName || "misaka_reply").slice(0, 64),
+                strict: true,
+                schema: responseSchema,
+              },
+            },
+          };
+        } else {
+          // thinking 模式:思考进 reasoning_content,回复进 content
+          bodyObj = { model, messages, max_tokens: maxTokens };
+          if (options.json === true) bodyObj.response_format = { type: "json_object" };
+          bodyObj.thinking = { type: useThinking ? "enabled" : "disabled" };
+        }
         if (Number.isFinite(options.temperature)) bodyObj.temperature = options.temperature;
-        if (options.json === true) bodyObj.response_format = { type: "json_object" };
-        bodyObj.thinking = { type: useThinking ? "enabled" : "disabled" };
         const reqBody = JSON.stringify(bodyObj);
         const useGM = typeof window.__GM_xmlhttpRequest !== "undefined";
 
@@ -1359,7 +1413,7 @@ ${recentSemantic}`;
           xhr.send(reqBody);
         }
       };
-      doRequest(CONFIG.apiBase, primaryModel);
+      doRequest(responseSchema ? CONFIG.responsesApiBase : CONFIG.apiBase, primaryModel);
     });
   }
 
@@ -2593,8 +2647,168 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
   }
 
   const STRUCTURED_REPLY_PROTOCOL = "misaka.reply.v1";
+  const STRUCTURED_REPLY_SCHEMA = {
+    type: "object",
+    properties: {
+      protocol: { type: "string", enum: [STRUCTURED_REPLY_PROTOCOL] },
+      commands: {
+        type: "array",
+        items: {
+          anyOf: [
+            {
+              type: "object",
+              properties: {
+                type: { type: "string", enum: ["move"] },
+                memberNumber: { type: "integer" },
+                direction: { type: "string", enum: ["left", "right"] },
+              },
+              required: ["type", "memberNumber", "direction"],
+              additionalProperties: false,
+            },
+            {
+              type: "object",
+              properties: {
+                type: { type: "string", enum: ["moveTo"] },
+                memberNumber: { type: "integer" },
+                targetNumber: { type: "integer" },
+                side: { type: "string", enum: ["left", "right"] },
+              },
+              required: ["type", "memberNumber", "targetNumber", "side"],
+              additionalProperties: false,
+            },
+            {
+              type: "object",
+              properties: {
+                type: { type: "string", enum: ["moveEdge"] },
+                memberNumber: { type: "integer" },
+                edge: { type: "string", enum: ["left", "right"] },
+              },
+              required: ["type", "memberNumber", "edge"],
+              additionalProperties: false,
+            },
+            {
+              type: "object",
+              properties: {
+                type: { type: "string", enum: ["itemadd"] },
+                memberNumber: { type: "integer" },
+                item: { type: "string" },
+                part: { type: "string" },
+                color: { type: "string" },
+              },
+              required: ["type", "memberNumber", "item", "part", "color"],
+              additionalProperties: false,
+            },
+            {
+              type: "object",
+              properties: {
+                type: { type: "string", enum: ["itemdel"] },
+                memberNumber: { type: "integer" },
+                item: { type: "string" },
+                part: { type: "string" },
+              },
+              required: ["type", "memberNumber", "item", "part"],
+              additionalProperties: false,
+            },
+            {
+              type: "object",
+              properties: {
+                type: { type: "string", enum: ["itemdelall"] },
+                memberNumber: { type: "integer" },
+              },
+              required: ["type", "memberNumber"],
+              additionalProperties: false,
+            },
+            {
+              type: "object",
+              properties: {
+                type: { type: "string", enum: ["itemcolor"] },
+                memberNumber: { type: "integer" },
+                item: { type: "string" },
+                part: { type: "string" },
+                color: { type: "string" },
+              },
+              required: ["type", "memberNumber", "item", "part", "color"],
+              additionalProperties: false,
+            },
+            {
+              type: "object",
+              properties: {
+                type: { type: "string", enum: ["itemset"] },
+                memberNumber: { type: "integer" },
+                item: { type: "string" },
+                part: { type: "string" },
+                property: { type: "string" },
+                value: { type: "string" },
+              },
+              required: ["type", "memberNumber", "item", "part", "property", "value"],
+              additionalProperties: false,
+            },
+            {
+              type: "object",
+              properties: {
+                type: { type: "string", enum: ["snapshotSave", "snapshotRestore"] },
+                memberNumber: { type: "integer" },
+              },
+              required: ["type", "memberNumber"],
+              additionalProperties: false,
+            },
+            {
+              type: "object",
+              properties: {
+                type: { type: "string", enum: ["copyRestraint"] },
+                sourceNumber: { type: "integer" },
+                targetNumber: { type: "integer" },
+              },
+              required: ["type", "sourceNumber", "targetNumber"],
+              additionalProperties: false,
+            },
+            {
+              type: "object",
+              properties: {
+                type: { type: "string", enum: ["emote"] },
+                memberNumber: { type: "integer" },
+                expression: { type: "string" },
+              },
+              required: ["type", "memberNumber", "expression"],
+              additionalProperties: false,
+            },
+            {
+              type: "object",
+              properties: {
+                type: { type: "string", enum: ["bcequery"] },
+                target: { type: "string" },
+              },
+              required: ["type", "target"],
+              additionalProperties: false,
+            },
+            {
+              type: "object",
+              properties: {
+                type: { type: "string", enum: ["memsearch"] },
+                query: { type: "string" },
+              },
+              required: ["type", "query"],
+              additionalProperties: false,
+            },
+          ],
+        },
+      },
+      action: { type: "string" },
+      speech: { type: "string" },
+    },
+    required: ["protocol", "commands", "action", "speech"],
+    additionalProperties: false,
+  };
   const VISIBLE_ACTION_MAX_GRAPHEMES = 80;
   const VISIBLE_SPEECH_MAX_GRAPHEMES = 320;
+
+  function structuredReplyLLMOptions(options = {}) {
+    return {
+      ...options,
+      responseSchema: STRUCTURED_REPLY_SCHEMA,
+      responseSchemaName: "misaka_reply",
+    };
+  }
 
   function extractFirstBalancedJsonObject(value) {
     const text = String(value || "");
@@ -3255,7 +3469,7 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
       return retryGeneratedReply(
         attempt => Promise.resolve(values[attempt - 1] ?? ""),
         intent,
-        { maxAttempts: 5, retryDelaysMs: [0, 0, 0, 0] },
+        { maxAttempts: CONFIG.generatedReplyMaxAttempts, retryDelaysMs: [0] },
       );
     },
     generationFailureReplyForTest: () => GENERATION_FAILURE_REPLY,
@@ -5826,12 +6040,11 @@ function unescapeHTML(s) {
     const raw = await callLLM(systemPrompt, [{
       role: "user",
       content: `【当前必须处理的最新消息】测试者#0: ${String(content || "向我打个招呼").slice(0, 300)}`,
-    }], {
+    }], structuredReplyLLMOptions({
       thinking: true,
       temperature: 0,
       maxTokens: 2048,
-      json: true,
-    });
+    }));
     return {
       raw,
       parsed: parseAssistantReply(raw, safeIntent),
@@ -5842,12 +6055,11 @@ function unescapeHTML(s) {
     return callLLM(
       "你是结构化回复测试器，只输出指定 JSON。",
       [{ role: "user", content: "请回复一条非空测试消息。" }],
-      {
+      structuredReplyLLMOptions({
         thinking: true,
         temperature: 0,
         maxTokens: 256,
-        json: true,
-      },
+      }),
     );
   }
 
@@ -5858,7 +6070,7 @@ function unescapeHTML(s) {
       outputs.push(await callLLM(
         "你是本地限流边界测试器，只输出指定 JSON。",
         [{ role: "user", content: `第${index + 1}次调用` }],
-        { thinking: false, temperature: 0, maxTokens: 64, json: true },
+        structuredReplyLLMOptions({ thinking: false, temperature: 0, maxTokens: 64 }),
       ));
     }
     return outputs;
@@ -5870,11 +6082,10 @@ function unescapeHTML(s) {
       "\n\n【当前任务】把下面的追问信息改写成一句简短、自然、符合御坂口吻的问题。" +
       "不执行操作，不写技术说明，不自称客服。" +
       `\n\n${structuredReplyInstruction()}`;
-    const reply = await callLLM(prompt, [{ role: "user", content: `需要确认的信息:${fallback}` }], {
+    const reply = await callLLM(prompt, [{ role: "user", content: `需要确认的信息:${fallback}` }], structuredReplyLLMOptions({
       thinking: false,
       maxTokens: 256,
-      json: true,
-    });
+    }));
     if (!reply) return fallback;
     const parsed = parseAssistantReply(reply, "chat");
     if (parsed.commands.some(c => !["memsearch", "bcequery"].includes(c.type))) return fallback;
@@ -5906,12 +6117,11 @@ function unescapeHTML(s) {
     const raw = await callLLM(systemPrompt, [{
       role: "user",
       content: `【当前必须处理的最新消息】${senderName}#${senderNum}: ${content}\n只回复并执行这一条。历史消息只作上下文,不要补做旧请求。`,
-    }], {
+    }], structuredReplyLLMOptions({
       thinking: true,
       temperature: 0,
       maxTokens: 2048,
-      json: true,
-    });
+    }));
     const parsed = parseAssistantReply(raw || "", requestPlan.intent);
     const filtered = filterCommandsByPlan(requestPlan, parsed.commands);
     const resolutions = filtered.allowed
@@ -6021,12 +6231,11 @@ function unescapeHTML(s) {
       },
     ], CONFIG.maxContextTokens);
     const systemPrompt = buildMainReplySystemPrompt(requestPlan);
-    let raw = await callLLM(systemPrompt, contextMessages, {
+    let raw = await callLLM(systemPrompt, contextMessages, structuredReplyLLMOptions({
       thinking: true,
       temperature: 0,
       maxTokens: 2048,
-      json: true,
-    });
+    }));
     let parsed = parseAssistantReply(raw || "", requestPlan.intent);
     let filtered = filterCommandsByPlan(requestPlan, parsed.commands);
     const initialIsQuestion = /[?？]\s*$/.test(parsed.cleaned || "");
@@ -6039,12 +6248,11 @@ function unescapeHTML(s) {
         raw = deterministic;
       } else {
         const correctionPrompt = `${systemPrompt}\n\n【本轮强制纠错】\n用户明确要求你执行操作，但你上一稿的 commands 没有任何可执行对象。必须根据当前名单和道具清单，在 commands 数组中输出正确的结构化操作对象，并在 speech 中简短回复。若 operations.assets 非空，则具体道具已经确定，必须直接使用其中的精确 Asset，禁止再次追问。只有计划本身没有精确目标、部位或道具时才能追问；绝不能只用 action 或 speech 声称已经完成。`;
-        raw = await callLLM(correctionPrompt, contextMessages, {
+        raw = await callLLM(correctionPrompt, contextMessages, structuredReplyLLMOptions({
           thinking: false,
           temperature: 0,
           maxTokens: 2048,
-          json: true,
-        }) || raw;
+        })) || raw;
       }
       parsed = parseAssistantReply(raw || "", requestPlan.intent);
       filtered = filterCommandsByPlan(requestPlan, parsed.commands);
@@ -6255,7 +6463,7 @@ function unescapeHTML(s) {
         systemPrompt,
         contextMessages,
         requestPlan.intent,
-        { json: true },
+        structuredReplyLLMOptions(),
         { id: debugId, stage: "llm:first" },
       );
       let reply = firstGeneration.reply;
@@ -6295,7 +6503,7 @@ function unescapeHTML(s) {
             systemPrompt + extraContext,
             contextMessages,
             requestPlan.intent,
-            { json: true },
+            structuredReplyLLMOptions(),
             { id: debugId, stage: "llm:extra-context" },
           );
           reply = enrichedGeneration.reply;
@@ -6308,7 +6516,7 @@ function unescapeHTML(s) {
         }
       }
       if (!reply) {
-        console.warn("[MisakaChat] 连续五次生成不可用，发送故障提示并继续队列");
+        console.warn("[MisakaChat] 连续两次生成不可用，发送故障提示并继续队列");
         pushDebugTrace({ id: debugId, stage: "generation-exhausted", attempts: CONFIG.generatedReplyMaxAttempts });
         sendGenerationFailure(replyId);
         pushDebugTrace({ id: debugId, stage: "sent:generation-failure", finalReply: GENERATION_FAILURE_REPLY });
@@ -6332,10 +6540,9 @@ function unescapeHTML(s) {
           pushDebugTrace({ id: debugId, stage: "deterministic:exact-replacement", reply });
         } else {
           const correctionPrompt = `${systemPrompt}\n\n【本轮强制纠错】\n用户明确要求你执行操作，但你上一稿的 commands 没有任何可执行对象。必须根据当前名单和道具清单，在 commands 数组中输出正确的结构化操作对象，并在 speech 中简短回复。若 operations.assets 非空，则具体道具已经确定，必须直接使用其中的精确 Asset，禁止再次追问。只有计划本身没有精确目标、部位或道具时才能追问；绝不能只用 action 或 speech 声称已经完成。`;
-          const retryReply = await callLLM(correctionPrompt, contextMessages, {
+          const retryReply = await callLLM(correctionPrompt, contextMessages, structuredReplyLLMOptions({
             thinking: false,
-            json: true,
-          });
+          }));
           if (retryReply) {
             reply = retryReply;
             pushDebugTrace({ id: debugId, stage: "llm:action-retry", reply });
