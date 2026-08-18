@@ -1,4 +1,4 @@
-// MisakaChat v3.0.7 - BC 御坂自动回复系统
+// MisakaChat v3.0.8 - BC 御坂自动回复系统
 // 模块分区:
 //   [Config]      L15-55   配置 + 状态
 //   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "3.0.7";
+  const SCRIPT_VERSION = "3.0.8";
   const RELEASE_CHANNEL = "stable";
   const bootstrapOptions = window.__misakaNextBootstrapOptions || {};
   delete window.__misakaNextBootstrapOptions;
@@ -107,6 +107,8 @@
     maxContextTokens: 20000, // context messages 的 token 预算上限(system prompt 不算)
     cooldownMs: 3000,
     perUserCooldownMs: 5000,
+    pendingReplyMax: 3,
+    pendingReplyTtlMs: 300000,
     apiKeyTimeout: 45000,
     // 一轮 action 最多包含规划、主回复、纠错、结果验收等多次 API 调用。
     // 45 秒会在工作仍进行时提前释放 busy，导致后续请求与旧请求并发串线。
@@ -203,6 +205,8 @@
     roomLog: [],          // 进出记录
     snapshots: {},        // 束缚快照 { memberNumber: { items, time } }
     pendingClarifications: {}, // 按发送者保存的待澄清请求；他人插话不会打断
+    pendingReplies: [], // busy/冷却期间最多保留 3 条直接点名，按到达顺序续跑
+    pendingReplyTimer: null,
   };
   onDispose(() => {
     state.semanticMemories = [];
@@ -211,6 +215,8 @@
     state.roomLog = [];
     state.snapshots = {};
     state.pendingClarifications = {};
+    state.pendingReplies = [];
+    state.pendingReplyTimer = null;
     if (!TEST_MODE && window.__misakaLifecycle === lifecycle) {
       window.__misakaOnMessage = null;
       window.__misakaGlobalBusy = false;
@@ -3229,6 +3235,32 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
       keyNames: [...provider.keyNames],
       dimensions: provider.dimensions,
     })),
+    inspectPendingReplyConfigForTest: () => ({
+      max: CONFIG.pendingReplyMax,
+      ttlMs: CONFIG.pendingReplyTtlMs,
+    }),
+    snapshotPendingRepliesForTest: () => state.pendingReplies.map(item => ({ ...item })),
+    resetPendingRepliesForTest: () => {
+      if (state.pendingReplyTimer !== null) {
+        clearTrackedTimeout(state.pendingReplyTimer);
+        state.pendingReplyTimer = null;
+      }
+      state.pendingReplies = [];
+      state.lastReplyTime = 0;
+      state.lastUserReplyTime = {};
+    },
+    enqueuePendingReplyForTest: (item, now = Date.now()) =>
+      enqueuePendingReply(item, { schedule: false, now }),
+    purgeExpiredPendingRepliesForTest: (now = Date.now()) => purgeExpiredPendingReplies(now),
+    extractMessageIdForTest: extractMessageId,
+    sendNativeReplyPartForTest: sendNativeReplyPart,
+    sendReplyForTest: sendReply,
+    receiveChatMessageForTest: onChatRoomMessage,
+    setReplyBusyForTest: value => {
+      state.busy = !!value;
+      window.__misakaGlobalBusy = !!value;
+      window.__misakaReplyInProgress = !!value;
+    },
     // 只读现场回归入口：复用真实规划、检索与回答链，不暴露密钥或执行函数。
     planUserRequest,
     buildPlannerMemoryQuery,
@@ -4371,10 +4403,70 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
     }
   }
 
-  // 发送回复到 BC 聊天室(含去重 + 多行分割)
-  function sendReply(text) {
+  function normalizeReplyId(value) {
+    if (value === null || value === undefined) return "";
+    const replyId = String(value).trim();
+    if (!replyId || replyId.length > 256 || /[\x00-\x1F\x7F]/.test(replyId)) return "";
+    return replyId;
+  }
+
+  function extractMessageId(data) {
+    const dictionary = Array.isArray(data?.Dictionary) ? data.Dictionary : [];
+    const entry = dictionary.find(item =>
+      item && (item.Tag === "MsgId" || Object.prototype.hasOwnProperty.call(item, "MsgId")) && item.MsgId);
+    return normalizeReplyId(entry?.MsgId || data?.MsgId || data?.MessageId || "");
+  }
+
+  // 不经过 InputChat 发送，避免覆盖玩家正在输入的文字。
+  // BC 原生回复协议是 Dictionary 中的 { Tag: "ReplyId", ReplyId }。
+  function sendNativeReplyPart(part, replyId = "") {
+    if (!part || !isCurrent()) return false;
+    const nativeAvailable = typeof ChatRoomGenerateChatRoomChatMessage === "function" &&
+      typeof ServerSend === "function";
+    if (!nativeAvailable) {
+      ElementValue("InputChat", part);
+      ChatRoomSendChat();
+      return true;
+    }
+
+    const isEmote = part.startsWith("*");
+    let content = part;
+    let type = "Chat";
+    if (isEmote) {
+      if (typeof ChatRoomOwnerPresenceRule === "function" &&
+          ChatRoomOwnerPresenceRule("BlockEmote", null)) return false;
+      content = content.replace(/^\*/, "").replace(/\*$/, "").trim();
+      if (!content || content === "*") return false;
+      type = "Emote";
+    } else {
+      if (typeof ChatRoomOwnerPresenceRule === "function" &&
+          ChatRoomOwnerPresenceRule("BlockTalk", null)) return false;
+      if (typeof ChatRoomOwnerForbiddenWordCheck === "function" &&
+          !ChatRoomOwnerForbiddenWordCheck(content)) return false;
+    }
+
+    const data = ChatRoomGenerateChatRoomChatMessage(type, content);
+    const normalizedReplyId = normalizeReplyId(replyId);
+    if (normalizedReplyId) {
+      if (!Array.isArray(data.Dictionary)) data.Dictionary = [];
+      data.Dictionary.push({ ReplyId: normalizedReplyId, Tag: "ReplyId" });
+    }
+    ServerSend("ChatRoomChat", data);
+    if (type === "Chat" && typeof ChatRoomStimulationMessage === "function") {
+      try {
+        const firstOOCRange = typeof SpeechGetOOCRanges === "function"
+          ? SpeechGetOOCRanges(content).shift()
+          : null;
+        if (!firstOOCRange || firstOOCRange.start > 0) ChatRoomStimulationMessage("Talk");
+      } catch (e) {}
+    }
+    return true;
+  }
+
+  // 发送回复到 BC 聊天室(含去重 + 多行分割 + 原生指定回复)
+  function sendReply(text, replyId = "") {
     if (!text || !isCurrent()) return false;
-    const sentKey = text;
+    const sentKey = `${normalizeReplyId(replyId)}\u0000${text}`;
     const now = Date.now();
     if (window.__misakaLastSentReply === sentKey && now - (window.__misakaLastSentReplyTime || 0) < 5000) {
       console.warn("[MisakaChat] 跳过重复发送:", text);
@@ -4385,17 +4477,22 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
     if (typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom") {
       let parts = text.split(/\n/).map(p => p.trim()).filter(Boolean);
       if (parts.length === 1 && parts[0].includes("|")) parts = parts[0].split(/\|/).map(p => p.trim()).filter(Boolean);
+      const normalizedReplyId = normalizeReplyId(replyId);
+      const speechIndex = parts.findIndex(part => !part.startsWith("*"));
+      const replyPartIndex = speechIndex >= 0 ? speechIndex : 0;
       if (parts.length >= 2) {
         let delay = 0;
-        for (const p of parts) {
+        for (let index = 0; index < parts.length; index++) {
+          const p = parts[index];
           if (!p) continue;
           trackedTimeout(() => {
-            ElementValue("InputChat", p);
-            ChatRoomSendChat();
+            sendNativeReplyPart(p, index === replyPartIndex ? normalizedReplyId : "");
           }, delay);
           delay += 600;
         }
-      } else { ElementValue("InputChat", parts[0] || text); ChatRoomSendChat(); }
+      } else {
+        sendNativeReplyPart(parts[0] || text, normalizedReplyId);
+      }
       if (state.recentMessages.length > CONFIG.maxContext) state.recentMessages.shift();
     }
     return true;
@@ -5155,6 +5252,100 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
     return (char?.Nickname || char?.Name || ("#" + memberNumber));
   }
 
+  function pendingReplyKey(item) {
+    const replyId = normalizeReplyId(item?.replyId);
+    if (replyId) return `id:${replyId}`;
+    return `fallback:${Number(item?.senderNum) || 0}:${String(item?.messageType || "Chat")}:${String(item?.content || "").trim()}`;
+  }
+
+  function purgeExpiredPendingReplies(now = Date.now()) {
+    const cutoff = now - CONFIG.pendingReplyTtlMs;
+    state.pendingReplies = state.pendingReplies.filter(item => Number(item?.receivedAt) >= cutoff);
+    return state.pendingReplies.length;
+  }
+
+  function enqueuePendingReply(item, { schedule = true, now = Date.now() } = {}) {
+    purgeExpiredPendingReplies(now);
+    const normalized = {
+      senderNum: Number(item?.senderNum) || 0,
+      senderName: String(item?.senderName || ""),
+      content: String(item?.content || "").trim(),
+      messageType: String(item?.messageType || "Chat"),
+      replyId: normalizeReplyId(item?.replyId),
+      receivedAt: Number(item?.receivedAt) || now,
+    };
+    if (!normalized.senderNum || !normalized.content) return false;
+    const key = pendingReplyKey(normalized);
+    if (state.pendingReplies.some(existing => pendingReplyKey(existing) === key)) return false;
+    state.pendingReplies.push(normalized);
+    while (state.pendingReplies.length > CONFIG.pendingReplyMax) {
+      const dropped = state.pendingReplies.shift();
+      console.warn("[MisakaChat] 待回复区已满，丢弃最旧点名:", dropped?.senderName, dropped?.content);
+    }
+    if (schedule) schedulePendingReplyDrain();
+    return true;
+  }
+
+  function replyCooldownRemaining(item, now = Date.now()) {
+    const globalRemaining = CONFIG.cooldownMs - (now - state.lastReplyTime);
+    const userRemaining = CONFIG.perUserCooldownMs -
+      (now - (state.lastUserReplyTime[Number(item?.senderNum)] || 0));
+    return Math.max(0, globalRemaining, userRemaining);
+  }
+
+  function schedulePendingReplyDrain(delay = 0) {
+    if (!isCurrent() || state.pendingReplyTimer !== null || state.pendingReplies.length === 0) return;
+    state.pendingReplyTimer = trackedTimeout(() => {
+      state.pendingReplyTimer = null;
+      drainPendingReplies();
+    }, Math.max(0, delay));
+  }
+
+  function launchReply(item) {
+    if (!isCurrent() || !item) return false;
+    if (state.busy || window.__misakaGlobalBusy || window.__misakaReplyInProgress) {
+      enqueuePendingReply(item);
+      return false;
+    }
+    const remaining = replyCooldownRemaining(item);
+    if (remaining > 0) {
+      enqueuePendingReply(item);
+      schedulePendingReplyDrain(remaining);
+      return false;
+    }
+
+    window.__misakaGlobalBusy = true;
+    window.__misakaReplyInProgress = true;
+    const replyTimeout = trackedTimeout(() => {
+      console.error("[MisakaChat] 回复硬超时");
+      state.busy = false;
+      window.__misakaGlobalBusy = false;
+      window.__misakaReplyInProgress = false;
+      schedulePendingReplyDrain();
+    }, CONFIG.replyHardTimeoutMs);
+
+    handleReply(item.senderNum, item.senderName, item.content, item.replyId)
+      .finally(() => {
+        clearTrackedTimeout(replyTimeout);
+        schedulePendingReplyDrain();
+      });
+    return true;
+  }
+
+  function drainPendingReplies(now = Date.now()) {
+    if (!isCurrent() || state.busy || window.__misakaGlobalBusy || window.__misakaReplyInProgress) return false;
+    purgeExpiredPendingReplies(now);
+    const next = state.pendingReplies[0];
+    if (!next) return false;
+    const remaining = replyCooldownRemaining(next, now);
+    if (remaining > 0) {
+      schedulePendingReplyDrain(remaining);
+      return false;
+    }
+    state.pendingReplies.shift();
+    return launchReply(next);
+  }
+
   // === [Chat] 消息处理 ===
   function onChatRoomMessage(data) {
     if (!isCurrent() || !CONFIG.enabled) return;
@@ -5162,6 +5353,7 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
 
     const content = data.Content || "";
     const senderNum = data.Sender;
+    const replyId = extractMessageId(data);
 
     // 进出检测(在 validTypes 之前)
     if (data.Type === "Action" && ["ServerEnter","ServerDisconnect","ServerLeave"].includes(data.Content)) {
@@ -5222,7 +5414,7 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
         .replace(/^OrgasmFailSurrender(\d+)?$/, () => "高潮失败了");
     }
 
-    const key = senderNum + ":" + content + ":" + data.Type;
+    const key = replyId ? `id:${replyId}` : (senderNum + ":" + content + ":" + data.Type);
     const now = Date.now();
     if (window.__misakaLastKey === key && now - (window.__misakaLastKeyTime || 0) < 10000) return;
     window.__misakaLastKey = key;
@@ -5283,24 +5475,20 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
 
 
     if (!triggered) return;
-    if (state.busy || window.__misakaGlobalBusy || window.__misakaReplyInProgress) return;
-
-    const nowTime = Date.now();
-    if (nowTime - state.lastReplyTime < CONFIG.cooldownMs) return;
-    const lastUserTime = state.lastUserReplyTime[senderNum] || 0;
-    if (nowTime - lastUserTime < CONFIG.perUserCooldownMs) return;
-
-    window.__misakaGlobalBusy = true;
-    window.__misakaReplyInProgress = true;
-
-    const replyTimeout = trackedTimeout(() => {
-      console.error("[MisakaChat] 回复硬超时");
-      state.busy = false;
-      window.__misakaGlobalBusy = false;
-      window.__misakaReplyInProgress = false;
-    }, CONFIG.replyHardTimeoutMs);
-
-    handleReply(senderNum, senderName, readableContent).finally(() => clearTrackedTimeout(replyTimeout));
+    const pending = {
+      senderNum,
+      senderName,
+      content: readableContent,
+      messageType: data.Type,
+      replyId,
+      receivedAt: now,
+    };
+    if (state.busy || window.__misakaGlobalBusy || window.__misakaReplyInProgress ||
+        replyCooldownRemaining(pending, now) > 0) {
+      enqueuePendingReply(pending);
+      return;
+    }
+    launchReply(pending);
   }
 
   // === [BCE] 玩家档案查询 ===
@@ -5774,7 +5962,7 @@ function unescapeHTML(s) {
     return result;
   }
 
-  async function handleReply(senderNum, senderName, content) {
+  async function handleReply(senderNum, senderName, content, replyId = "") {
     if (!isCurrent()) return;
     const debugId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     state.busy = true;
@@ -5819,21 +6007,21 @@ function unescapeHTML(s) {
       if (requestPlan.failed) {
         const clarification = await renderClarification(requestPlan.question || "我没确认好具体操作，能再说具体一点吗？");
         pushDebugTrace({ id: debugId, stage: "guard:planner-failed", finalReply: clarification });
-        sendReply(clarification);
+        sendReply(clarification, replyId);
         pushDebugTrace({ id: debugId, stage: "sent", finalReply: clarification });
         return;
       }
       if (requestPlan.quotedReportOnly) {
         const finalReply = "听到了，不过那只是转述，我不会把它当成操作指令。";
         pushDebugTrace({ id: debugId, stage: "guard:quoted-report", finalReply });
-        sendReply(finalReply);
+        sendReply(finalReply, replyId);
         pushDebugTrace({ id: debugId, stage: "sent", finalReply });
         return;
       }
       if (requestPlan.simpleRoleplay === "wink") {
         const finalReply = "*朝你眨了眨眼*";
         pushDebugTrace({ id: debugId, stage: "guard:simple-roleplay", finalReply });
-        sendReply(finalReply);
+        sendReply(finalReply, replyId);
         pushDebugTrace({ id: debugId, stage: "sent", finalReply });
         return;
       }
@@ -5844,7 +6032,7 @@ function unescapeHTML(s) {
         rememberPendingClarification(senderNum, senderName, content, requestPlan,
           requestPlan.usedPendingClarification ? pendingClarification : null);
         pushDebugTrace({ id: debugId, stage: "guard:clarify", finalReply: clarification });
-        sendReply(clarification);
+        sendReply(clarification, replyId);
         pushDebugTrace({ id: debugId, stage: "sent", finalReply: clarification });
         return;
       }
@@ -5861,7 +6049,7 @@ function unescapeHTML(s) {
         const memoryResult = await answerMemoryQuestion(requestPlan, senderName, content);
         const finalReply = normalizeAssistantIdentity(memoryResult.reply, content);
         pushDebugTrace({ id: debugId, stage: "memory:answer", ...memoryResult });
-        sendReply(finalReply);
+        sendReply(finalReply, replyId);
         pushDebugTrace({ id: debugId, stage: "sent", finalReply });
         return;
       }
@@ -5887,7 +6075,7 @@ function unescapeHTML(s) {
         else if (friendResult.reason === "already-friend") finalReply = "我们已经是好友啦。";
         else if (friendResult.reason === "friend-rate-limit") finalReply = "今天先慢一点，过一阵再加吧。";
         else if (friendResult.reason === "automated-doll") finalReply = "娃娃账号不加入好友名单哦。";
-        sendReply(finalReply);
+        sendReply(finalReply, replyId);
         pushDebugTrace({ id: debugId, stage: "sent", finalReply });
         return;
       }
@@ -5913,7 +6101,7 @@ function unescapeHTML(s) {
             const finalReply = selection.reason === "target-not-in-room"
               ? "没找到这个人，做不了。"
               : "这个原生动作现在做不了。";
-            sendReply(finalReply);
+            sendReply(finalReply, replyId);
             pushDebugTrace({ id: debugId, stage: "sent", finalReply });
             return;
           }
@@ -5937,7 +6125,7 @@ function unescapeHTML(s) {
             } else if (activityResult.reason === "target-not-in-room") {
               finalReply = "没找到这个人，做不了。";
             }
-            sendReply(finalReply);
+            sendReply(finalReply, replyId);
             pushDebugTrace({ id: debugId, stage: "sent", finalReply });
             return;
           }
@@ -6167,7 +6355,7 @@ function unescapeHTML(s) {
       if (!isCurrent()) return;
 
       finalReply = normalizeAssistantIdentity(finalReply, content);
-      sendReply(finalReply);
+      sendReply(finalReply, replyId);
       pushDebugTrace({ id: debugId, stage: "sent", finalReply });
       if (requestPlan.stickerId) {
         scheduleStickerAfterReply(finalReply, requestPlan.stickerId, debugId);
@@ -6190,6 +6378,7 @@ function unescapeHTML(s) {
       if (isCurrent()) {
         window.__misakaGlobalBusy = false;
         window.__misakaReplyInProgress = false;
+        schedulePendingReplyDrain();
       }
     }
   }
