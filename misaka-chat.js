@@ -1,4 +1,4 @@
-// MisakaChat v3.0.8 - BC 御坂自动回复系统
+// MisakaChat v3.0.9 - BC 御坂自动回复系统
 // 模块分区:
 //   [Config]      L15-55   配置 + 状态
 //   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "3.0.8";
+  const SCRIPT_VERSION = "3.0.9";
   const RELEASE_CHANNEL = "stable";
   const bootstrapOptions = window.__misakaNextBootstrapOptions || {};
   delete window.__misakaNextBootstrapOptions;
@@ -107,12 +107,16 @@
     maxContextTokens: 20000, // context messages 的 token 预算上限(system prompt 不算)
     cooldownMs: 3000,
     perUserCooldownMs: 5000,
-    pendingReplyMax: 3,
+    pendingReplyMax: 5,
     pendingReplyTtlMs: 300000,
+    generatedReplyMaxAttempts: 5,
+    generatedReplyRetryDelaysMs: [2000, 5000, 10000, 20000],
+    plannerMaxTokens: 4096,
     apiKeyTimeout: 45000,
     // 一轮 action 最多包含规划、主回复、纠错、结果验收等多次 API 调用。
-    // 45 秒会在工作仍进行时提前释放 busy，导致后续请求与旧请求并发串线。
-    replyHardTimeoutMs: 180000,
+    // 规划器 + 最多五次主回复 + 退避，及少数需要 BCE 二次生成的请求。
+    // 不能在重试仍进行时提前释放 busy，否则下一条会与旧任务并发串线。
+    replyHardTimeoutMs: 600000,
     replyDelayMs: 800,
     clarificationTtlMs: 120000, // 同一发送者回答上一轮追问的承接窗口
     maxProfileEntries: 100, // 本地保留更多熟人，避免 20 人房间中反复“重新认识”
@@ -205,7 +209,7 @@
     roomLog: [],          // 进出记录
     snapshots: {},        // 束缚快照 { memberNumber: { items, time } }
     pendingClarifications: {}, // 按发送者保存的待澄清请求；他人插话不会打断
-    pendingReplies: [], // busy/冷却期间最多保留 3 条直接点名，按到达顺序续跑
+    pendingReplies: [], // busy/冷却期间最多保留 5 条直接点名，按到达顺序续跑
     pendingReplyTimer: null,
   };
   onDispose(() => {
@@ -2313,7 +2317,7 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
       // 保留 DeepSeek thinking；规划结果虽短，但推理过程与最终 JSON 共用
       // max_tokens，必须给 reasoning_content 留出充足预算。
       thinking: true,
-      maxTokens: 2048,
+      maxTokens: CONFIG.plannerMaxTokens,
     });
     try {
       const match = String(result || "").match(/\{[\s\S]*\}/);
@@ -3239,6 +3243,23 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
       max: CONFIG.pendingReplyMax,
       ttlMs: CONFIG.pendingReplyTtlMs,
     }),
+    inspectGeneratedReplyConfigForTest: () => ({
+      maxAttempts: CONFIG.generatedReplyMaxAttempts,
+      retryDelaysMs: [...CONFIG.generatedReplyRetryDelaysMs],
+      plannerMaxTokens: CONFIG.plannerMaxTokens,
+      hardTimeoutMs: CONFIG.replyHardTimeoutMs,
+    }),
+    inspectGeneratedReplyForTest: inspectGeneratedReply,
+    retryGeneratedReplyForTest: (replies, intent = "chat") => {
+      const values = Array.isArray(replies) ? replies : [];
+      return retryGeneratedReply(
+        attempt => Promise.resolve(values[attempt - 1] ?? ""),
+        intent,
+        { maxAttempts: 5, retryDelaysMs: [0, 0, 0, 0] },
+      );
+    },
+    generationFailureReplyForTest: () => GENERATION_FAILURE_REPLY,
+    sendGenerationFailureForTest: sendGenerationFailure,
     snapshotPendingRepliesForTest: () => state.pendingReplies.map(item => ({ ...item })),
     resetPendingRepliesForTest: () => {
       if (state.pendingReplyTimer !== null) {
@@ -5703,6 +5724,100 @@ function unescapeHTML(s) {
     };
   }
 
+  function inspectGeneratedReply(reply, intent = "chat") {
+    const raw = String(reply || "").trim();
+    if (!raw) return { usable: false, reason: "empty-content", parsed: null };
+    const structured = parseStructuredReply(raw);
+    if (structured.matched && !structured.ok) {
+      return { usable: false, reason: structured.reason || "invalid-structured-reply", parsed: null };
+    }
+    if (/^(?:```(?:json)?\s*)?\{/i.test(raw) && !structured.matched) {
+      return { usable: false, reason: "not-reply-envelope", parsed: null };
+    }
+    const parsed = parseAssistantReply(raw, intent);
+    if (parsed.protocolError) {
+      return { usable: false, reason: parsed.protocolError, parsed };
+    }
+    const hasVisibleReply = !!String(parsed.cleaned || "").trim();
+    const hasCommands = Array.isArray(parsed.commands) && parsed.commands.length > 0;
+    if (!hasVisibleReply && !hasCommands) {
+      return { usable: false, reason: "empty-reply-envelope", parsed };
+    }
+    return { usable: true, reason: "", parsed };
+  }
+
+  async function waitGeneratedReplyRetry(delayMs) {
+    if (!isCurrent()) return false;
+    const delay = Math.max(0, Number(delayMs) || 0);
+    if (delay === 0) return true;
+    return new Promise(resolve => {
+      let settled = false;
+      let timer = null;
+      const finish = value => {
+        if (settled) return;
+        settled = true;
+        lifecycle.cleanups.delete(disposeCleanup);
+        resolve(value);
+      };
+      const disposeCleanup = onDispose(() => {
+        if (timer !== null) clearTrackedTimeout(timer);
+        finish(false);
+      });
+      timer = trackedTimeout(() => finish(true), delay);
+    });
+  }
+
+  async function retryGeneratedReply(runAttempt, intent = "chat", options = {}) {
+    const maxAttempts = Math.max(1, Number(options.maxAttempts) || CONFIG.generatedReplyMaxAttempts);
+    const retryDelays = Array.isArray(options.retryDelaysMs)
+      ? options.retryDelaysMs
+      : CONFIG.generatedReplyRetryDelaysMs;
+    let lastReason = "not-attempted";
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (!isCurrent()) return { reply: "", attempts: attempt - 1, exhausted: false, reason: "disposed" };
+      const reply = await runAttempt(attempt);
+      const inspection = inspectGeneratedReply(reply, intent);
+      options.onAttempt?.({ attempt, reply, ...inspection });
+      if (inspection.usable) {
+        return { reply: String(reply), attempts: attempt, exhausted: false, reason: "" };
+      }
+      lastReason = inspection.reason;
+      if (attempt >= maxAttempts) break;
+      const fallbackDelay = retryDelays.length > 0 ? retryDelays[retryDelays.length - 1] : 0;
+      const continued = await waitGeneratedReplyRetry(retryDelays[attempt - 1] ?? fallbackDelay);
+      if (!continued) return { reply: "", attempts: attempt, exhausted: false, reason: "disposed" };
+    }
+    return { reply: "", attempts: maxAttempts, exhausted: true, reason: lastReason };
+  }
+
+  async function callGeneratedReplyWithRetry(systemPrompt, contextMessages, intent, llmOptions, debug = {}) {
+    return retryGeneratedReply(
+      () => callLLM(systemPrompt, contextMessages, llmOptions),
+      intent,
+      {
+        onAttempt: ({ attempt, usable, reason, reply }) => {
+          pushDebugTrace({
+            id: debug.id,
+            stage: `${debug.stage || "llm"}:attempt`,
+            attempt,
+            usable,
+            reason,
+            reply,
+          });
+          if (!usable) {
+            console.warn(`[MisakaChat] 第 ${attempt}/${CONFIG.generatedReplyMaxAttempts} 次生成不可用: ${reason}`);
+          }
+        },
+      },
+    );
+  }
+
+  const GENERATION_FAILURE_REPLY = "呜……这次御坂怎么都没生成出来。麻烦提醒咲来修一下御坂吧。";
+
+  function sendGenerationFailure(replyId = "") {
+    return sendReply(GENERATION_FAILURE_REPLY, replyId);
+  }
+
   async function dryRunStructuredReplyForTest(intent, content) {
     const safeIntent = ["chat", "roleplay", "action"].includes(intent) ? intent : "chat";
     const systemPrompt = getSystemPrompt(false) +
@@ -6136,8 +6251,15 @@ function unescapeHTML(s) {
       let systemPrompt = buildMainReplySystemPrompt(requestPlan);
       console.log(`[MisakaChat] system prompt 构建完成(意图: ${requestPlan.intent}, 完整道具清单: ${needCatalog ? "是" : "否"})`);
 
-      let reply = await callLLM(systemPrompt, contextMessages, { json: true });
-      pushDebugTrace({ id: debugId, stage: "llm:first", reply });
+      const firstGeneration = await callGeneratedReplyWithRetry(
+        systemPrompt,
+        contextMessages,
+        requestPlan.intent,
+        { json: true },
+        { id: debugId, stage: "llm:first" },
+      );
+      let reply = firstGeneration.reply;
+      pushDebugTrace({ id: debugId, stage: "llm:first", reply, attempts: firstGeneration.attempts });
       if (reply) {
         const firstPass = parseAssistantReply(reply, requestPlan.intent);
         pushDebugTrace({ id: debugId, stage: "parse:first", commands: firstPass.commands, cleaned: firstPass.cleaned });
@@ -6169,13 +6291,27 @@ function unescapeHTML(s) {
               extraContext += `\n\n【BCE档案查询结果:${cmd.target}】\n没有找到这个人的档案。\n`;
             }
           }
-          reply = await callLLM(systemPrompt + extraContext, contextMessages, { json: true });
-          pushDebugTrace({ id: debugId, stage: "llm:extra-context", reply });
+          const enrichedGeneration = await callGeneratedReplyWithRetry(
+            systemPrompt + extraContext,
+            contextMessages,
+            requestPlan.intent,
+            { json: true },
+            { id: debugId, stage: "llm:extra-context" },
+          );
+          reply = enrichedGeneration.reply;
+          pushDebugTrace({
+            id: debugId,
+            stage: "llm:extra-context",
+            reply,
+            attempts: enrichedGeneration.attempts,
+          });
         }
       }
       if (!reply) {
-        console.warn("[MisakaChat] LLM 返回空,未回复");
-        pushDebugTrace({ id: debugId, stage: "empty-reply" });
+        console.warn("[MisakaChat] 连续五次生成不可用，发送故障提示并继续队列");
+        pushDebugTrace({ id: debugId, stage: "generation-exhausted", attempts: CONFIG.generatedReplyMaxAttempts });
+        sendGenerationFailure(replyId);
+        pushDebugTrace({ id: debugId, stage: "sent:generation-failure", finalReply: GENERATION_FAILURE_REPLY });
         return;
       }
 

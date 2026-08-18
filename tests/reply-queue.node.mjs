@@ -51,7 +51,16 @@ const hooks = context.__misakaPlanDebug;
 assert.ok(hooks, "MisakaChat test hooks must be available");
 assert.deepEqual(
   JSON.parse(JSON.stringify(hooks.inspectPendingReplyConfigForTest())),
-  { max: 3, ttlMs: 300000 },
+  { max: 5, ttlMs: 300000 },
+);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(hooks.inspectGeneratedReplyConfigForTest())),
+  {
+    maxAttempts: 5,
+    retryDelaysMs: [2000, 5000, 10000, 20000],
+    plannerMaxTokens: 4096,
+    hardTimeoutMs: 600000,
+  },
 );
 
 assert.equal(hooks.extractMessageIdForTest({
@@ -66,8 +75,10 @@ context.ChatRoomCharacter.push(
   { MemberNumber: 302, Name: "B", Nickname: "B" },
   { MemberNumber: 303, Name: "C", Nickname: "C" },
   { MemberNumber: 304, Name: "D", Nickname: "D" },
+  { MemberNumber: 305, Name: "E", Nickname: "E" },
+  { MemberNumber: 306, Name: "F", Nickname: "F" },
 );
-for (let index = 1; index <= 4; index++) {
+for (let index = 1; index <= 6; index++) {
   hooks.receiveChatMessageForTest({
     Sender: 300 + index,
     Type: "Chat",
@@ -76,13 +87,13 @@ for (let index = 1; index <= 4; index++) {
   });
 }
 let queued = JSON.parse(JSON.stringify(hooks.snapshotPendingRepliesForTest()));
-assert.deepEqual(queued.map(item => item.replyId), ["incoming-2", "incoming-3", "incoming-4"],
+assert.deepEqual(queued.map(item => item.replyId), ["incoming-2", "incoming-3", "incoming-4", "incoming-5", "incoming-6"],
   "distinct BC message IDs must preserve repeated text while busy instead of disappearing");
 hooks.setReplyBusyForTest(false);
 hooks.resetPendingRepliesForTest();
 
 const base = 1_000_000;
-for (let index = 1; index <= 4; index++) {
+for (let index = 1; index <= 6; index++) {
   hooks.enqueuePendingReplyForTest({
     senderNum: 100 + index,
     senderName: `User ${index}`,
@@ -93,9 +104,9 @@ for (let index = 1; index <= 4; index++) {
   }, base + index);
 }
 queued = JSON.parse(JSON.stringify(hooks.snapshotPendingRepliesForTest()));
-assert.deepEqual(queued.map(item => item.replyId), ["msg-2", "msg-3", "msg-4"],
-  "fourth message must drop the oldest and retain the latest three in FIFO order");
-assert.deepEqual(queued.map(item => item.senderNum), [102, 103, 104],
+assert.deepEqual(queued.map(item => item.replyId), ["msg-2", "msg-3", "msg-4", "msg-5", "msg-6"],
+  "sixth message must drop the oldest and retain the latest five in FIFO order");
+assert.deepEqual(queued.map(item => item.senderNum), [102, 103, 104, 105, 106],
   "cross-user order must be preserved");
 
 assert.equal(hooks.enqueuePendingReplyForTest({
@@ -103,10 +114,10 @@ assert.equal(hooks.enqueuePendingReplyForTest({
   senderName: "Duplicate relay",
   content: "不同包装但同一个消息 ID",
   messageType: "Chat",
-  replyId: "msg-4",
-  receivedAt: base + 5,
-}, base + 5), false, "same BC message ID must be deduplicated");
-assert.equal(hooks.snapshotPendingRepliesForTest().length, 3);
+  replyId: "msg-6",
+  receivedAt: base + 7,
+}, base + 7), false, "same BC message ID must be deduplicated");
+assert.equal(hooks.snapshotPendingRepliesForTest().length, 5);
 
 hooks.resetPendingRepliesForTest();
 hooks.enqueuePendingReplyForTest({
@@ -160,6 +171,41 @@ assert.deepEqual(
   sent[1].data.Dictionary.find(entry => entry.Tag === "ReplyId"),
   { ReplyId: "msg-two-part", Tag: "ReplyId" },
   "the spoken line must carry the native reply relation",
+);
+
+const validReply = JSON.stringify({
+  protocol: "misaka.reply.v1",
+  commands: [],
+  action: "轻轻点头",
+  speech: "这次生成出来了。",
+});
+const fifthAttemptSuccess = await hooks.retryGeneratedReplyForTest([
+  "   \n",
+  "{not-json",
+  JSON.stringify({ protocol: "misaka.reply.v1", commands: [], action: "", speech: "" }),
+  "",
+  validReply,
+]);
+assert.equal(fifthAttemptSuccess.reply, validReply);
+assert.equal(fifthAttemptSuccess.attempts, 5);
+assert.equal(fifthAttemptSuccess.exhausted, false,
+  "a usable fifth response must complete the current task instead of failing it");
+
+const exhausted = await hooks.retryGeneratedReplyForTest(["", " \n", "{", "{}", ""]);
+assert.equal(exhausted.reply, "");
+assert.equal(exhausted.attempts, 5);
+assert.equal(exhausted.exhausted, true,
+  "five unusable responses must exhaust the task and allow the queue to continue");
+
+sent.length = 0;
+assert.match(hooks.generationFailureReplyForTest(), /咲/);
+assert.equal(hooks.sendGenerationFailureForTest("msg-generation-failed"), true);
+assert.equal(sent.length, 1);
+assert.match(sent[0].data.Content, /御坂.*咲/);
+assert.deepEqual(
+  sent[0].data.Dictionary.find(entry => entry.Tag === "ReplyId"),
+  { ReplyId: "msg-generation-failed", Tag: "ReplyId" },
+  "the five-attempt failure notice must reply to the task that failed",
 );
 
 context.__misakaTestLifecycle.dispose("reply-queue-suite-complete");
