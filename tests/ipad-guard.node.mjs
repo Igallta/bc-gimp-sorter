@@ -73,13 +73,15 @@ const runtime = runtimeContext();
 const guard = runtime.context.window.__MisakaIPadGuard;
 const test = runtime.context.window.__MisakaIPadGuardTestHooks;
 assert.ok(guard, "guard runtime should initialize for Misaka account");
-assert.equal(guard.version, "0.3.4");
+assert.equal(guard.version, "0.3.5");
 const guardLocalColor = source.match(/<font color="(#[0-9A-Fa-f]{6})">\[iPadGuard\]/)?.[1];
 const misakaLocalColor = misakaChatSource.match(/<font color="(#[0-9A-Fa-f]{6})">\[MisakaChat\]/)?.[1];
 assert.equal(guardLocalColor, misakaLocalColor, "Guard local messages must use MisakaChat's exact color");
-assert.ok(
-  runtime.localMessages.some((message) => String(message?.Content || "").includes("[iPadGuard] 御坂进程守护 0.3.4 已加载")),
-  "Guard startup message must follow MisakaChat's product-name/version style",
+assert.equal(runtime.localMessages.length, 0, "Guard initialization must not emit a room-entry local message");
+assert.doesNotMatch(
+  misakaChatSource,
+  /sendLocal\(`御坂自动回复 \$\{SCRIPT_VERSION\} 已加载`\)/,
+  "MisakaChat initialization must not emit a room-entry local message",
 );
 assert.equal(guard.config.enabled, false, "auto recycle must be opt-in");
 assert.deepEqual(
@@ -261,7 +263,7 @@ chatLoader.page.ChatRoomMessage = () => {};
 runScheduled(chatLoader, 500);
 assert.ok(chatLoader.appendedScript, "runtime must load in ChatRoom for Misaka account");
 assert.equal(chatLoader.appendedScript.dataset.mode, "chatroom");
-assert.match(chatLoader.appendedScript.src || "", /v=0\.3\.4/);
+assert.match(chatLoader.appendedScript.src || "", /v=0\.3\.5/);
 assert.equal(chatLoader.loginCalls.length, 0);
 const wrongAccount = loaderContext({ screen: "ChatRoom", memberNumber: 999999 });
 wrongAccount.page.bcModSdk = {};
@@ -306,4 +308,4 @@ const invalidReturn = runTrampoline("https://evil.example/steal");
 assert.equal(invalidReturn.replacedWith, "", "trampoline must reject non-BC return URLs");
 assert.match(invalidReturn.status, /无效/);
 
-console.log("iPad guard v0.3.4 tests passed");
+console.log("iPad guard v0.3.5 tests passed");

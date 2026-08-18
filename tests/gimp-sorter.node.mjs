@@ -24,7 +24,7 @@ assert.ok(hooks, "test hooks should be exposed");
 let assertions = 1;
 assert.match(source, /<font color="#00CCFF">\[GimpSorter\]/, "local messages must share MisakaChat's color");
 assertions++;
-assert.match(source, /log\("娃娃自动排序 " \+ version \+ " 已加载"\)/, "startup copy must follow the shared product/version style");
+assert.doesNotMatch(source, /已加载/, "initialization must not emit a room-entry local message");
 assertions++;
 
 const recognized = [

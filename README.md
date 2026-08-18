@@ -2,12 +2,12 @@
 
 为 Bondage Club 的 Gimp Dolls 房间维护的两个用户脚本：
 
-- **GimpSorter v1.7.3**：按 `GIMP → Gimp → Doll → GIMP Pet → Pet → Error` 分类；组内先排三位编号，再排四位编号，并各自按数值升序整理。
-- **MisakaChat v3.0.6**：御坂房间 Bot，提供结构化角色回复、人物与长期记忆、角色扮演、BC 原生互动、语境表情包、好友能力和受控的 BC 操作。
+- **GimpSorter v1.7.4**：按 `GIMP → Gimp → Doll → GIMP Pet → Pet → Error` 分类；组内先排三位编号，再排四位编号，并各自按数值升序整理。
+- **MisakaChat v3.0.7**：御坂房间 Bot，提供结构化角色回复、人物与长期记忆、角色扮演、BC 原生互动、语境表情包、好友能力和受控的 BC 操作。
 
 另提供一个默认关闭、仅供 iPadOS 长期挂机使用的独立守护脚本：
 
-- **Misaka iPad Guard v0.3.4**：在 WebContent 被 Jetsam 回收前跨站释放网页进程，返回 BC 后先等待 5 秒供插件加载，再使用 Tampermonkey 私有存储中的御坂密码调用 BC 原生登录并恢复原房间，同时保存本地生命周期日志；三套脚本的聊天框本地提示采用统一的状态顺序、反馈句式与蓝色，不会修改 MisakaChat 或 GimpSorter 的业务逻辑。
+- **Misaka iPad Guard v0.3.5**：在 WebContent 被 Jetsam 回收前跨站释放网页进程，返回 BC 后先等待 5 秒供插件加载，再使用 Tampermonkey 私有存储中的御坂密码调用 BC 原生登录并恢复原房间，同时保存本地生命周期日志；三套脚本不在进房初始化时写入聊天框，命令反馈仍采用统一的状态顺序、反馈句式与蓝色。
 
 当前支持 BC 的 `R*` 版本路径，不再绑定特定的 R129/R130：
 
