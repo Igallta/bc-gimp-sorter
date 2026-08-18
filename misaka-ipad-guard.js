@@ -1,9 +1,9 @@
-// Misaka iPad Guard v0.3.7
+// Misaka iPad Guard v0.3.8
 // iPadOS Safari WebContent 跨站受控回收。与 MisakaChat/GimpSorter 主逻辑完全独立。
 (function () {
   "use strict";
 
-  const VERSION = "0.3.7";
+  const VERSION = "0.3.8";
   const MEMBER_NUMBER = 194331;
   const WCE_LOGIN_NAME = "MSK002";
   const QUICK_LOGIN_LABELS = new Set([
@@ -14,12 +14,16 @@
     Object.freeze({
       id: "github-pages",
       pageUrl: "https://igallta.github.io/bc-gimp-sorter/ipad-recycle.html",
-      probeUrl: "https://igallta.github.io/bc-gimp-sorter/ipad-recycle-probe.svg",
+      probeUrl: "https://igallta.github.io/bc-gimp-sorter/ipad-recycle.html",
+      probeMode: "fetch",
+      returnMode: "fragment",
     }),
     Object.freeze({
-      id: "raw-githack",
-      pageUrl: "https://raw.githack.com/Igallta/bc-gimp-sorter/fc0e619/ipad-recycle.html",
-      probeUrl: "https://raw.githack.com/Igallta/bc-gimp-sorter/fc0e619/ipad-recycle-probe.svg",
+      id: "httpbingo",
+      pageUrl: "https://httpbingo.org/response-headers",
+      probeUrl: "https://httpbingo.org/image/svg",
+      probeMode: "image",
+      returnMode: "refresh-header",
     }),
   ]);
   const RECYCLE_PROBE_TIMEOUT_MS = 6_000;
@@ -378,23 +382,46 @@
 
   function probeRemoteRecyclePage(endpoint) {
     return new Promise((resolve) => {
-      const probe = document.createElement("img");
       let settled = false;
+      let probe = null;
       const finish = (available) => {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
-        probe.remove();
+        probe?.remove?.();
         resolve(available);
       };
       const timeout = setTimeout(() => finish(false), RECYCLE_PROBE_TIMEOUT_MS);
+      const probeUrl = `${endpoint.probeUrl}${endpoint.probeUrl.includes("?") ? "&" : "?"}v=${VERSION}&t=${Date.now()}`;
+      if (endpoint.probeMode === "fetch") {
+        fetch(probeUrl, {
+          method: "GET",
+          mode: "no-cors",
+          cache: "no-store",
+          credentials: "omit",
+        }).then(() => finish(true), () => finish(false));
+        return;
+      }
+      probe = document.createElement("img");
       probe.hidden = true;
       probe.alt = "";
-      probe.src = `${endpoint.probeUrl}?v=${VERSION}&t=${Date.now()}`;
+      probe.src = probeUrl;
       probe.onload = () => finish(true);
       probe.onerror = () => finish(false);
       (document.body || document.documentElement).appendChild(probe);
     });
+  }
+
+  function buildRecycleTarget(endpoint, returnUrl) {
+    const started = Date.now();
+    if (endpoint.returnMode === "refresh-header") {
+      const safeReturn = new URL(returnUrl);
+      safeReturn.search = "";
+      safeReturn.hash = "";
+      const refresh = `4;url=${safeReturn.href}`;
+      return `${endpoint.pageUrl}?Content-Type=${encodeURIComponent("text/html; charset=utf-8")}&Refresh=${encodeURIComponent(refresh)}#started=${started}`;
+    }
+    return `${endpoint.pageUrl}#return=${encodeURIComponent(returnUrl)}&started=${started}`;
   }
 
   async function selectRecycleEndpoint() {
@@ -434,7 +461,7 @@
       // 随后返回原地址。若 BC 落在登录页，油猴 loader 会读取 GM 私有存储
       // 中的密码并调用 BC 原生登录，再由 ReturnToChatRoom 自动回房。
       window.addEventListener("unload", () => {}, { once: true });
-      location.replace(`${endpoint.pageUrl}#return=${encodeURIComponent(returnUrl)}&started=${Date.now()}`);
+      location.replace(buildRecycleTarget(endpoint, returnUrl));
       return true;
     } catch (error) {
       recyclePreparing = false;

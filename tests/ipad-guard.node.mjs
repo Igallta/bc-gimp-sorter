@@ -23,6 +23,12 @@ function runtimeContext({ remoteProbeResults = [true] } = {}) {
     clearTimeout: () => {},
     setInterval: () => 1,
     clearInterval: () => {},
+    fetch(url) {
+      probeURLs.push(String(url));
+      return remoteProbeResults[probeIndex++] === true
+        ? Promise.resolve({ type: "opaque" })
+        : Promise.reject(new Error("probe failed"));
+    },
     navigator: { userAgent: "Mozilla/5.0 (iPad)", platform: "iPad", maxTouchPoints: 5, onLine: true },
     location: {
       href: "https://www.bondage-europe.com/R130/BondageClub/",
@@ -91,7 +97,7 @@ const runtime = runtimeContext();
 const guard = runtime.context.window.__MisakaIPadGuard;
 const test = runtime.context.window.__MisakaIPadGuardTestHooks;
 assert.ok(guard, "guard runtime should initialize for Misaka account");
-assert.equal(guard.version, "0.3.7");
+assert.equal(guard.version, "0.3.8");
 const guardLocalColor = source.match(/<font color="(#[0-9A-Fa-f]{6})">\[iPadGuard\]/)?.[1];
 const misakaLocalColor = misakaChatSource.match(/<font color="(#[0-9A-Fa-f]{6})">\[MisakaChat\]/)?.[1];
 assert.equal(guardLocalColor, misakaLocalColor, "Guard local messages must use MisakaChat's exact color");
@@ -150,16 +156,17 @@ const fallbackGuard = fallbackRuntime.context.window.__MisakaIPadGuard;
 assert.equal(await fallbackGuard.recycle("remote-unavailable"), true);
 assert.match(
   fallbackRuntime.replacedWith,
-  /^https:\/\/raw\.githack\.com\/Igallta\/bc-gimp-sorter\/fc0e619\/ipad-recycle\.html/,
+  /^https:\/\/httpbingo\.org\/response-headers\?/,
   "primary TLS failure must fall back to an independently hosted remote trampoline",
 );
+assert.match(decodeURIComponent(fallbackRuntime.replacedWith), /Refresh=4;url=https:\/\/www\.bondage-europe\.com\/R130\/BondageClub\//);
 assert.equal(
   JSON.parse(fallbackRuntime.store.get("misaka_ipad_guard_pending_v1")).trampoline,
-  "raw-githack",
+  "httpbingo",
   "pending diagnostics must record the selected remote fallback",
 );
 assert.match(fallbackRuntime.probeURLs[0], /^https:\/\/igallta\.github\.io\//);
-assert.match(fallbackRuntime.probeURLs[1], /^https:\/\/raw\.githack\.com\//);
+assert.match(fallbackRuntime.probeURLs[1], /^https:\/\/httpbingo\.org\/image\/svg/);
 assert.doesNotMatch(source, /createObjectURL|new Blob|local-blob/, "same-origin Blob trampolines must not be used");
 
 const unavailableRuntime = runtimeContext({ remoteProbeResults: [false, false] });
@@ -180,7 +187,7 @@ assert.match(runtime.localMessages.at(-1)?.Content || "", /MSK002.*194331/);
 runtime.inputValue = "普通聊天";
 runtime.context.window.ChatRoomSendChat();
 assert.equal(runtime.originalSendCount, 1, "ordinary chat must continue to BC");
-assert.match(source, /location\.replace\(`\$\{endpoint\.pageUrl\}/, "recycle must use the selected cross-origin trampoline");
+assert.match(source, /location\.replace\(buildRecycleTarget\(endpoint, returnUrl\)\)/, "recycle must use the selected cross-origin trampoline");
 assert.doesNotMatch(source, /location\.reload\(\)/);
 
 function makeElementFactory(elements) {
@@ -332,7 +339,7 @@ chatLoader.page.ChatRoomMessage = () => {};
 runScheduled(chatLoader, 500);
 assert.ok(chatLoader.appendedScript, "runtime must load in ChatRoom for Misaka account");
 assert.equal(chatLoader.appendedScript.dataset.mode, "chatroom");
-assert.match(chatLoader.appendedScript.src || "", /v=0\.3\.7/);
+assert.match(chatLoader.appendedScript.src || "", /v=0\.3\.8/);
 assert.equal(chatLoader.loginCalls.length, 0);
 const wrongAccount = loaderContext({ screen: "ChatRoom", memberNumber: 999999 });
 wrongAccount.page.bcModSdk = {};
@@ -377,4 +384,4 @@ const invalidReturn = runTrampoline("https://evil.example/steal");
 assert.equal(invalidReturn.replacedWith, "", "trampoline must reject non-BC return URLs");
 assert.match(invalidReturn.status, /无效/);
 
-console.log("iPad guard v0.3.7 tests passed");
+console.log("iPad guard v0.3.8 tests passed");
