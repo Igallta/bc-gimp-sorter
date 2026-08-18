@@ -28,7 +28,7 @@
   const LOGIN_DELAY_MS = 5_000;
   const LOGIN_ENABLED_KEY = "misaka_ipad_guard_login_enabled_v1";
   const LOGIN_PASSWORD_KEY = "misaka_ipad_guard_login_password_v1";
-  const ASSET_REVISION = "2b2d6a8";
+  const ASSET_REVISION = "5d69a7c";
   const pageWindow = typeof unsafeWindow === "object" && unsafeWindow ? unsafeWindow : window;
 
   if (pageWindow.__MisakaIPadGuardLoaderStarted === VERSION) return;
