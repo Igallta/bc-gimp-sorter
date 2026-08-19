@@ -1,4 +1,4 @@
-// MisakaChat v3.1.1 - BC 御坂自动回复系统
+// MisakaChat v3.1.2 - BC 御坂自动回复系统
 // 模块分区:
 //   [Config]      L15-55   配置 + 状态
 //   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "3.1.1";
+  const SCRIPT_VERSION = "3.1.2";
   const RELEASE_CHANNEL = "stable";
   const bootstrapOptions = window.__misakaNextBootstrapOptions || {};
   delete window.__misakaNextBootstrapOptions;
@@ -1515,10 +1515,18 @@ ${recentSemantic}`;
     const messageType = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/.test(storedType)
       ? storedType
       : (starredAction ? "Emote" : "Chat");
+    const semanticType = ({
+      Chat: "speech",
+      Talk: "speech",
+      Whisper: "speech",
+      Emote: "action",
+      Activity: "interaction",
+      Action: "event",
+    })[messageType] || "event";
     const isAction = ["Activity", "Action", "Emote"].includes(messageType) ||
       starredAction;
     const content = isAction ? raw.replace(/^\*+|\*+$/g, "").trim() : raw;
-    return `【${messageType}】${content}`;
+    return `【${semanticType}/${messageType}】${content}`;
   }
 
   function buildPlannerRecentContext(limit = 10) {

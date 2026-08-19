@@ -652,13 +652,31 @@
         isSelf: false,
         messageType: "Activity",
       });
+      const typedWhisperContext = hooks.formatMessageForContextForTest({
+        content: "悄悄告诉你",
+        isSelf: false,
+        messageType: "Whisper",
+      });
+      const typedSystemActionContext = hooks.formatMessageForContextForTest({
+        content: "Rin离开了房间",
+        isSelf: false,
+        messageType: "Action",
+      });
       results.push({
-        id: "guard-all-recent-history-preserves-raw-bc-types",
+        id: "guard-all-recent-history-preserves-semantic-and-raw-bc-types",
         repetition: 1,
-        passed: typedActionContext === "【Emote】歪了歪头" &&
-          typedSpeechContext === "【Chat】怎么了？" &&
-          typedOtherActivityContext === "【Activity】摸了摸御坂的头",
-        actual: { typedActionContext, typedSpeechContext, typedOtherActivityContext },
+        passed: typedActionContext === "【action/Emote】歪了歪头" &&
+          typedSpeechContext === "【speech/Chat】怎么了？" &&
+          typedOtherActivityContext === "【interaction/Activity】摸了摸御坂的头" &&
+          typedWhisperContext === "【speech/Whisper】悄悄告诉你" &&
+          typedSystemActionContext === "【event/Action】Rin离开了房间",
+        actual: {
+          typedActionContext,
+          typedSpeechContext,
+          typedOtherActivityContext,
+          typedWhisperContext,
+          typedSystemActionContext,
+        },
       });
 
       const oldSelfPipeMemory = hooks.isLegacySelfFormattingMemoryForTest({
