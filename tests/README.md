@@ -2,7 +2,7 @@
 
 ## Pending reply queue and native reply suite
 
-`reply-queue.node.mjs` verifies the bounded three-message FIFO used while
+`reply-queue.node.mjs` verifies the bounded five-message FIFO used while
 MisakaChat is busy or cooling down. It covers BC `MsgId` deduplication,
 five-minute expiry, overflow behavior, cross-user ordering and native
 `Dictionary.ReplyId` output without writing to `InputChat`:

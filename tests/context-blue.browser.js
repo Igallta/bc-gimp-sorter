@@ -29,7 +29,8 @@
         !hooks?.snapshotRecentMessagesForTest || !hooks?.replaceRecentMessagesForTest ||
         !hooks?.stripQuotedSegmentsForTest || !hooks?.recentConversationHasAnswerForTest ||
         !hooks?.buildPlannerRecentContextForTest ||
-        !hooks?.normalizeVisibleReplyForTest ||
+        !hooks?.formatSelfMessageForContextForTest ||
+        !hooks?.isLegacySelfFormattingMemoryForTest ||
         !hooks?.parseAssistantReplyForTest ||
         !hooks?.formatStructuredVisibleReplyForTest ||
         !hooks?.normalizePlannerMemoryDecisionForTest ||
@@ -636,32 +637,72 @@
         actual: habitualNamedPlan,
       });
 
-      const bareActionChatReplies = [
-        ["歪了歪头", "哈呜？御坂为什么要学会那个啊……"],
-        ["眼神警惕起来", "小手术？！咲你对御坂做了什么奇怪的事吗……"],
-        ["做了个无奈的表情", "这种事御坂可不敢乱说……你还是自己去问Rin吧！"],
-        ["歪着头想了想，露出有点无奈的表情", "Rin啊……挺爱闹腾的一个家伙呢。"],
-        ["偏头看了看刚醒过来的伊水，忍不住笑了笑", "伊水嘛，挺可爱的一个家伙呢。"],
-        ["拍了拍脑袋", "啊，说得对，我忘记了……"],
-        ["脸微微一红，别过头去", "才不是什么充值开关呢……再乱说的话我可要生气了！"],
-      ];
-      for (const [action, speech] of bareActionChatReplies) {
-        const actual = hooks.normalizeVisibleReplyForTest("chat", `${action}\n${speech}`);
-        results.push({
-          id: `guard-chat-bare-action-is-wrapped-${action}`,
-          repetition: 1,
-          passed: actual === `*${action}*\n${speech}`,
-          actual,
-        });
-      }
-
-      const speechOnlyChat = "这个嘛……御坂觉得这种问题不太好回答呢。\n你还是自己问Rin吧！";
-      const speechOnlyActual = hooks.normalizeVisibleReplyForTest("chat", speechOnlyChat);
+      const typedActionContext = hooks.formatSelfMessageForContextForTest({
+        content: "歪了歪头",
+        isSelf: true,
+        messageType: "Emote",
+      });
+      const typedSpeechContext = hooks.formatSelfMessageForContextForTest({
+        content: "怎么了？",
+        isSelf: true,
+        messageType: "Chat",
+      });
       results.push({
-        id: "guard-two-line-chat-is-not-misread-as-action",
+        id: "guard-self-history-preserves-action-and-speech-types",
         repetition: 1,
-        passed: speechOnlyActual === speechOnlyChat,
-        actual: speechOnlyActual,
+        passed: typedActionContext === "【动作】歪了歪头" &&
+          typedSpeechContext === "【台词】怎么了？",
+        actual: { typedActionContext, typedSpeechContext },
+      });
+
+      const oldSelfPipeMemory = hooks.isLegacySelfFormattingMemoryForTest({
+        text: "御搬: 歪了歪头|怎么了？",
+        isSelf: true,
+        messageType: "Chat",
+      });
+      const oldSelfEmoteMemory = hooks.isLegacySelfFormattingMemoryForTest({
+        text: "御搬: 歪了歪头",
+        isSelf: true,
+        messageType: "Emote",
+      });
+      const otherPersonPipeMemory = hooks.isLegacySelfFormattingMemoryForTest({
+        text: "Rin: 看这里|ω･)",
+        isSelf: false,
+        messageType: "Chat",
+      });
+      results.push({
+        id: "guard-legacy-self-formatting-memories-are-quarantined-without-deletion",
+        repetition: 1,
+        passed: oldSelfPipeMemory === true && oldSelfEmoteMemory === true &&
+          otherPersonPipeMemory === false,
+        actual: { oldSelfPipeMemory, oldSelfEmoteMemory, otherPersonPipeMemory },
+      });
+
+      const legacyTextReply = hooks.parseAssistantReplyForTest(
+        "歪了歪头|怎么了？",
+        "chat",
+      );
+      results.push({
+        id: "guard-legacy-pipe-reply-is-rejected-instead-of-repaired",
+        repetition: 1,
+        passed: legacyTextReply.structured === false &&
+          legacyTextReply.protocolError === "structured-reply-required" &&
+          legacyTextReply.cleaned === "",
+        actual: legacyTextReply,
+      });
+
+      const structuredLegacyPipe = hooks.parseAssistantReplyForTest(JSON.stringify({
+        protocol: "misaka.reply.v1",
+        commands: [],
+        action: "",
+        speech: "歪了歪头|怎么了？",
+      }), "chat");
+      results.push({
+        id: "guard-schema-fields-reject-legacy-pipe-separator",
+        repetition: 1,
+        passed: structuredLegacyPipe.structured === true &&
+          structuredLegacyPipe.protocolError === "invalid-visible-field-format",
+        actual: structuredLegacyPipe,
       });
 
       const structuredChat = hooks.parseAssistantReplyForTest(JSON.stringify({
@@ -982,6 +1023,71 @@
           filteredMove.rejected.length === 0 &&
           filteredMove.allowed[0]?.type === "move",
         actual: filteredMove,
+      });
+
+      const structuredMoveTo = hooks.parseAssistantReplyForTest(JSON.stringify({
+        protocol: "misaka.reply.v1",
+        commands: [{
+          type: "moveTo",
+          memberNumber: Number(Player.MemberNumber),
+          targetNumber: Number(b.MemberNumber),
+          side: "left",
+        }],
+        action: "",
+        speech: "",
+      }), "action");
+      const relativeMovePlan = {
+        intent: "action",
+        operations: [{
+          types: ["moveTo"],
+          targets: [Number(Player.MemberNumber)],
+          referenceTargets: [Number(b.MemberNumber)],
+          side: "left",
+          parts: [],
+          assets: [],
+        }],
+        constraints: {},
+      };
+      const filteredMoveTo = hooks.filterCommandsByPlan(
+        relativeMovePlan,
+        structuredMoveTo.commands,
+      );
+      results.push({
+        id: "guard-move-to-distinguishes-moved-and-reference-targets",
+        repetition: 1,
+        passed: filteredMoveTo.allowed.length === 1 &&
+          filteredMoveTo.rejected.length === 0 &&
+          filteredMoveTo.allowed[0]?.memberNumber === Number(Player.MemberNumber) &&
+          filteredMoveTo.allowed[0]?.targetNumber === Number(b.MemberNumber),
+        actual: filteredMoveTo,
+      });
+      const wrongReferenceMoveTo = hooks.filterCommandsByPlan({
+        ...relativeMovePlan,
+        operations: [{
+          ...relativeMovePlan.operations[0],
+          referenceTargets: [Number(a.MemberNumber)],
+        }],
+      }, structuredMoveTo.commands);
+      results.push({
+        id: "guard-move-to-rejects-unplanned-reference-target",
+        repetition: 1,
+        passed: wrongReferenceMoveTo.allowed.length === 0 &&
+          wrongReferenceMoveTo.rejected[0]?.reason === "outside-plan-boundary",
+        actual: wrongReferenceMoveTo,
+      });
+      const wrongSideMoveTo = hooks.filterCommandsByPlan({
+        ...relativeMovePlan,
+        operations: [{
+          ...relativeMovePlan.operations[0],
+          side: "right",
+        }],
+      }, structuredMoveTo.commands);
+      results.push({
+        id: "guard-move-to-rejects-unplanned-side",
+        repetition: 1,
+        passed: wrongSideMoveTo.allowed.length === 0 &&
+          wrongSideMoveTo.rejected[0]?.reason === "outside-plan-boundary",
+        actual: wrongSideMoveTo,
       });
 
       const mixedValidityCommands = hooks.parseAssistantReplyForTest(JSON.stringify({

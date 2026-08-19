@@ -173,6 +173,28 @@ assert.deepEqual(
   "the spoken line must carry the native reply relation",
 );
 
+sent.length = 0;
+hooks.sendReplyForTest("歪了歪头|怎么了？", "msg-literal-pipe");
+for (const timer of timers.splice(0)) {
+  if (!timer.cleared) timer.callback();
+}
+assert.equal(sent.length, 1, "a pipe must never split one reply into legacy action/speech parts");
+assert.equal(sent[0].data.Type, "Chat");
+assert.equal(sent[0].data.Content, "歪了歪头|怎么了？");
+
+const rejectedLegacyText = hooks.inspectGeneratedReplyForTest("歪了歪头|怎么了？", "chat");
+assert.equal(rejectedLegacyText.usable, false);
+assert.equal(rejectedLegacyText.reason, "structured-reply-required");
+
+const rejectedStructuredPipe = hooks.inspectGeneratedReplyForTest(JSON.stringify({
+  protocol: "misaka.reply.v1",
+  commands: [],
+  action: "",
+  speech: "歪了歪头|怎么了？",
+}), "chat");
+assert.equal(rejectedStructuredPipe.usable, false);
+assert.equal(rejectedStructuredPipe.reason, "invalid-visible-field-format");
+
 const validReply = JSON.stringify({
   protocol: "misaka.reply.v1",
   commands: [],

@@ -1,4 +1,4 @@
-// MisakaChat v3.0.10 - BC 御坂自动回复系统
+// MisakaChat v3.1.0 - BC 御坂自动回复系统
 // 模块分区:
 //   [Config]      L15-55   配置 + 状态
 //   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "3.0.10";
+  const SCRIPT_VERSION = "3.1.0";
   const RELEASE_CHANNEL = "stable";
   const bootstrapOptions = window.__misakaNextBootstrapOptions || {};
   delete window.__misakaNextBootstrapOptions;
@@ -687,10 +687,18 @@
     return prefix + content;
   }
 
+  function isLegacySelfFormattingMemory(memory) {
+    if (memory?.isSelf !== true) return false;
+    const messageType = String(memory?.messageType || "");
+    const text = String(memory?.text || "");
+    return ["Activity", "Action", "Emote"].includes(messageType) || text.includes("|");
+  }
+
   function isRefinementSourceMemory(memory) {
     const text = String(memory?.text || "");
     if (!text) return false;
-    if (["Activity", "Action"].includes(memory?.messageType)) return false;
+    if (isLegacySelfFormattingMemory(memory)) return false;
+    if (["Activity", "Action", "Emote"].includes(memory?.messageType)) return false;
     return !/(?:VibeModeAction|Chat(?:Other|Self)-Item[A-Za-z]+-|OrgasmFailSurrender\d*|TriggerShock[12]|ActionActivateSafewordRelease)/i.test(text);
   }
 
@@ -763,7 +771,8 @@
         if (source === "semantic") {
           // 旧版保存的“问题 → 御坂回复”是重复合成文本，不是聊天原文；
           // 当前问题与刚发生的对话则应由 recentMessages 负责，不能抢占旧事召回 Top K。
-          if (isSyntheticDialogueMemory(text) || isHistoricalPromptMemory(text, m)) continue;
+          if (isSyntheticDialogueMemory(text) || isHistoricalPromptMemory(text, m) ||
+              isLegacySelfFormattingMemory(m)) continue;
           const memoryTime = Number(m?.time) || 0;
           if (memoryTime > 0 && now - memoryTime < CONFIG.memoryRecallExcludeRecentMs) continue;
         }
@@ -1207,7 +1216,13 @@ ${recentSemantic}`;
           state.lastNonSelfMsgTime = Date.now();  // 重置防再次触发
           if (typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom") {
             sendReply(line);
-            state.recentMessages.push({ senderName: "御搬", content: line, isSelf: true, time: Date.now() });
+            state.recentMessages.push({
+              senderName: "御搬",
+              content: line,
+              isSelf: true,
+              messageType: line.startsWith("*") ? "Emote" : "Chat",
+              time: Date.now(),
+            });
             if (state.recentMessages.length > 50) state.recentMessages.shift();
           }
         } catch(e) { console.warn("[MisakaChat] idle 发送失败:", e.message); }
@@ -1493,13 +1508,22 @@ ${recentSemantic}`;
     }
   }
 
+  function formatSelfMessageForContext(message) {
+    const raw = String(message?.content || "").trim();
+    const messageType = String(message?.messageType || "");
+    const isAction = ["Activity", "Action", "Emote"].includes(messageType) ||
+      /^\*[^*\n]+\*$/.test(raw);
+    const content = isAction ? raw.replace(/^\*+|\*+$/g, "").trim() : raw;
+    return `${isAction ? "【动作】" : "【台词】"}${content}`;
+  }
+
   function buildPlannerRecentContext(limit = 10) {
     return state.recentMessages.slice(-limit).map(m => {
       const t = new Date(m.time || Date.now());
       const hh = String(t.getHours()).padStart(2, "0");
       const mm = String(t.getMinutes()).padStart(2, "0");
       const who = m.isSelf ? "御坂" : `${m.senderName}#${m.senderMemberNumber || "?"}`;
-      const content = String(m.content || "").slice(0, 220);
+      const content = (m.isSelf ? formatSelfMessageForContext(m) : String(m.content || "")).slice(0, 220);
       const correction = !m.isSelf && /^(?:不对|不是|错了|更正|准确地?说|应该是|其实是)[，,：:\s]/.test(content.trim())
         ? "【显式纠正：此句覆盖同话题的较早说法】"
         : "";
@@ -1508,15 +1532,31 @@ ${recentSemantic}`;
   }
 
   function normalizePlannerOperations(rawOperations, roomNumbers, validTypes, validParts) {
-    return (Array.isArray(rawOperations) ? rawOperations : []).map(op => ({
-      types: (Array.isArray(op?.types) ? op.types : [op?.type]).filter(t => validTypes.has(t)),
-      targets: (Array.isArray(op?.targets) ? op.targets : []).map(Number).filter(n => roomNumbers.has(n)),
-      parts: (Array.isArray(op?.parts) ? op.parts : []).filter(p => validParts.has(p)),
-      assets: (Array.isArray(op?.assets) ? op.assets : [])
-        .map(name => String(name || "").trim())
-        .filter(name => /^[A-Za-z0-9_]+$/.test(name))
-        .slice(0, 8),
-    })).filter(op => op.types.length > 0 && op.targets.length > 0);
+    return (Array.isArray(rawOperations) ? rawOperations : []).map(op => {
+      const types = (Array.isArray(op?.types) ? op.types : [op?.type])
+        .filter(t => validTypes.has(t));
+      const isMoveTo = types.includes("moveTo");
+      const normalized = {
+        types,
+        targets: (Array.isArray(op?.targets) ? op.targets : [])
+          .map(Number).filter(n => roomNumbers.has(n)),
+        parts: (Array.isArray(op?.parts) ? op.parts : []).filter(p => validParts.has(p)),
+        assets: (Array.isArray(op?.assets) ? op.assets : [])
+          .map(name => String(name || "").trim())
+          .filter(name => /^[A-Za-z0-9_]+$/.test(name))
+          .slice(0, 8),
+      };
+      if (!isMoveTo) return normalized;
+      return {
+        ...normalized,
+        referenceTargets: (Array.isArray(op?.referenceTargets) ? op.referenceTargets : [])
+          .map(Number).filter(n => roomNumbers.has(n)),
+        side: /^(left|right)$/i.test(String(op?.side || ""))
+          ? String(op.side).toLowerCase()
+          : "",
+      };
+    }).filter(op => op.types.length > 0 && op.targets.length > 0 &&
+      (!op.types.includes("moveTo") || (op.referenceTargets.length > 0 && !!op.side)));
   }
 
   function enrichPlannerAssetsFromExplicitMentions(plan, content) {
@@ -1681,6 +1721,12 @@ ${recentSemantic}`;
     if (matched.size !== 1) return plan;
     const explicitTarget = [...matched.keys()][0];
     for (const operation of plan.operations) {
+      if (operation?.types?.includes("moveTo")) {
+        // moveTo 同时包含被移动者与参照人物。“把你移到 Rin 左边”和
+        // “把 Rin 移到你左边”只靠唯一显式房间名无法判断它是哪一种角色，
+        // 因此保留规划器明确给出的 targets/referenceTargets/side。
+        continue;
+      }
       if (Array.isArray(operation.targets) && operation.targets.length > 0) {
         operation.targets = [explicitTarget];
       }
@@ -2333,7 +2379,7 @@ action 只用于确实要改变 BC 状态的移动、添加/删除/设置道具�
 actionTypes 只能从 itemadd,itemdel,itemdelall,itemset,itemcolor,move,moveTo,moveEdge,snapshotSave,snapshotRestore,copyRestraint,emote 中选择。
 把语义相容的类型都列出，例如“绑成某种绑法”通常允许 itemadd 和 itemset；“换个更严格的绑法”也可允许先移除再添加。
 operations.assets 用于保存用户已经明确选中的精确 Asset 名称。若设备目录把“狗窝”映射为 LowCage，就必须写 assets:["LowCage"]；不得再写 PetBed，也不得只保留中文描述让主模型重新猜。用户没有明确选定具体道具时才留空数组。
-targets 必须使用房间名单中的编号，且永远表示“被实际操作的人”。“我/给我/把我”指说话者#${senderNum}；“你/御坂/你自己”指御坂#${Player?.MemberNumber || "?"}。moveTo 中即使目的地是御坂，targets 仍填写被移动者，不能填写参照人物。
+targets 必须使用房间名单中的编号，且永远表示“被实际操作的人”。“我/给我/把我”指说话者#${senderNum}；“你/御坂/你自己”指御坂#${Player?.MemberNumber || "?"}。moveTo 中 targets 只填写被移动者；referenceTargets 只填写作为目的地参照的人；side 只能是 left 或 right。
 parts 只在用户明确限定单一身体部位或设备位时填写标准值 Arms/Hands/Legs/Feet/Mouth/Head/Neck/Torso/Pelvis/Breast/Eyes/Ears/Vulva/Devices，否则空数组。笼子、家具、机器等 ItemDevices 统一规划为 Devices。中文“绑手/把手绑住/手上的麻绳/手铐”在 BC 中通常属于整条手臂束缚，规划为 Arms；只有明确说手掌、手指或指定 ItemHands 道具时才规划为 Hands。LeatherDeluxeCuffs 固定属于 Arms。
 needsCatalog 表示是否涉及道具、穿着、束缚、属性或颜色；移动/表情/闲聊为 false。
 MOVE/moveTo/moveEdge 只表示聊天室人物头像的横向站位（左移、右移、移到某人旁边、移到边缘）。它们绝不表示进入、躺进、关进、塞进、坐进、装进或使用某个道具/容器。
@@ -2358,6 +2404,7 @@ constraints 只记录用户明确表达的限制：noMove=禁止移动，noAdd=�
 格式:{"intent":"activity|friendship|action|chat|roleplay|clarify","memorySearch":false,"memoryEntities":[],"stickerId":"","usedPendingClarification":false,"needsCatalog":false,"goal":"最终目标","activity":{"target":123,"request":"摸摸她的头"},"friendship":{"target":123,"explicit":true},"constraints":{"noMove":false,"noAdd":false,"replaceExisting":false,"noStack":false,"preserveParts":[]},"operations":[],"question":""}
 operations 每项必须使用 types 数组；不要输出单数 type。执行层会兼容单数 type，但标准输出始终是 types。
 action 操作项示例:{"types":["moveEdge"],"targets":[123],"parts":[],"assets":[]}
+moveTo 操作项示例:{"types":["moveTo"],"targets":[194331],"referenceTargets":[172679],"side":"left","parts":[],"assets":[]}
 房间名单:${roster}
 说话者当前实时道具:${senderItems}
 ItemDevices 紧凑目录:${deviceCatalog || "不可用"}
@@ -2793,8 +2840,16 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
           ],
         },
       },
-      action: { type: "string" },
-      speech: { type: "string" },
+      action: {
+        type: "string",
+        description: "Only the character's physical action, without stars, dialogue, line breaks, or legacy separators.",
+        pattern: "^[^|\\r\\n*]*$",
+      },
+      speech: {
+        type: "string",
+        description: "Only spoken dialogue, without actions, stars, line breaks, or legacy separators.",
+        pattern: "^[^|\\r\\n*]*$",
+      },
     },
     required: ["protocol", "commands", "action", "speech"],
     additionalProperties: false,
@@ -3015,14 +3070,26 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
     }
     for (const candidate of rawCommands) {
       if (typeof candidate === "string") {
-        const legacy = parseActionCommands(candidate);
-        if (legacy.commands.length > 0 && !legacy.cleaned) commands.push(...legacy.commands);
-        else rejectedCommands.push(candidate);
+        rejectedCommands.push(candidate);
         continue;
       }
       const normalized = normalizeStructuredCommand(candidate);
       if (normalized) commands.push(normalized);
       else rejectedCommands.push(candidate);
+    }
+    const action = typeof parsed.action === "string" ? parsed.action : "";
+    const speech = typeof parsed.speech === "string" ? parsed.speech : "";
+    if (/[|\r\n*]/.test(action) || /[|\r\n*]/.test(speech)) {
+      return {
+        matched: true,
+        ok: false,
+        reason: "invalid-visible-field-format",
+        protocol: String(parsed.protocol || ""),
+        commands: [],
+        rejectedCommands,
+        action: "",
+        speech: "",
+      };
     }
     return {
       matched: true,
@@ -3030,8 +3097,8 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
       protocol: String(parsed.protocol || ""),
       commands,
       rejectedCommands,
-      action: typeof parsed.action === "string" ? parsed.action : "",
-      speech: typeof parsed.speech === "string" ? parsed.speech : "",
+      action,
+      speech,
     };
   }
 
@@ -3198,6 +3265,12 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
     const targets = (Array.isArray(operation.targets) ? operation.targets : []).map(Number);
     const target = commandPrimaryTarget(cmd);
     if (targets.length > 0 && target !== null && !targets.includes(target)) return false;
+    if (cmd.type === "moveTo") {
+      const referenceTargets = (Array.isArray(operation.referenceTargets)
+        ? operation.referenceTargets : []).map(Number);
+      if (!referenceTargets.includes(Number(cmd.targetNumber))) return false;
+      if (!operation.side || String(operation.side).toLowerCase() !== String(cmd.side).toLowerCase()) return false;
+    }
     const parts = Array.isArray(operation.parts) ? operation.parts : [];
     if (parts.length > 0 && ["itemadd", "itemdel", "itemset"].includes(cmd.type)) {
       if (!itemCommandTouchesPlannedParts(cmd, parts)) return false;
@@ -3228,6 +3301,12 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
     const targets = (Array.isArray(operation.targets) ? operation.targets : []).map(Number);
     const target = commandPrimaryTarget(cmd);
     if (targets.length > 0 && target !== null && !targets.includes(target)) return false;
+    if (cmd.type === "moveTo") {
+      const referenceTargets = (Array.isArray(operation.referenceTargets)
+        ? operation.referenceTargets : []).map(Number);
+      if (!referenceTargets.includes(Number(cmd.targetNumber))) return false;
+      if (!operation.side || String(operation.side).toLowerCase() !== String(cmd.side).toLowerCase()) return false;
+    }
     const types = Array.isArray(operation.types) ? operation.types : [];
     // 解除全部、恢复快照和复制束缚影响面较大，仍须由规划器明确列出。
     if (["itemdelall", "snapshotRestore", "copyRestraint"].includes(cmd.type)) {
@@ -3398,6 +3477,8 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
       normalizePlannerSimpleRoleplayDecision(
         JSON.parse(JSON.stringify(plan || {})), content),
     buildPlannerRecentContextForTest: buildPlannerRecentContext,
+    formatSelfMessageForContextForTest: formatSelfMessageForContext,
+    isLegacySelfFormattingMemoryForTest: isLegacySelfFormattingMemory,
     normalizePlannerOperationsForTest: rawOperations => normalizePlannerOperations(
       rawOperations,
       new Set((ChatRoomCharacter || []).map(c => Number(c.MemberNumber)).concat(Number(Player?.MemberNumber))),
@@ -3844,8 +3925,6 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
     verifyCommandPostconditions,
     captureActionBaseline,
     verifyPlanConstraints,
-    normalizeRoleplayReply,
-    normalizeVisibleReplyForTest: normalizeVisibleReply,
     formatStructuredVisibleReplyForTest: formatStructuredVisibleReply,
     parseStructuredReplyForTest: parseStructuredReply,
     parseAssistantReplyForTest: parseAssistantReply,
@@ -4710,8 +4789,7 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
     window.__misakaLastSentReply = sentKey;
     window.__misakaLastSentReplyTime = now;
     if (typeof CurrentScreen !== "undefined" && CurrentScreen === "ChatRoom") {
-      let parts = text.split(/\n/).map(p => p.trim()).filter(Boolean);
-      if (parts.length === 1 && parts[0].includes("|")) parts = parts[0].split(/\|/).map(p => p.trim()).filter(Boolean);
+      const parts = text.split(/\n/).map(p => p.trim()).filter(Boolean);
       const normalizedReplyId = normalizeReplyId(replyId);
       const speechIndex = parts.findIndex(part => !part.startsWith("*"));
       const replyPartIndex = speechIndex >= 0 ? speechIndex : 0;
@@ -5656,10 +5734,16 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
     window.__misakaLastKeyTime = now;
 
     if (senderNum === Player.MemberNumber) {
-      state.recentMessages.push({ senderName: "御搬", content: readableContent, isSelf: true, time: now });
+      state.recentMessages.push({
+        senderName: "御搬",
+        content: readableContent,
+        isSelf: true,
+        messageType: data.Type,
+        time: now,
+      });
       if (state.recentMessages.length > CONFIG.maxContext) state.recentMessages.shift();
       // 御坂自己的消息也存语义记忆
-      if (readableContent.length >= 15 && !["Activity", "Action"].includes(data.Type)) {
+      if (readableContent.length >= 15 && !["Activity", "Action", "Emote"].includes(data.Type)) {
         storeSemanticMemory(`御搬: ${readableContent}`, { sender: "御搬", memberNum: Player.MemberNumber, isSelf: true, messageType: data.Type }).catch(() => {});
       }
       return;
@@ -5683,7 +5767,7 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
 
     const durableConversation = !["Activity", "Action"].includes(data.Type);
     if (durableConversation) updateProfile(senderNum, senderName, readableContent);
-    state.recentMessages.push({ senderName: senderName, content: readableContent, senderMemberNumber: senderNum, isSelf: false, time: now });
+    state.recentMessages.push({ senderName: senderName, content: readableContent, senderMemberNumber: senderNum, isSelf: false, messageType: data.Type, time: now });
     if (state.recentMessages.length > CONFIG.maxContext) state.recentMessages.shift();
     state.lastNonSelfMsgTime = now;
 
@@ -5845,13 +5929,9 @@ function unescapeHTML(s) {
     let cleaned = stripBalancedOuterQuotes(reply);
 
     // thinking 模式下思考过程在 reasoning_content 里,content 是干净的回复
-    // 这里只为旧文本协议做兼容；新协议使用 action/speech 独立字段，不经过
-    // “取前两行再切 120 字符”的有损链路。
+    // 非主回复辅助链仍会使用纯文本清理；正式模型回复只接受结构化协议。
     let lines = cleaned.split(/\n+/).map(l => l.trim().replace(/^(御[搬坂]|Misaka|misaka)\s*[::]\s*/i, "").trim()).filter(Boolean);
     // 最多取前两行(动作 + 说话)
-    lines = lines.slice(0, 2);
-    // 兼容旧 | 格式:如果单行包含 |,拆成多行
-    lines = lines.flatMap(l => l.split(/\|/).map(s => s.trim()).filter(Boolean));
     lines = lines.slice(0, 2);
     // 清理每行:奇数 * 时去掉末尾孤立 *
     lines = lines.map(l => {
@@ -5862,40 +5942,6 @@ function unescapeHTML(s) {
     cleaned = lines.join('\n');
 
     return unescapeHTML(cleaned);
-  }
-
-  function normalizeRoleplayReply(reply) {
-    const cleaned = sanitizeReply(reply);
-    if (!cleaned) return "";
-    const lines = cleaned.split(/\n+/).map(s => s.trim()).filter(Boolean).slice(0, 2);
-    if (lines.some(line => /^\*[^*\n]+\*$/.test(line))) return lines.join("\n");
-    // roleplay 已由规划器确认是“不改变游戏状态的动作”。因此模型漏写星号时，
-    // 可以按意图确定性补格式，而不需要再用动作关键词猜一句话是不是动作。
-    const action = lines[0].replace(/^\*+|\*+$/g, "").trim();
-    const speech = lines[1] ? lines[1].replace(/^\*+|\*+$/g, "").trim() : "";
-    return [`*${action}*`, speech].filter(Boolean).join("\n");
-  }
-
-  function looksLikeBareActionLine(line) {
-    const text = String(line || "").replace(/^\*+|\*+$/g, "").trim();
-    if (!text || text.length > 36 || /[?？!！]$/.test(text)) return false;
-    if (/^(?:轻轻|微微|慢慢|悄悄|下意识地|忍不住|有些|故意|假装)?(?:歪(?:了)?歪头|歪(?:着)?头|偏(?:了)?偏头|偏头|点(?:了)?点头|点头|摇(?:了)?摇头|摇头|低(?:下)?头|抬(?:起)?头|别过头|转过头|探头|耸(?:了)?耸肩|耸肩|摆(?:了)?摆手|摆手|挥(?:了)?挥手|挥手|摊(?:了)?摊手|摊手|拍(?:了)?拍(?:手|脑袋|额头)|揉(?:了)?揉(?:眼睛|鼻子|头发|脑袋)|眨(?:了)?眨眼|眨眼|闭(?:上)?眼|睁(?:开)?眼|撇(?:了)?撇嘴|鼓(?:了)?鼓脸|跺(?:了)?跺脚|叹(?:了)?口气|叹气|轻笑|笑(?:了)?笑|哼(?:了)?一声|做(?:了)?个.+表情|露出.+表情|站直|坐直|缩(?:了)?缩(?:脖子|身体)|退(?:了)?一步|靠(?:近|过去)|凑(?:近|过去)|(?:脸|脸颊|耳根).{0,10}(?:一红|泛红|发红|红起来))/.test(text)) {
-      return true;
-    }
-    const hasBodyCue = /(?:眼神|目光|视线|表情|脸|脸颊|耳根|嘴角|眉头|肩膀?|双手|手指|脑袋|头|身体|姿势)/.test(text);
-    const hasActionCue = /(?:警惕|失焦|发红|脸红|一红|泛红|红起来|移开|躲开|垂下|抬起|交叠|抱起|抱住|攥紧|松开|僵住|颤(?:了|抖|一下)|抖(?:了|一下)|歪|偏|低|抬|摇|点|摆|挥|耸|揉|拍|别过(?:头)?(?:去)?|转过(?:头)?|露出|变得|起来|下去|过去)$/.test(text);
-    return hasBodyCue && hasActionCue;
-  }
-
-  function normalizeVisibleReply(intent, reply) {
-    const cleaned = sanitizeReply(reply);
-    if (!cleaned) return "";
-    if (intent === "roleplay") return normalizeRoleplayReply(cleaned);
-    const lines = cleaned.split(/\n+/).map(s => s.trim()).filter(Boolean).slice(0, 2);
-    if (lines.length === 0 || /^\*[^*\n]+\*$/.test(lines[0])) return lines.join("\n");
-    if (!looksLikeBareActionLine(lines[0])) return lines.join("\n");
-    const action = lines[0].replace(/^\*+|\*+$/g, "").trim();
-    return [`*${action}*`, ...lines.slice(1)].join("\n");
   }
 
   function parseAssistantReply(reply, intent = "chat") {
@@ -5927,13 +5973,12 @@ function unescapeHTML(s) {
         rejectedCommands: structured.rejectedCommands,
       };
     }
-    const legacy = parseActionCommands(reply);
     return {
-      commands: legacy.commands,
-      cleaned: normalizeVisibleReply(intent, legacy.cleaned),
+      commands: [],
+      cleaned: "",
       structured: false,
-      protocol: "legacy-text",
-      protocolError: "",
+      protocol: "",
+      protocolError: "structured-reply-required",
       rejectedCommands: [],
     };
   }
@@ -5942,6 +5987,9 @@ function unescapeHTML(s) {
     const raw = String(reply || "").trim();
     if (!raw) return { usable: false, reason: "empty-content", parsed: null };
     const structured = parseStructuredReply(raw);
+    if (!structured.matched) {
+      return { usable: false, reason: "structured-reply-required", parsed: null };
+    }
     if (structured.matched && !structured.ok) {
       return { usable: false, reason: structured.reason || "invalid-structured-reply", parsed: null };
     }
@@ -6222,7 +6270,7 @@ function unescapeHTML(s) {
       ...recentForContext.map(message => ({
         role: message.isSelf ? "assistant" : "user",
         content: message.isSelf
-          ? message.content
+          ? formatSelfMessageForContext(message)
           : `${message.senderName}#${message.senderMemberNumber || "?"}: ${message.content}`,
       })),
       {
@@ -6308,7 +6356,7 @@ function unescapeHTML(s) {
         const mm = String(t.getMinutes()).padStart(2, '0');
         if (m.isSelf) {
           // 御坂自己的消息不加时间戳和名字前缀,避免 LLM 模仿
-          return { role: "assistant", content: m.content };
+          return { role: "assistant", content: formatSelfMessageForContext(m) };
         }
         return {
           role: "user",
