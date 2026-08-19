@@ -29,7 +29,7 @@
         !hooks?.snapshotRecentMessagesForTest || !hooks?.replaceRecentMessagesForTest ||
         !hooks?.stripQuotedSegmentsForTest || !hooks?.recentConversationHasAnswerForTest ||
         !hooks?.buildPlannerRecentContextForTest ||
-        !hooks?.formatSelfMessageForContextForTest ||
+        !hooks?.formatMessageForContextForTest ||
         !hooks?.isLegacySelfFormattingMemoryForTest ||
         !hooks?.parseAssistantReplyForTest ||
         !hooks?.formatStructuredVisibleReplyForTest ||
@@ -637,22 +637,28 @@
         actual: habitualNamedPlan,
       });
 
-      const typedActionContext = hooks.formatSelfMessageForContextForTest({
+      const typedActionContext = hooks.formatMessageForContextForTest({
         content: "歪了歪头",
         isSelf: true,
         messageType: "Emote",
       });
-      const typedSpeechContext = hooks.formatSelfMessageForContextForTest({
+      const typedSpeechContext = hooks.formatMessageForContextForTest({
         content: "怎么了？",
         isSelf: true,
         messageType: "Chat",
       });
+      const typedOtherActivityContext = hooks.formatMessageForContextForTest({
+        content: "摸了摸御坂的头",
+        isSelf: false,
+        messageType: "Activity",
+      });
       results.push({
-        id: "guard-self-history-preserves-action-and-speech-types",
+        id: "guard-all-recent-history-preserves-raw-bc-types",
         repetition: 1,
-        passed: typedActionContext === "【动作】歪了歪头" &&
-          typedSpeechContext === "【台词】怎么了？",
-        actual: { typedActionContext, typedSpeechContext },
+        passed: typedActionContext === "【Emote】歪了歪头" &&
+          typedSpeechContext === "【Chat】怎么了？" &&
+          typedOtherActivityContext === "【Activity】摸了摸御坂的头",
+        actual: { typedActionContext, typedSpeechContext, typedOtherActivityContext },
       });
 
       const oldSelfPipeMemory = hooks.isLegacySelfFormattingMemoryForTest({

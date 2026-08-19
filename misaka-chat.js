@@ -1,4 +1,4 @@
-// MisakaChat v3.1.0 - BC 御坂自动回复系统
+// MisakaChat v3.1.1 - BC 御坂自动回复系统
 // 模块分区:
 //   [Config]      L15-55   配置 + 状态
 //   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "3.1.0";
+  const SCRIPT_VERSION = "3.1.1";
   const RELEASE_CHANNEL = "stable";
   const bootstrapOptions = window.__misakaNextBootstrapOptions || {};
   delete window.__misakaNextBootstrapOptions;
@@ -1131,8 +1131,8 @@ ${recentSemantic}`;
         const t = new Date(m.time || Date.now());
         const hh = String(t.getHours()).padStart(2, '0');
         const mm = String(t.getMinutes()).padStart(2, '0');
-        if (m.isSelf) return `[${hh}:${mm}] 御坂: ${m.content}`;
-        return `[${hh}:${mm}] ${m.senderName}#${m.senderMemberNumber || "?"}: ${m.content}`;
+        if (m.isSelf) return `[${hh}:${mm}] 御坂: ${formatMessageForContext(m)}`;
+        return `[${hh}:${mm}] ${m.senderName}#${m.senderMemberNumber || "?"}: ${formatMessageForContext(m)}`;
       }).join("\n");
       // 检测最近是否全是自己(深夜无人说话场景)
       const lastNonSelf = state.recentMessages.slice(-15).filter(m => !m.isSelf);
@@ -1508,13 +1508,17 @@ ${recentSemantic}`;
     }
   }
 
-  function formatSelfMessageForContext(message) {
+  function formatMessageForContext(message) {
     const raw = String(message?.content || "").trim();
-    const messageType = String(message?.messageType || "");
+    const storedType = String(message?.messageType || "").trim();
+    const starredAction = /^\*[^*\n]+\*$/.test(raw);
+    const messageType = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/.test(storedType)
+      ? storedType
+      : (starredAction ? "Emote" : "Chat");
     const isAction = ["Activity", "Action", "Emote"].includes(messageType) ||
-      /^\*[^*\n]+\*$/.test(raw);
+      starredAction;
     const content = isAction ? raw.replace(/^\*+|\*+$/g, "").trim() : raw;
-    return `${isAction ? "【动作】" : "【台词】"}${content}`;
+    return `【${messageType}】${content}`;
   }
 
   function buildPlannerRecentContext(limit = 10) {
@@ -1523,8 +1527,9 @@ ${recentSemantic}`;
       const hh = String(t.getHours()).padStart(2, "0");
       const mm = String(t.getMinutes()).padStart(2, "0");
       const who = m.isSelf ? "御坂" : `${m.senderName}#${m.senderMemberNumber || "?"}`;
-      const content = (m.isSelf ? formatSelfMessageForContext(m) : String(m.content || "")).slice(0, 220);
-      const correction = !m.isSelf && /^(?:不对|不是|错了|更正|准确地?说|应该是|其实是)[，,：:\s]/.test(content.trim())
+      const content = formatMessageForContext(m).slice(0, 220);
+      const correctionSource = String(m.content || "").trim();
+      const correction = !m.isSelf && /^(?:不对|不是|错了|更正|准确地?说|应该是|其实是)[，,：:\s]/.test(correctionSource)
         ? "【显式纠正：此句覆盖同话题的较早说法】"
         : "";
       return `[${hh}:${mm}] ${who}: ${correction}${content}`;
@@ -2339,7 +2344,7 @@ ${recentSemantic}`;
   }
 
   // 自然语言操作规划由独立 LLM 调用完成。执行层不再用关键词/正则猜测用户意图。
-  async function planUserRequest(senderNum, senderName, content, pendingClarification) {
+  async function planUserRequest(senderNum, senderName, content, pendingClarification, messageType = "Chat") {
     const roster = (typeof MisakaPersona !== "undefined" && Array.isArray(ChatRoomCharacter))
       ? MisakaPersona.buildCompactRoster(ChatRoomCharacter, Player.MemberNumber)
       : `御坂#${Player?.MemberNumber || "?"}; ${senderName}#${senderNum}`;
@@ -2414,7 +2419,8 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
 御坂表情包目录:${stickerCatalog || "无"}
 待澄清上下文:${pendingClarification?.context || "无"}
 当前实时道具高于历史对话。调整/收紧/替换现有道具时，以这里是否存在为准；存在则应规划 action，不存在才 clarify。`;
-    const result = await callLLM(plannerPrompt, [{ role: "user", content: `最新消息:${senderName}#${senderNum}: ${content}` }], {
+    const latestContext = formatMessageForContext({ content, messageType, isSelf: false });
+    const result = await callLLM(plannerPrompt, [{ role: "user", content: `最新消息:${senderName}#${senderNum}: ${latestContext}` }], {
       // 保留 DeepSeek thinking；规划结果虽短，但推理过程与最终 JSON 共用
       // max_tokens，必须给 reasoning_content 留出充足预算。
       thinking: true,
@@ -3477,7 +3483,7 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
       normalizePlannerSimpleRoleplayDecision(
         JSON.parse(JSON.stringify(plan || {})), content),
     buildPlannerRecentContextForTest: buildPlannerRecentContext,
-    formatSelfMessageForContextForTest: formatSelfMessageForContext,
+    formatMessageForContextForTest: formatMessageForContext,
     isLegacySelfFormattingMemoryForTest: isLegacySelfFormattingMemory,
     normalizePlannerOperationsForTest: rawOperations => normalizePlannerOperations(
       rawOperations,
@@ -5637,7 +5643,7 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
       schedulePendingReplyDrain();
     }, CONFIG.replyHardTimeoutMs);
 
-    handleReply(item.senderNum, item.senderName, item.content, item.replyId)
+    handleReply(item.senderNum, item.senderName, item.content, item.replyId, item.messageType)
       .finally(() => {
         clearTrackedTimeout(replyTimeout);
         schedulePendingReplyDrain();
@@ -6164,7 +6170,7 @@ function unescapeHTML(s) {
     const systemPrompt = buildMainReplySystemPrompt(requestPlan);
     const raw = await callLLM(systemPrompt, [{
       role: "user",
-      content: `【当前必须处理的最新消息】${senderName}#${senderNum}: ${content}\n只回复并执行这一条。历史消息只作上下文,不要补做旧请求。`,
+      content: `【当前必须处理的最新消息】${senderName}#${senderNum}: ${formatMessageForContext({ content, messageType: "Chat" })}\n只回复并执行这一条。历史消息只作上下文,不要补做旧请求。`,
     }], structuredReplyLLMOptions({
       thinking: true,
       temperature: 0,
@@ -6270,12 +6276,12 @@ function unescapeHTML(s) {
       ...recentForContext.map(message => ({
         role: message.isSelf ? "assistant" : "user",
         content: message.isSelf
-          ? formatSelfMessageForContext(message)
-          : `${message.senderName}#${message.senderMemberNumber || "?"}: ${message.content}`,
+          ? formatMessageForContext(message)
+          : `${message.senderName}#${message.senderMemberNumber || "?"}: ${formatMessageForContext(message)}`,
       })),
       {
         role: "user",
-        content: `【当前必须处理的最新消息】${senderName}#${senderNum}: ${content}\n只回复并执行这一条。历史消息只作上下文,不要补做旧请求。`,
+        content: `【当前必须处理的最新消息】${senderName}#${senderNum}: ${formatMessageForContext({ content, messageType: "Chat" })}\n只回复并执行这一条。历史消息只作上下文,不要补做旧请求。`,
       },
     ], CONFIG.maxContextTokens);
     const systemPrompt = buildMainReplySystemPrompt(requestPlan);
@@ -6333,7 +6339,7 @@ function unescapeHTML(s) {
     return result;
   }
 
-  async function handleReply(senderNum, senderName, content, replyId = "") {
+  async function handleReply(senderNum, senderName, content, replyId = "", messageType = "Chat") {
     if (!isCurrent()) return;
     const debugId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     state.busy = true;
@@ -6356,22 +6362,22 @@ function unescapeHTML(s) {
         const mm = String(t.getMinutes()).padStart(2, '0');
         if (m.isSelf) {
           // 御坂自己的消息不加时间戳和名字前缀,避免 LLM 模仿
-          return { role: "assistant", content: formatSelfMessageForContext(m) };
+          return { role: "assistant", content: formatMessageForContext(m) };
         }
         return {
           role: "user",
-          content: `[${hh}:${mm}] ${m.senderName}#${m.senderMemberNumber || "?"}: ${m.content}`
+          content: `[${hh}:${mm}] ${m.senderName}#${m.senderMemberNumber || "?"}: ${formatMessageForContext(m)}`
         };
       }).filter(Boolean);
       contextMessages.push({
         role: "user",
-        content: `【当前必须处理的最新消息】${senderName}#${senderNum}: ${content}\n只回复并执行这一条。历史消息只作上下文,不要补做旧请求。`
+        content: `【当前必须处理的最新消息】${senderName}#${senderNum}: ${formatMessageForContext({ content, messageType })}\n只回复并执行这一条。历史消息只作上下文,不要补做旧请求。`
       });
       contextMessages = trimContextByTokenBudget(contextMessages, CONFIG.maxContextTokens);
 
       // 独立规划器先理解自然语言；主模型只在规划许可范围内生成具体指令。
       const pendingClarification = getPendingClarification(senderNum);
-      const requestPlan = await planUserRequest(senderNum, senderName, content, pendingClarification);
+      const requestPlan = await planUserRequest(senderNum, senderName, content, pendingClarification, messageType);
       pushDebugTrace({ id: debugId, stage: "plan", requestPlan, pendingClarification: pendingClarification ? { context: pendingClarification.context, updatedAt: pendingClarification.updatedAt } : null });
       // 规划器自身失败时不要再让主模型自由发挥。否则安全层虽会拦截指令，
       // 自然语言回复仍可能谎称操作成功。
