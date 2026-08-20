@@ -3,7 +3,7 @@
 为 Bondage Club 的 Gimp Dolls 房间维护的两个用户脚本：
 
 - **GimpSorter v1.7.4**：按 `GIMP → Gimp → Doll → GIMP Pet → Pet → Error` 分类；组内先排三位编号，再排四位编号，并各自按数值升序整理。
-- **MisakaChat v3.1.2**：御坂房间 Bot，提供结构化角色回复、人物与长期记忆、角色扮演、BC 原生互动、语境表情包、好友能力和受控的 BC 操作；近期上下文中的每条消息均以 `【语义类型/BC 原始类型】` 同时保留内容性质与传输类型，密集点名时最多排队五条，并使用 BC 原生消息引用明确回复对象。结构化回复只接受 DeepSeek Responses API 的 strict `json_schema`，动作、台词与操作命令不再兼容旧文本分隔协议；首次不可用时等待 2 秒重试一次，仍失败会引用原消息提示联系咲修复，然后继续处理队列。
+- **MisakaChat v3.1.3**：御坂房间 Bot，提供结构化角色回复、人物与长期记忆、角色扮演、BC 原生互动、语境表情包、好友能力和受控的 BC 操作；近期上下文中的每条消息均以 `【语义类型/BC 原始类型】` 同时保留内容性质与传输类型，密集点名时最多排队五条，并使用 BC 原生消息引用明确回复对象。结构化回复只接受 DeepSeek Responses API 的 strict `json_schema`，动作、台词与操作命令不再兼容旧文本分隔协议；连续两次生成不可用时会保存脱敏故障包，并在启用私有诊断上传后异步提交到受控收集器，然后继续处理队列。
 
 另提供一个默认关闭、仅供 iPadOS 长期挂机使用的独立守护脚本：
 
@@ -54,6 +54,8 @@ MisakaChat 的对话和 embedding 凭据不写入仓库。安装后通过 `/misa
 /misaka embedkey <openai-key>
 /misaka model <name>
 /misaka memory
+/misaka trace [clear]
+/misaka diagnostics
 /misaka export|import
 /misaka persona <text>
 /misaka forget
@@ -81,6 +83,8 @@ MisakaChat 的对话和 embedding 凭据不写入仓库。安装后通过 `/misa
 自动回收不会因房间聊天、动作或 GIMP 系统消息延期；到期时只等待输入框清空、御坂完成当前任务并确认仍在房间。离开 BC 前会依次探测 GitHub Pages 主释放页与独立 Fly.io origin 的 httpbingo 备用页；只跳转到已确认可访问的远程页，二者均不可用时留在 BC 并在下一轮重试。主释放页通过 URL fragment 接收返回地址；备用页只接收去除查询参数和 fragment 的 BC 页面地址，并通过 HTTP Refresh 返回。若停在登录页，loader 会从登录页首次就绪起等待 5 秒，让 WCE、其他 Tampermonkey 脚本与 BC 组件完成初始化，然后填充 BC 原生表单并调用 `LoginDoLogin`。每个页面最多自动尝试一次，回房仍由 BC 的 `ReturnToChatRoom` 完成。密码错误时不会循环重试；登录后的成员编号不是 `194331` 时，Guard 不会继续加载。可随时从 Tampermonkey 菜单清除私有凭据。
 
 `/misaka forget` 会清空人物档案、语义记忆和提炼长期记忆，使用前应先导出备份。
+
+当结构化回复连续两次不可用时，MisakaChat 会在浏览器本地保存最近 20 个回复故障包。每包包含有限的近期上下文、规划摘要、尝试次数、HTTP/Responses 状态、耗时、token、错误码及不可用输出预览；疑似 API key 与 Authorization 会自动脱敏。配置诊断上传密钥后，loader 会签名并异步上传故障包到私有诊断收集器；正常回复不会触发该网络请求。上传失败的包最多在 Tampermonkey 私有存储中保留 5 个，并在下次启动或故障时重试。使用 `/misaka diagnostics` 打开密钥设置，`/misaka trace` 导出到 `window.__misakaTraceExport`，`/misaka trace clear` 清空本地诊断记录。
 
 ## 文档
 

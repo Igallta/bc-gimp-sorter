@@ -7,6 +7,7 @@ import vm from "node:vm";
 const source = fs.readFileSync(new URL("../misaka-chat.js", import.meta.url), "utf8");
 const requests = [];
 const store = new Map();
+const queuedResponsePayloads = [];
 
 const context = {
   console, Date, Math, JSON, Number, String, Array, Object, Map, Set, Promise,
@@ -49,16 +50,19 @@ const context = {
       action: "歪了歪头",
       speech: "可乐一般包含碳酸水、糖、焦糖色和咖啡因。",
     });
+    const payload = queuedResponsePayloads.length > 0
+      ? queuedResponsePayloads.shift()
+      : {
+          status: "completed",
+          output: [{
+            type: "message",
+            content: [{ type: "output_text", text: output }],
+          }],
+          usage: { output_tokens: 80, output_tokens_details: { reasoning_tokens: 20 } },
+        };
     queueMicrotask(() => options.onload?.({
       status: 200,
-      responseText: JSON.stringify({
-        status: "completed",
-        output: [{
-          type: "message",
-          content: [{ type: "output_text", text: output }],
-        }],
-        usage: { output_tokens: 80, output_tokens_details: { reasoning_tokens: 20 } },
-      }),
+      responseText: JSON.stringify(payload),
     }));
     return { abort() {} };
   },
@@ -103,6 +107,57 @@ for (const variant of schema.properties.commands.items.anyOf) {
   assert.equal(variant.additionalProperties, false);
   assert.ok(Array.isArray(variant.required) && variant.required.includes("type"));
 }
+
+const diagnosticResult = await hooks.callGeneratedReplyWithRetryForTest("chat", "请回复诊断测试");
+assert.equal(diagnosticResult.exhausted, false);
+assert.equal(diagnosticResult.attempts, 1);
+assert.ok(diagnosticResult.diagnostics.some(item =>
+  item.event === "response" && item.outcome === "usable" && item.status === 200));
+assert.ok(diagnosticResult.diagnostics.some(item =>
+  item.event === "inspection" && item.outcome === "usable"));
+
+queuedResponsePayloads.push(
+  {
+    status: "incomplete",
+    incomplete_details: { reason: "max_output_tokens" },
+    output: [],
+    usage: { output_tokens: 1024, output_tokens_details: { reasoning_tokens: 1024 } },
+  },
+  {
+    status: "completed",
+    output: [],
+    usage: { output_tokens: 12, output_tokens_details: { reasoning_tokens: 12 } },
+  },
+);
+const exhaustedResult = await hooks.callGeneratedReplyWithRetryForTest("chat", "请制造两次空回复");
+assert.equal(exhaustedResult.exhausted, true);
+assert.equal(exhaustedResult.attempts, 2);
+assert.equal(exhaustedResult.reason, "empty-content");
+assert.ok(exhaustedResult.diagnostics.some(item =>
+  item.attempt === 1 && item.event === "response" && item.incompleteReason === "max_output_tokens"));
+assert.ok(exhaustedResult.diagnostics.some(item =>
+  item.attempt === 2 && item.event === "inspection" && item.reason === "empty-content"));
+
+hooks.clearReplyFailureTraceForTest();
+for (let index = 0; index < 22; index++) {
+  hooks.persistReplyFailureBundleForTest({
+    id: `fault-${index}`,
+    stage: "llm:first",
+    currentMessage: `问题 ${index} sk-secretvalue123456789`,
+    context: hooks.buildReplyFailureContextForTest(Array.from({ length: 15 }, (_, messageIndex) => ({
+      role: messageIndex % 2 ? "assistant" : "user",
+      content: `上下文 ${messageIndex} Authorization: Bearer token-${messageIndex}`,
+    }))),
+    diagnostics: [{ event: "response", outcome: "unusable", status: 200, errorCode: "empty-content" }],
+  });
+}
+const failureTrace = JSON.parse(JSON.stringify(hooks.inspectReplyFailureTraceForTest()));
+assert.equal(failureTrace.length, 20, "reply failure telemetry must remain a bounded ring buffer");
+assert.equal(failureTrace[0].id, "fault-2");
+assert.equal(failureTrace.at(-1).context.length, 12, "only the most recent bounded context may be retained");
+const exportedFailureText = JSON.stringify(failureTrace);
+assert.doesNotMatch(exportedFailureText, /secretvalue|token-\d/);
+assert.match(exportedFailureText, /REDACTED/);
 
 context.__misakaTestLifecycle.dispose("responses-schema-suite-complete");
 console.log("MisakaChat Responses json_schema regression: PASS");

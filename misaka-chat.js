@@ -1,4 +1,4 @@
-// MisakaChat v3.1.2 - BC 御坂自动回复系统
+// MisakaChat v3.1.3 - BC 御坂自动回复系统
 // 模块分区:
 //   [Config]      L15-55   配置 + 状态
 //   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
@@ -14,7 +14,7 @@
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "3.1.2";
+  const SCRIPT_VERSION = "3.1.3";
   const RELEASE_CHANNEL = "stable";
   const bootstrapOptions = window.__misakaNextBootstrapOptions || {};
   delete window.__misakaNextBootstrapOptions;
@@ -249,6 +249,80 @@
   }
 
   window.__misakaDebugTrace = window.__misakaDebugTrace || [];
+  const REPLY_FAILURE_TRACE_LIMIT = 20;
+  const REPLY_FAILURE_CONTEXT_LIMIT = 12;
+
+  function redactReplyFailureText(value, maxLength = 600) {
+    return String(value ?? "")
+      .replace(/\bBearer\s+[A-Za-z0-9._~+\/-]+/gi, "Bearer [REDACTED]")
+      .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "[REDACTED_API_KEY]")
+      .slice(0, Math.max(0, Number(maxLength) || 0));
+  }
+
+  function sanitizeReplyFailureValue(value, depth = 0) {
+    if (depth > 5) return "[TRUNCATED]";
+    if (value === null || value === undefined) return value;
+    if (typeof value === "string") return redactReplyFailureText(value);
+    if (typeof value === "number" || typeof value === "boolean") return value;
+    if (Array.isArray(value)) return value.slice(0, 30).map(item => sanitizeReplyFailureValue(item, depth + 1));
+    if (typeof value !== "object") return String(value);
+    const clean = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (/key|authorization|embedding|reasoning_content|raw|responseText|systemPrompt/i.test(key)) continue;
+      clean[key] = sanitizeReplyFailureValue(item, depth + 1);
+    }
+    return clean;
+  }
+
+  function loadReplyFailureTrace() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(storageKey("reply_failure_trace")) || "[]");
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function persistReplyFailureBundle(bundle) {
+    try {
+      const records = loadReplyFailureTrace();
+      const record = sanitizeReplyFailureValue({
+        protocol: "misaka.reply-failure.v1",
+        time: new Date().toISOString(),
+        ...bundle,
+      });
+      records.push(record);
+      while (records.length > REPLY_FAILURE_TRACE_LIMIT) records.shift();
+      localStorage.setItem(storageKey("reply_failure_trace"), JSON.stringify(records));
+      try {
+        if (!TEST_MODE && typeof CustomEvent === "function" && typeof document?.dispatchEvent === "function") {
+          document.dispatchEvent(new CustomEvent("misaka-diagnostics-upload-v1", {
+            detail: {
+              protocol: "misaka.upload.v1",
+              client: { version: SCRIPT_VERSION, platform: "browser" },
+              bundle: record,
+            },
+          }));
+        }
+      } catch (e) {}
+      console.warn("[MisakaChat] 回复故障包已保存", {
+        id: bundle?.id || "",
+        stage: bundle?.stage || "",
+        exportCommand: "/misaka trace",
+      });
+    } catch (error) {
+      console.warn("[MisakaChat] 保存回复故障包失败:", error.message);
+    }
+  }
+
+  function buildReplyFailureContext(contextMessages) {
+    return (Array.isArray(contextMessages) ? contextMessages : [])
+      .slice(-REPLY_FAILURE_CONTEXT_LIMIT)
+      .map(message => ({
+        role: message?.role === "assistant" ? "assistant" : "user",
+        content: redactReplyFailureText(message?.content || "", 800),
+      }));
+  }
   function persistCapabilityTrace(entry) {
     if (!/^(activity|sticker|friend):/.test(String(entry?.stage || ""))) return;
     try {
@@ -1306,7 +1380,21 @@ ${recentSemantic}`;
   async function callLLM(systemPrompt, contextMessages, options = {}) {
     if (!isCurrent()) return null;
     const apiKey = getApiKeyStatus().value;
-    if (!apiKey) { console.warn("[MisakaChat] 未设置 API key"); return null; }
+    if (!apiKey) {
+      try {
+        options.onDiagnostic?.({
+          time: new Date().toISOString(),
+          elapsedMs: 0,
+          model: options.model || CONFIG.model,
+          apiKind: options.responseSchema ? "responses" : "chat-completions",
+          event: "configuration-error",
+          outcome: "unusable",
+          errorCode: "missing-api-key",
+        });
+      } catch (e) {}
+      console.warn("[MisakaChat] 未设置 API key");
+      return null;
+    }
     const messages = [{ role: "system", content: systemPrompt }, ...contextMessages];
     const primaryModel = options.model || CONFIG.model;
     const maxTokens = options.maxTokens || CONFIG.maxTokens;
@@ -1315,6 +1403,18 @@ ${recentSemantic}`;
       : null;
 
     const useThinking = options.thinking !== false;
+    const requestStartedAt = Date.now();
+    const reportDiagnostic = detail => {
+      try {
+        options.onDiagnostic?.({
+          time: new Date().toISOString(),
+          elapsedMs: Math.max(0, Date.now() - requestStartedAt),
+          model: primaryModel,
+          apiKind: responseSchema ? "responses" : "chat-completions",
+          ...detail,
+        });
+      } catch (e) {}
+    };
     return new Promise((resolve) => {
       let settled = false;
       let disposeResolver = null;
@@ -1331,36 +1431,62 @@ ${recentSemantic}`;
           if (responseSchema) {
             const reply = extractResponsesReply(data);
             if (reply) {
+              reportDiagnostic({
+                event: "response",
+                outcome: "usable",
+                status: Number(status || 0),
+                responseStatus: data.status || "",
+                incompleteReason: data.incomplete_details?.reason || "",
+                reasoningTokens: data.usage?.output_tokens_details?.reasoning_tokens || 0,
+                outputTokens: data.usage?.output_tokens || 0,
+                errorCode: data.error?.code || "",
+              });
               finish(reply);
               return;
             }
-            console.warn("[MisakaChat] Responses API 无有效结构化输出", {
+            const diagnostic = {
+              event: "response",
+              outcome: "unusable",
               status: Number(status || 0),
-              model,
               responseStatus: data.status || "",
               incompleteReason: data.incomplete_details?.reason || "",
               reasoningTokens: data.usage?.output_tokens_details?.reasoning_tokens || 0,
               outputTokens: data.usage?.output_tokens || 0,
               errorCode: data.error?.code || "",
-            });
+            };
+            reportDiagnostic(diagnostic);
+            console.warn("[MisakaChat] Responses API 无有效结构化输出", { model, ...diagnostic });
             finish(null);
             return;
           }
           const choice = data.choices?.[0];
           const reply = extractReply(choice?.message);
           if (reply) {
+            reportDiagnostic({
+              event: "response",
+              outcome: "usable",
+              status: Number(status || 0),
+              finishReason: choice?.finish_reason || "",
+              reasoningTokens: data.usage?.completion_tokens_details?.reasoning_tokens || 0,
+              completionTokens: data.usage?.completion_tokens || 0,
+              errorCode: data.error?.code || "",
+            });
             finish(reply);
             return;
           }
-          console.warn("[MisakaChat] LLM 响应无最终内容", {
+          const diagnostic = {
+            event: "response",
+            outcome: "unusable",
             status: Number(status || 0),
-            model,
             finishReason: choice?.finish_reason || "",
             reasoningTokens: data.usage?.completion_tokens_details?.reasoning_tokens || 0,
             completionTokens: data.usage?.completion_tokens || 0,
             errorCode: data.error?.code || "",
-          });
+          };
+          reportDiagnostic(diagnostic);
+          console.warn("[MisakaChat] LLM 响应无最终内容", { model, ...diagnostic });
         } catch (error) {
+          reportDiagnostic({ event: "parse-error", outcome: "unusable", error: error.message });
           console.warn("[MisakaChat] LLM 响应解析失败:", error.message);
         }
         finish(null);
@@ -1406,8 +1532,8 @@ ${recentSemantic}`;
               "Authorization": "Bearer " + apiKey
             }, data: reqBody, timeout: CONFIG.apiKeyTimeout,
             onload: complete(resp => handleResponse(resp.status, resp.responseText, model)),
-            onerror: complete(() => { console.warn("[MisakaChat] LLM 网络请求失败"); finish(null); }),
-            ontimeout: complete(() => { console.warn("[MisakaChat] LLM 请求超时"); finish(null); })
+            onerror: complete(() => { reportDiagnostic({ event: "network-error", outcome: "unusable" }); console.warn("[MisakaChat] LLM 网络请求失败"); finish(null); }),
+            ontimeout: complete(() => { reportDiagnostic({ event: "timeout", outcome: "unusable" }); console.warn("[MisakaChat] LLM 请求超时"); finish(null); })
           }));
         } else {
           const xhr = new XMLHttpRequest();
@@ -1422,9 +1548,9 @@ ${recentSemantic}`;
           xhr.setRequestHeader("Authorization", "Bearer " + apiKey);
           xhr.timeout = CONFIG.apiKeyTimeout;
           xhr.onload = complete(() => handleResponse(xhr.status, xhr.responseText, model));
-          xhr.onerror = complete(() => { console.warn("[MisakaChat] LLM 网络请求失败"); finish(null); });
-          xhr.ontimeout = complete(() => { console.warn("[MisakaChat] LLM 请求超时"); finish(null); });
-          xhr.onabort = complete(() => finish(null));
+          xhr.onerror = complete(() => { reportDiagnostic({ event: "network-error", outcome: "unusable" }); console.warn("[MisakaChat] LLM 网络请求失败"); finish(null); });
+          xhr.ontimeout = complete(() => { reportDiagnostic({ event: "timeout", outcome: "unusable" }); console.warn("[MisakaChat] LLM 请求超时"); finish(null); });
+          xhr.onabort = complete(() => { reportDiagnostic({ event: "abort", outcome: "unusable" }); finish(null); });
           xhr.send(reqBody);
         }
       };
@@ -3567,8 +3693,20 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
         { maxAttempts: CONFIG.generatedReplyMaxAttempts, retryDelaysMs: [0] },
       );
     },
+    callGeneratedReplyWithRetryForTest: (intent = "chat", content = "测试回复") =>
+      callGeneratedReplyWithRetry(
+        "你是结构化回复测试器，只输出指定 JSON。\n" + structuredReplyInstruction(),
+        [{ role: "user", content: String(content || "测试回复") }],
+        intent,
+        structuredReplyLLMOptions({ thinking: false, temperature: 0, maxTokens: 1024 }),
+        { id: "reply-failure-test", stage: "llm:test", retryDelaysMs: [0] },
+      ),
     generationFailureReplyForTest: () => GENERATION_FAILURE_REPLY,
     sendGenerationFailureForTest: sendGenerationFailure,
+    inspectReplyFailureTraceForTest: () => loadReplyFailureTrace(),
+    clearReplyFailureTraceForTest: () => localStorage.removeItem(storageKey("reply_failure_trace")),
+    persistReplyFailureBundleForTest: bundle => persistReplyFailureBundle(bundle),
+    buildReplyFailureContextForTest: buildReplyFailureContext,
     snapshotPendingRepliesForTest: () => state.pendingReplies.map(item => ({ ...item })),
     resetPendingRepliesForTest: () => {
       if (state.pendingReplyTimer !== null) {
@@ -6067,11 +6205,27 @@ function unescapeHTML(s) {
   }
 
   async function callGeneratedReplyWithRetry(systemPrompt, contextMessages, intent, llmOptions, debug = {}) {
-    return retryGeneratedReply(
-      () => callLLM(systemPrompt, contextMessages, llmOptions),
+    const diagnostics = [];
+    const result = await retryGeneratedReply(
+      attempt => callLLM(systemPrompt, contextMessages, {
+        ...llmOptions,
+        onDiagnostic: diagnostic => {
+          diagnostics.push(sanitizeReplyFailureValue({ attempt, ...diagnostic }));
+          try { llmOptions?.onDiagnostic?.(diagnostic); } catch (e) {}
+        },
+      }),
       intent,
       {
+        retryDelaysMs: debug.retryDelaysMs,
         onAttempt: ({ attempt, usable, reason, reply }) => {
+          diagnostics.push({
+            attempt,
+            event: "inspection",
+            outcome: usable ? "usable" : "unusable",
+            reason,
+            replyLength: String(reply || "").length,
+            replyPreview: usable ? "" : redactReplyFailureText(reply || "", 1000),
+          });
           pushDebugTrace({
             id: debug.id,
             stage: `${debug.stage || "llm"}:attempt`,
@@ -6086,6 +6240,7 @@ function unescapeHTML(s) {
         },
       },
     );
+    return { ...result, diagnostics };
   }
 
   const GENERATION_FAILURE_REPLY = "呜……这次御坂怎么都没生成出来。麻烦提醒咲来修一下御坂吧。";
@@ -6528,6 +6683,7 @@ function unescapeHTML(s) {
         structuredReplyLLMOptions(),
         { id: debugId, stage: "llm:first" },
       );
+      let terminalGeneration = { stage: "llm:first", result: firstGeneration };
       let reply = firstGeneration.reply;
       pushDebugTrace({ id: debugId, stage: "llm:first", reply, attempts: firstGeneration.attempts });
       if (reply) {
@@ -6568,6 +6724,7 @@ function unescapeHTML(s) {
             structuredReplyLLMOptions(),
             { id: debugId, stage: "llm:extra-context" },
           );
+          terminalGeneration = { stage: "llm:extra-context", result: enrichedGeneration };
           reply = enrichedGeneration.reply;
           pushDebugTrace({
             id: debugId,
@@ -6580,6 +6737,30 @@ function unescapeHTML(s) {
       if (!reply) {
         console.warn("[MisakaChat] 连续两次生成不可用，发送故障提示并继续队列");
         pushDebugTrace({ id: debugId, stage: "generation-exhausted", attempts: CONFIG.generatedReplyMaxAttempts });
+        persistReplyFailureBundle({
+          id: debugId,
+          stage: terminalGeneration.stage,
+          sender: {
+            name: senderName,
+            memberNumber: Number(senderNum) || 0,
+            messageType: String(messageType || "Chat"),
+          },
+          currentMessage: redactReplyFailureText(content, 1000),
+          context: buildReplyFailureContext(contextMessages),
+          plan: {
+            intent: requestPlan?.intent || "",
+            memorySearch: !!requestPlan?.memorySearch,
+            needsCatalog: !!requestPlan?.needsCatalog,
+            operations: requestPlan?.operations || [],
+            constraints: requestPlan?.constraints || {},
+          },
+          result: {
+            attempts: terminalGeneration.result?.attempts || 0,
+            exhausted: !!terminalGeneration.result?.exhausted,
+            reason: terminalGeneration.result?.reason || "",
+          },
+          diagnostics: terminalGeneration.result?.diagnostics || [],
+        });
         sendGenerationFailure(replyId);
         pushDebugTrace({ id: debugId, stage: "sent:generation-failure", finalReply: GENERATION_FAILURE_REPLY });
         return;
@@ -6858,17 +7039,42 @@ function unescapeHTML(s) {
       else profiles.forEach(([mn, info]) => sendLocal(`人物：${info.name} | 编号：#${mn} | 互动：${info.chatCount||0}次 | 最近聊天：${info.lastChat||"未知"}`));
     } else if (sub === "trace") {
       try {
+        if (String(parts[1] || "").toLowerCase() === "clear") {
+          localStorage.removeItem(storageKey("capability_trace"));
+          localStorage.removeItem(storageKey("reply_failure_trace"));
+          window.__misakaCapabilityTraceExport = "[]";
+          window.__misakaReplyFailureTraceExport = "[]";
+          window.__misakaTraceExport = "";
+          sendLocal("✅ 已清空：能力记录与回复故障包");
+          return true;
+        }
         const records = JSON.parse(localStorage.getItem(storageKey("capability_trace")) || "[]");
-        window.__misakaCapabilityTraceExport = JSON.stringify(Array.isArray(records) ? records : [], null, 2);
-        sendLocal(`✅ 已导出能力记录 | 数量：${Array.isArray(records) ? records.length : 0} | 位置：window.__misakaCapabilityTraceExport`);
+        const capabilityRecords = Array.isArray(records) ? records : [];
+        const replyFailures = loadReplyFailureTrace();
+        window.__misakaCapabilityTraceExport = JSON.stringify(capabilityRecords, null, 2);
+        window.__misakaReplyFailureTraceExport = JSON.stringify(replyFailures, null, 2);
+        window.__misakaTraceExport = JSON.stringify({
+          protocol: "misaka.trace-export.v1",
+          exportedAt: new Date().toISOString(),
+          capabilityRecords,
+          replyFailures,
+        }, null, 2);
+        sendLocal(`✅ 已导出诊断记录 | 能力：${capabilityRecords.length} | 回复故障：${replyFailures.length} | 位置：window.__misakaTraceExport`);
       } catch (e) {
-        sendLocal("❌ 导出能力记录失败");
+        sendLocal("❌ 导出诊断记录失败");
+      }
+    } else if (sub === "diagnostics") {
+      try {
+        document.dispatchEvent(new CustomEvent("misaka-diagnostics-config-open-v1"));
+        sendLocal("已打开诊断上传密钥设置");
+      } catch (e) {
+        sendLocal("❌ 无法打开诊断上传设置");
       }
     } else if (sub === "persona" && parts[1]) {
       localStorage.setItem(storageKey("persona_extra"), parts.slice(1).join(" "));
       sendLocal("✅ 已更新：人设附加备注");
     } else {
-      sendLocal("用法：/misaka on|off|activity on|off|sticker on|off|friend on|off|key <key>|embedkey <openai-key>|model <name>|status|trace|forget|memory|persona <text>|export|import");
+      sendLocal("用法：/misaka on|off|activity on|off|sticker on|off|friend on|off|key <key>|embedkey <openai-key>|model <name>|status|trace [clear]|diagnostics|forget|memory|persona <text>|export|import");
     }
     return true;
   }

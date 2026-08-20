@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BC Misaka Auto Chat
 // @namespace    https://igallta.github.io/bc-gimp-sorter
-// @version      3.1.2
+// @version      3.1.3
 // @description  御坂 BC 自动回复系统 — LLM 驱动 + 语义记忆(IDB) + 房间上下文
 // @match        https://*.bondageprojects.elementfx.com/R*/*
 // @match        https://*.bondage-europe.com/R*/*
@@ -14,8 +14,11 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
+// @grant        GM_deleteValue
+// @grant        GM_registerMenuCommand
 // @connect      api.deepseek.com
 // @connect      api.openai.com
+// @connect      misaka-diagnostics.misaka-diagnostics.workers.dev
 // @run-at       document-end
 // ==/UserScript==
 
@@ -28,10 +31,164 @@
 
   // 把 GM 函数暴露到 window，让注入的脚本能用
   try { window.__GM_xmlhttpRequest = GM_xmlhttpRequest; } catch(e) {}
-  try { window.__GM_getValue = GM_getValue; } catch(e) {}
-  try { window.__GM_setValue = GM_setValue; } catch(e) {}
+  try {
+    const readableRuntimeKeys = new Set(["misaka_apikey", "misaka_openai_key"]);
+    window.__GM_getValue = key => readableRuntimeKeys.has(String(key || "")) ? GM_getValue(key) : "";
+  } catch(e) {}
 
-  const SCRIPT_VERSION = "3.1.2";
+  const DIAGNOSTIC_ENDPOINT = "https://misaka-diagnostics.misaka-diagnostics.workers.dev/v1/reply-failures";
+  const DIAGNOSTIC_UPLOAD_EVENT = "misaka-diagnostics-upload-v1";
+  const DIAGNOSTIC_CONFIG_EVENT = "misaka-diagnostics-config-open-v1";
+  const DIAGNOSTIC_SECRET_KEY = "misaka_diagnostics_upload_secret_v1";
+  const DIAGNOSTIC_PENDING_KEY = "misaka_diagnostics_pending_v1";
+  const DIAGNOSTIC_PENDING_LIMIT = 5;
+  let diagnosticUploadBusy = false;
+
+  function diagnosticSecret() {
+    try { return String(GM_getValue(DIAGNOSTIC_SECRET_KEY, "") || ""); }
+    catch (e) { return ""; }
+  }
+
+  function readDiagnosticPending() {
+    try {
+      const value = GM_getValue(DIAGNOSTIC_PENDING_KEY, []);
+      const parsed = typeof value === "string" ? JSON.parse(value) : value;
+      return Array.isArray(parsed) ? parsed.slice(-DIAGNOSTIC_PENDING_LIMIT) : [];
+    } catch (e) { return []; }
+  }
+
+  function writeDiagnosticPending(records) {
+    try { GM_setValue(DIAGNOSTIC_PENDING_KEY, records.slice(-DIAGNOSTIC_PENDING_LIMIT)); }
+    catch (e) {}
+  }
+
+  async function signDiagnosticBody(secret, timestamp, body) {
+    const encoder = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      "raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(`${timestamp}.${body}`));
+    return [...new Uint8Array(signature)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  }
+
+  function uploadDiagnosticEnvelope(envelope, secret) {
+    return new Promise(async (resolve) => {
+      try {
+        const body = JSON.stringify(envelope);
+        if (new TextEncoder().encode(body).length > 65_536) return resolve(false);
+        const timestamp = String(Math.floor(Date.now() / 1000));
+        const signature = await signDiagnosticBody(secret, timestamp, body);
+        GM_xmlhttpRequest({
+          method: "POST",
+          url: DIAGNOSTIC_ENDPOINT,
+          headers: {
+            "Content-Type": "application/json",
+            "X-Misaka-Timestamp": timestamp,
+            "X-Misaka-Signature": `v1=${signature}`,
+          },
+          data: body,
+          timeout: 15_000,
+          onload(response) {
+            let result = null;
+            try { result = JSON.parse(response.responseText || "{}"); } catch (e) {}
+            resolve(response.status === 200 && result?.ok === true);
+          },
+          onerror() { resolve(false); },
+          ontimeout() { resolve(false); },
+        });
+      } catch (error) {
+        resolve(false);
+      }
+    });
+  }
+
+  async function flushDiagnosticPending() {
+    if (diagnosticUploadBusy) return;
+    const secret = diagnosticSecret();
+    if (secret.length < 24) return;
+    diagnosticUploadBusy = true;
+    try {
+      const pending = readDiagnosticPending();
+      const remaining = [];
+      for (const envelope of pending) {
+        if (!await uploadDiagnosticEnvelope(envelope, secret)) remaining.push(envelope);
+      }
+      writeDiagnosticPending(remaining);
+      if (pending.length > remaining.length) {
+        console.log(`[MisakaChat] 已上传 ${pending.length - remaining.length} 个回复故障包`);
+      }
+    } finally {
+      diagnosticUploadBusy = false;
+    }
+  }
+
+  function enqueueDiagnosticEnvelope(envelope) {
+    if (!envelope || envelope.protocol !== "misaka.upload.v1") return;
+    const pending = readDiagnosticPending();
+    pending.push(envelope);
+    writeDiagnosticPending(pending);
+    void flushDiagnosticPending();
+  }
+
+  function openDiagnosticSecretDialog() {
+    if (!document.body || document.getElementById("misaka-diagnostics-secret-dialog")) return;
+    const overlay = document.createElement("div");
+    overlay.id = "misaka-diagnostics-secret-dialog";
+    Object.assign(overlay.style, {
+      position: "fixed", inset: "0", zIndex: "2147483647", display: "grid",
+      placeItems: "center", background: "rgba(0,0,0,.72)", color: "#eef",
+    });
+    const panel = document.createElement("div");
+    Object.assign(panel.style, {
+      width: "min(92vw, 420px)", padding: "20px", borderRadius: "12px",
+      background: "#171b26", boxShadow: "0 12px 40px rgba(0,0,0,.5)",
+      font: "16px/1.45 sans-serif",
+    });
+    const title = document.createElement("div");
+    title.textContent = "御坂诊断上传密钥";
+    title.style.fontWeight = "700";
+    const note = document.createElement("div");
+    note.textContent = "密钥只保存于 Tampermonkey 私有存储，用于签名故障包。";
+    note.style.margin = "8px 0 12px";
+    const input = document.createElement("input");
+    input.type = "password";
+    input.autocomplete = "new-password";
+    input.placeholder = "至少 24 个字符";
+    Object.assign(input.style, { width: "100%", boxSizing: "border-box", padding: "10px" });
+    const buttons = document.createElement("div");
+    Object.assign(buttons.style, { display: "flex", gap: "10px", marginTop: "14px" });
+    const save = document.createElement("button");
+    save.textContent = "保存";
+    const cancel = document.createElement("button");
+    cancel.textContent = "取消";
+    save.onclick = () => {
+      if (input.value.length < 24) { note.textContent = "密钥至少需要 24 个字符。"; return; }
+      GM_setValue(DIAGNOSTIC_SECRET_KEY, input.value);
+      input.value = "";
+      overlay.remove();
+      console.log("[MisakaChat] 诊断上传已启用");
+      void flushDiagnosticPending();
+    };
+    cancel.onclick = () => { input.value = ""; overlay.remove(); };
+    buttons.append(save, cancel);
+    panel.append(title, note, input, buttons);
+    overlay.append(panel);
+    document.body.append(overlay);
+    input.focus();
+  }
+
+  try {
+    document.addEventListener(DIAGNOSTIC_UPLOAD_EVENT, event => enqueueDiagnosticEnvelope(event.detail));
+    document.addEventListener(DIAGNOSTIC_CONFIG_EVENT, openDiagnosticSecretDialog);
+    GM_registerMenuCommand("设置御坂诊断上传密钥", openDiagnosticSecretDialog);
+    GM_registerMenuCommand("清除御坂诊断上传设置", () => {
+      GM_deleteValue(DIAGNOSTIC_SECRET_KEY);
+      GM_deleteValue(DIAGNOSTIC_PENDING_KEY);
+      console.log("[MisakaChat] 诊断上传已停用");
+    });
+    Promise.resolve().then(() => void flushDiagnosticPending());
+  } catch (e) {}
+
+  const SCRIPT_VERSION = "3.1.3";
   // GitHub Pages 部署曾长期卡住并返回 2.5.3。资源钉住本版本对应的 commit，
   // 避免 Pages/master CDN 缓存让 loader 版本与实际主脚本不一致。
   const ASSET_REVISION = "3eb268a";
