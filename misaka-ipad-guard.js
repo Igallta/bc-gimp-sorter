@@ -1,9 +1,9 @@
-// Misaka iPad Guard v0.3.8
+// Misaka iPad Guard v0.3.9
 // iPadOS Safari WebContent 跨站受控回收。与 MisakaChat/GimpSorter 主逻辑完全独立。
 (function () {
   "use strict";
 
-  const VERSION = "0.3.8";
+  const VERSION = "0.3.9";
   const MEMBER_NUMBER = 194331;
   const WCE_LOGIN_NAME = "MSK002";
   const QUICK_LOGIN_LABELS = new Set([
@@ -450,8 +450,20 @@
       }
       const pending = {
         startedAt: Date.now(),
+        attemptStartedAt: Date.now(),
+        retryCount: 0,
+        recoveryState: "pending",
         reason: String(reason || "manual"),
         returnPage: safePageLabel(),
+        returnUrl,
+        expectedRoom: {
+          name: String(typeof ChatRoomData === "object" && ChatRoomData ? ChatRoomData.Name || "" : ""),
+          space: String(
+            typeof ChatRoomData === "object" && ChatRoomData && ChatRoomData.Space != null
+              ? ChatRoomData.Space
+              : typeof ChatRoomSpace === "undefined" ? "" : ChatRoomSpace,
+          ),
+        },
         version: VERSION,
         trampoline: endpoint.id,
       };
@@ -615,8 +627,13 @@
   function init() {
     const pending = readJSON(PENDING_KEY, null);
     if (pending) {
-      appendLog("recycle-return", { elapsedMs: Date.now() - Number(pending.startedAt || Date.now()), reason: pending.reason || "unknown" });
-      localStorage.removeItem(PENDING_KEY);
+      // pending 由 loader 在确认“御坂账号 + 原房间”后清除。runtime 只记录
+      // 已进入 ChatRoom，不能把任意房间误判成恢复成功。
+      appendLog("recycle-room-runtime", {
+        elapsedMs: Date.now() - Number(pending.startedAt || Date.now()),
+        reason: pending.reason || "unknown",
+        retryCount: Number(pending.retryCount || 0),
+      });
     }
     appendLog("runtime-start", { version: VERSION, iPad: isIPad() });
     installLifecycleLogging();

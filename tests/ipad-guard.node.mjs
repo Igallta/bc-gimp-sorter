@@ -64,6 +64,7 @@ function runtimeContext({ remoteProbeResults = [true] } = {}) {
       removeItem(key) { store.delete(key); },
     },
     Player: { MemberNumber: 194331 },
+    ChatRoomData: { Name: "Gimp Dolls", Space: "X" },
     CurrentScreen: "ChatRoom",
     ServerSocket: { connected: true, disconnected: false },
     ChatRoomMessage(data) { localMessages.push(data); },
@@ -97,7 +98,7 @@ const runtime = runtimeContext();
 const guard = runtime.context.window.__MisakaIPadGuard;
 const test = runtime.context.window.__MisakaIPadGuardTestHooks;
 assert.ok(guard, "guard runtime should initialize for Misaka account");
-assert.equal(guard.version, "0.3.8");
+assert.equal(guard.version, "0.3.9");
 const guardLocalColor = source.match(/<font color="(#[0-9A-Fa-f]{6})">\[iPadGuard\]/)?.[1];
 const misakaLocalColor = misakaChatSource.match(/<font color="(#[0-9A-Fa-f]{6})">\[MisakaChat\]/)?.[1];
 assert.equal(guardLocalColor, misakaLocalColor, "Guard local messages must use MisakaChat's exact color");
@@ -121,6 +122,12 @@ await guard.recycle("test");
 assert.match(runtime.replacedWith, /^https:\/\/igallta\.github\.io\/bc-gimp-sorter\/ipad-recycle\.html#return=/);
 assert.match(decodeURIComponent(runtime.replacedWith), /https:\/\/www\.bondage-europe\.com\/R130\/BondageClub\//);
 assert.equal(JSON.parse(runtime.store.get("misaka_ipad_guard_pending_v1")).reason, "test");
+assert.deepEqual(
+  JSON.parse(JSON.stringify(JSON.parse(runtime.store.get("misaka_ipad_guard_pending_v1")).expectedRoom)),
+  { name: "Gimp Dolls", space: "X" },
+  "recovery ticket must remember the original room",
+);
+assert.equal(JSON.parse(runtime.store.get("misaka_ipad_guard_pending_v1")).retryCount, 0);
 assert.ok(!runtime.hooks.has("ChatRoomMessage"), "room messages must not affect recycle scheduling");
 assert.ok(runtime.hooks.has("ChatRoomSendChat"));
 
@@ -210,7 +217,17 @@ function makeElementFactory(elements) {
   };
 }
 
-function loaderContext({ screen = "Login", password = "", enabled = false, fail = false, connected = true, memberNumber = 194331 } = {}) {
+function loaderContext({
+  screen = "Login",
+  password = "",
+  enabled = false,
+  fail = false,
+  connected = true,
+  memberNumber = 194331,
+  roomName = "Gimp Dolls",
+  roomSpace = "X",
+  pending = null,
+} = {}) {
   const scheduled = [];
   const gmStore = new Map([
     ["misaka_ipad_guard_login_enabled_v1", enabled],
@@ -218,6 +235,8 @@ function loaderContext({ screen = "Login", password = "", enabled = false, fail 
   ]);
   const menuCommands = [];
   const loginCalls = [];
+  const pageStore = new Map();
+  if (pending) pageStore.set("misaka_ipad_guard_pending_v1", JSON.stringify(pending));
   const elements = new Map();
   const makeElement = makeElementFactory(elements);
   class MockInput {
@@ -230,10 +249,25 @@ function loaderContext({ screen = "Login", password = "", enabled = false, fail 
   const nameInput = new MockInput("InputName");
   const passwordInput = new MockInput("InputPassword");
   let appendedScript = null;
+  let replacedWith = "";
   const page = {
     CurrentModule: screen === "Login" ? "Online" : "Character",
     CurrentScreen: screen,
     Player: screen === "ChatRoom" ? { MemberNumber: memberNumber } : null,
+    ChatRoomData: screen === "ChatRoom" ? { Name: roomName, Space: roomSpace } : null,
+    ChatRoomSpace: screen === "ChatRoom" ? roomSpace : "",
+    navigator: { onLine: true },
+    location: {
+      href: "https://www.bondage-europe.com/R130/BondageClub/",
+      hostname: "www.bondage-europe.com",
+      pathname: "/R130/BondageClub/",
+      replace(value) { replacedWith = String(value); },
+    },
+    localStorage: {
+      getItem(key) { return pageStore.has(key) ? pageStore.get(key) : null; },
+      setItem(key, value) { pageStore.set(key, String(value)); },
+      removeItem(key) { pageStore.delete(key); },
+    },
     ServerIsConnected: connected,
     LoginSubmitted: false,
     LoginErrorMessage: "",
@@ -260,6 +294,7 @@ function loaderContext({ screen = "Login", password = "", enabled = false, fail 
     GM_deleteValue(key) { gmStore.delete(key); },
     GM_registerMenuCommand(label, callback) { menuCommands.push({ label, callback }); },
     document: {
+      hidden: false,
       body,
       getElementById(id) {
         if (id === "misaka-ipad-guard-script") return appendedScript;
@@ -273,8 +308,9 @@ function loaderContext({ screen = "Login", password = "", enabled = false, fail 
   };
   vm.runInNewContext(loaderSource, context, { filename: "misaka-ipad-guard.user.js" });
   return {
-    context, page, scheduled, gmStore, menuCommands, loginCalls, nameInput, passwordInput, elements,
+    context, page, scheduled, gmStore, pageStore, menuCommands, loginCalls, nameInput, passwordInput, elements,
     get appendedScript() { return appendedScript; },
+    get replacedWith() { return replacedWith; },
   };
 }
 
@@ -339,7 +375,7 @@ chatLoader.page.ChatRoomMessage = () => {};
 runScheduled(chatLoader, 500);
 assert.ok(chatLoader.appendedScript, "runtime must load in ChatRoom for Misaka account");
 assert.equal(chatLoader.appendedScript.dataset.mode, "chatroom");
-assert.match(chatLoader.appendedScript.src || "", /v=0\.3\.8/);
+assert.match(chatLoader.appendedScript.src || "", /v=0\.3\.9/);
 assert.equal(chatLoader.loginCalls.length, 0);
 const wrongAccount = loaderContext({ screen: "ChatRoom", memberNumber: 999999 });
 wrongAccount.page.bcModSdk = {};
@@ -347,6 +383,77 @@ wrongAccount.page.ChatRoomSendChat = () => {};
 wrongAccount.page.ChatRoomMessage = () => {};
 runScheduled(wrongAccount, 500);
 assert.equal(wrongAccount.appendedScript, null, "Guard runtime must reject a non-Misaka account");
+
+const recoveryTicket = (overrides = {}) => ({
+  startedAt: Date.now() - 100_000,
+  attemptStartedAt: Date.now() - 100_000,
+  retryCount: 0,
+  recoveryState: "pending",
+  returnUrl: "https://www.bondage-europe.com/R130/BondageClub/",
+  expectedRoom: { name: "Gimp Dolls", space: "X" },
+  trampoline: "github-pages",
+  ...overrides,
+});
+
+const recoveredRoom = loaderContext({ screen: "ChatRoom", pending: recoveryTicket() });
+recoveredRoom.page.bcModSdk = {};
+recoveredRoom.page.ChatRoomSendChat = () => {};
+recoveredRoom.page.ChatRoomMessage = () => {};
+assert.equal(recoveredRoom.pageStore.has("misaka_ipad_guard_pending_v1"), false, "original room must confirm and clear recovery state");
+runScheduled(recoveredRoom, 500);
+assert.ok(recoveredRoom.appendedScript, "runtime may load only after original-room confirmation");
+
+const wrongRoom = loaderContext({ screen: "ChatRoom", roomName: "Other Room", pending: recoveryTicket() });
+assert.match(wrongRoom.replacedWith, /^https:\/\/igallta\.github\.io\/bc-gimp-sorter\/ipad-recycle\.html/);
+assert.equal(JSON.parse(wrongRoom.pageStore.get("misaka_ipad_guard_pending_v1")).retryCount, 1, "wrong room must trigger exactly one persisted retry");
+assert.equal(wrongRoom.appendedScript, null, "runtime must not load in the wrong room during recovery");
+
+const loginRetry = loaderContext({ enabled: true, password: "secret", pending: recoveryTicket() });
+assert.match(loginRetry.replacedWith, /^https:\/\/igallta\.github\.io\/bc-gimp-sorter\/ipad-recycle\.html/);
+assert.equal(loginRetry.loginCalls.length, 0, "expired recovery must leave BC before another login attempt");
+
+const fallbackRetry = loaderContext({
+  pending: recoveryTicket({ trampoline: "httpbingo" }),
+});
+assert.match(fallbackRetry.replacedWith, /^https:\/\/httpbingo\.org\/response-headers\?/);
+assert.match(decodeURIComponent(fallbackRetry.replacedWith), /Refresh=4;url=https:\/\/www\.bondage-europe\.com\/R130\/BondageClub\//);
+
+const legacyTicket = loaderContext({
+  screen: "ChatRoom",
+  pending: {
+    startedAt: Date.now() - 100_000,
+    reason: "scheduled",
+    returnPage: "www.bondage-europe.com/R130/BondageClub/",
+    version: "0.3.8",
+    trampoline: "github-pages",
+  },
+});
+legacyTicket.page.bcModSdk = {};
+legacyTicket.page.ChatRoomSendChat = () => {};
+legacyTicket.page.ChatRoomMessage = () => {};
+assert.equal(legacyTicket.pageStore.has("misaka_ipad_guard_pending_v1"), false, "0.3.8 tickets must remain recoverable without room metadata");
+
+const exhausted = loaderContext({
+  enabled: true,
+  password: "secret",
+  pending: recoveryTicket({ retryCount: 1 }),
+});
+assert.equal(exhausted.replacedWith, "", "second failed recovery must not create an infinite navigation loop");
+assert.equal(JSON.parse(exhausted.pageStore.get("misaka_ipad_guard_pending_v1")).recoveryState, "exhausted");
+runScheduled(exhausted, 500);
+assert.equal(exhausted.loginCalls.length, 0, "exhausted recovery must pause automatic login");
+assert.match(exhausted.elements.get("misaka-ipad-guard-login-status")?.textContent || "", /停止自动循环/);
+
+const manualRecovery = loaderContext({
+  screen: "ChatRoom",
+  pending: recoveryTicket({ retryCount: 1, recoveryState: "exhausted" }),
+});
+manualRecovery.page.bcModSdk = {};
+manualRecovery.page.ChatRoomSendChat = () => {};
+manualRecovery.page.ChatRoomMessage = () => {};
+assert.equal(manualRecovery.pageStore.has("misaka_ipad_guard_pending_v1"), false, "manual return to the original room must release the fuse");
+runScheduled(manualRecovery, 500);
+assert.ok(manualRecovery.appendedScript);
 
 assert.match(loaderSource, /@grant\s+GM_getValue/);
 assert.match(loaderSource, /@grant\s+GM_setValue/);
@@ -384,4 +491,4 @@ const invalidReturn = runTrampoline("https://evil.example/steal");
 assert.equal(invalidReturn.replacedWith, "", "trampoline must reject non-BC return URLs");
 assert.match(invalidReturn.status, /无效/);
 
-console.log("iPad guard v0.3.8 tests passed");
+console.log("iPad guard v0.3.9 tests passed");

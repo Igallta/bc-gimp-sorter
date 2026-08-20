@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Misaka iPad WebContent Guard
 // @namespace    https://igallta.github.io/bc-gimp-sorter
-// @version      0.3.8
+// @version      0.3.9
 // @description  iPadOS Safari 上为御坂提供跨站 WebContent 回收、原生自动登录与诊断日志
 // @match        https://*.bondageprojects.elementfx.com/R*/*
 // @match        https://*.bondage-europe.com/R*/*
@@ -22,12 +22,20 @@
 (function () {
   "use strict";
 
-  const VERSION = "0.3.8";
+  const VERSION = "0.3.9";
   const MEMBER_NUMBER = 194331;
   const LOGIN_NAME = "MSK002";
   const LOGIN_DELAY_MS = 5_000;
   const LOGIN_ENABLED_KEY = "misaka_ipad_guard_login_enabled_v1";
   const LOGIN_PASSWORD_KEY = "misaka_ipad_guard_login_password_v1";
+  const PENDING_KEY = "misaka_ipad_guard_pending_v1";
+  const LOG_KEY = "misaka_ipad_guard_log_v1";
+  const RECOVERY_CONFIRM_TIMEOUT_MS = 90_000;
+  const RECOVERY_MAX_RETRIES = 1;
+  const RECYCLE_PAGES = Object.freeze({
+    "github-pages": "https://igallta.github.io/bc-gimp-sorter/ipad-recycle.html",
+    httpbingo: "https://httpbingo.org/response-headers",
+  });
   const ASSET_REVISION = "bbda67e";
   const pageWindow = typeof unsafeWindow === "object" && unsafeWindow ? unsafeWindow : window;
 
@@ -39,6 +47,161 @@
   let loginFailureShown = false;
   let loginDelayScheduled = false;
   let loginDelayElapsed = false;
+
+  function readPageJSON(key, fallback = null) {
+    try {
+      const value = JSON.parse(pageWindow.localStorage?.getItem(key) || "null");
+      return value === null ? fallback : value;
+    } catch (_) {
+      return fallback;
+    }
+  }
+
+  function writePageJSON(key, value) {
+    try {
+      pageWindow.localStorage?.setItem(key, JSON.stringify(value));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function appendRecoveryLog(type, details = {}) {
+    const records = readPageJSON(LOG_KEY, []);
+    const list = Array.isArray(records) ? records : [];
+    list.push({
+      time: Date.now(),
+      type: String(type || "recovery-event"),
+      details: details && typeof details === "object" ? details : {},
+      page: `${pageWindow.location?.hostname || "unknown"}${pageWindow.location?.pathname || ""}`,
+      screen: String(pageWindow.CurrentScreen || "unknown"),
+      online: pageWindow.navigator?.onLine !== false,
+      hidden: document.hidden === true,
+    });
+    while (list.length > 80) list.shift();
+    writePageJSON(LOG_KEY, list);
+  }
+
+  function allowedBCReturnUrl(value) {
+    try {
+      const url = new URL(value);
+      const hostname = url.hostname.toLowerCase();
+      const roots = [
+        "bondageprojects.elementfx.com",
+        "bondage-europe.com",
+        "bondageprojects.com",
+        "bondage-asia.com",
+        "bondageclub.com",
+      ];
+      const allowedHost = roots.some((root) => hostname === root || hostname.endsWith(`.${root}`));
+      const allowedProtocol = url.protocol === "https:" ||
+        (url.protocol === "http:" && (hostname === "localhost" || hostname === "127.0.0.1"));
+      const allowedPath = /^\/(?:club\/)?R[^/]+(?:\/|$)/i.test(url.pathname);
+      return allowedHost && allowedProtocol && allowedPath && !url.username && !url.password;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function buildRecoveryTarget(trampoline, returnUrl) {
+    const started = Date.now();
+    if (trampoline === "httpbingo") {
+      const safeReturn = new URL(returnUrl);
+      safeReturn.search = "";
+      safeReturn.hash = "";
+      const refresh = `4;url=${safeReturn.href}`;
+      return `${RECYCLE_PAGES.httpbingo}?Content-Type=${encodeURIComponent("text/html; charset=utf-8")}&Refresh=${encodeURIComponent(refresh)}#started=${started}`;
+    }
+    return `${RECYCLE_PAGES["github-pages"]}#return=${encodeURIComponent(returnUrl)}&started=${started}`;
+  }
+
+  function currentRoomIdentity() {
+    const room = pageWindow.ChatRoomData && typeof pageWindow.ChatRoomData === "object"
+      ? pageWindow.ChatRoomData
+      : {};
+    return {
+      name: String(room.Name || ""),
+      space: String(room.Space != null ? room.Space : pageWindow.ChatRoomSpace ?? ""),
+    };
+  }
+
+  function roomMatchesExpected(expected) {
+    const wanted = expected && typeof expected === "object" ? expected : {};
+    const current = currentRoomIdentity();
+    if (String(wanted.name || "") && current.name !== String(wanted.name)) return false;
+    if (String(wanted.space || "") && current.space !== String(wanted.space)) return false;
+    return true;
+  }
+
+  function recoveryConfirmed(pending) {
+    if (pageWindow.CurrentScreen !== "ChatRoom") return false;
+    const memberNumber = Number(pageWindow.Player?.MemberNumber || pageWindow.Player?.ID);
+    return memberNumber === MEMBER_NUMBER && roomMatchesExpected(pending?.expectedRoom);
+  }
+
+  function monitorRecovery() {
+    const pending = readPageJSON(PENDING_KEY, null);
+    if (!pending || typeof pending !== "object") return "none";
+
+    if (recoveryConfirmed(pending)) {
+      appendRecoveryLog("recycle-return-confirmed", {
+        elapsedMs: Date.now() - Number(pending.startedAt || Date.now()),
+        retryCount: Number(pending.retryCount || 0),
+        room: currentRoomIdentity(),
+      });
+      pageWindow.localStorage?.removeItem(PENDING_KEY);
+      document.getElementById("misaka-ipad-guard-login-status")?.remove();
+      return "confirmed";
+    }
+
+    if (pending.recoveryState === "exhausted") {
+      updateLoginStatus("两次跨站恢复后仍未回到原房间；已停止自动循环，请手动登录或刷新", "error");
+      return "exhausted";
+    }
+
+    const attemptStartedAt = Number(pending.attemptStartedAt || pending.startedAt || Date.now());
+    if (Date.now() - attemptStartedAt < RECOVERY_CONFIRM_TIMEOUT_MS) return "waiting";
+
+    const retryCount = Math.max(0, Number(pending.retryCount || 0));
+    if (retryCount >= RECOVERY_MAX_RETRIES) {
+      pending.recoveryState = "exhausted";
+      pending.exhaustedAt = Date.now();
+      writePageJSON(PENDING_KEY, pending);
+      appendRecoveryLog("recycle-recovery-exhausted", {
+        elapsedMs: Date.now() - Number(pending.startedAt || Date.now()),
+        retryCount,
+        screen: String(pageWindow.CurrentScreen || "unknown"),
+        room: currentRoomIdentity(),
+      });
+      updateLoginStatus("两次跨站恢复后仍未回到原房间；已停止自动循环，请手动登录或刷新", "error");
+      return "exhausted";
+    }
+
+    const fallbackUrl = String(pageWindow.location?.href || "");
+    const returnUrl = allowedBCReturnUrl(pending.returnUrl) ? String(pending.returnUrl) : fallbackUrl;
+    if (!allowedBCReturnUrl(returnUrl)) {
+      pending.recoveryState = "exhausted";
+      pending.exhaustedAt = Date.now();
+      writePageJSON(PENDING_KEY, pending);
+      appendRecoveryLog("recycle-recovery-invalid-return", {});
+      updateLoginStatus("跨站恢复地址无效；已停止自动循环", "error");
+      return "exhausted";
+    }
+
+    pending.retryCount = retryCount + 1;
+    pending.attemptStartedAt = Date.now();
+    pending.recoveryState = "pending";
+    writePageJSON(PENDING_KEY, pending);
+    appendRecoveryLog("recycle-recovery-retry", {
+      retryCount: pending.retryCount,
+      screen: String(pageWindow.CurrentScreen || "unknown"),
+      room: currentRoomIdentity(),
+      trampoline: pending.trampoline || "github-pages",
+    });
+    updateLoginStatus("未确认回到原房间，正在执行一次恢复性跨站刷新…");
+    pageWindow.location?.replace(buildRecoveryTarget(pending.trampoline, returnUrl));
+    return "retrying";
+  }
 
   function loginConfigured() {
     return GM_getValue(LOGIN_ENABLED_KEY, false) === true &&
@@ -271,9 +434,10 @@
   }
 
   function tick() {
-    maybeAutoLogin();
+    const recoveryState = monitorRecovery();
+    if (recoveryState !== "retrying" && recoveryState !== "exhausted") maybeAutoLogin();
     observeLoginResult();
-    loadRuntime();
+    if (recoveryState === "none" || recoveryState === "confirmed") loadRuntime();
     setTimeout(tick, 500);
   }
 
