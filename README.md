@@ -3,7 +3,7 @@
 为 Bondage Club 的 Gimp Dolls 房间维护的两个用户脚本：
 
 - **GimpSorter v1.7.4**：按 `GIMP → Gimp → Doll → GIMP Pet → Pet → Error` 分类；组内先排三位编号，再排四位编号，并各自按数值升序整理。
-- **MisakaChat v3.1.3**：御坂房间 Bot，提供结构化角色回复、人物与长期记忆、角色扮演、BC 原生互动、语境表情包、好友能力和受控的 BC 操作；近期上下文中的每条消息均以 `【语义类型/BC 原始类型】` 同时保留内容性质与传输类型，密集点名时最多排队五条，并使用 BC 原生消息引用明确回复对象。结构化回复只接受 DeepSeek Responses API 的 strict `json_schema`，动作、台词与操作命令不再兼容旧文本分隔协议；连续两次生成不可用时会保存脱敏故障包，并在启用私有诊断上传后异步提交到受控收集器，然后继续处理队列。
+- **MisakaChat v3.2.0**：御坂房间 Bot，提供结构化角色回复、人物与长期记忆、角色扮演、BC 原生互动、语境表情包、好友能力和受控的 BC 操作；近期上下文中的每条消息均以 `【语义类型/BC 原始类型】` 同时保留内容性质与传输类型，密集点名时最多排队五条，并使用 BC 原生消息引用明确回复对象。结构化回复只接受 DeepSeek Responses API 的 strict `json_schema`；配置统一存放于 Tampermonkey 私有存储，语义记忆采用有界增量淘汰；连续两次生成不可用时会保存脱敏故障包，并在启用私有诊断上传后异步提交到受控收集器，然后继续处理队列。
 
 另提供一个默认关闭、仅供 iPadOS 长期挂机使用的独立守护脚本：
 
@@ -33,7 +33,7 @@ iPadOS 可选安装：
 
 这些脚本都只会在御坂账号（MemberNumber `194331`）上启动；iPad Guard 默认不启用自动回收。
 
-MisakaChat 的对话和 embedding 凭据不写入仓库。安装后通过 `/misaka key`、`/misaka embedkey` 或浏览器本地存储配置。
+MisakaChat 的对话和 embedding 凭据不写入仓库。安装后通过 `/misaka key` 与 `/misaka embedkey` 保存到 Tampermonkey 私有存储；运行时只向页面开放这两个白名单密钥。
 
 ## 常用命令
 

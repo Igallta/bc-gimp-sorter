@@ -186,14 +186,34 @@ const rejectedLegacyText = hooks.inspectGeneratedReplyForTest("歪了歪头|怎�
 assert.equal(rejectedLegacyText.usable, false);
 assert.equal(rejectedLegacyText.reason, "structured-reply-required");
 
-const rejectedStructuredPipe = hooks.inspectGeneratedReplyForTest(JSON.stringify({
+const acceptedStructuredPipe = hooks.inspectGeneratedReplyForTest(JSON.stringify({
   protocol: "misaka.reply.v1",
   commands: [],
   action: "",
   speech: "歪了歪头|怎么了？",
 }), "chat");
-assert.equal(rejectedStructuredPipe.usable, false);
-assert.equal(rejectedStructuredPipe.reason, "invalid-visible-field-format");
+assert.equal(acceptedStructuredPipe.usable, true);
+assert.equal(acceptedStructuredPipe.parsed.cleaned, "歪了歪头|怎么了？");
+
+const rejectedLegacyMemoryCommand = hooks.inspectGeneratedReplyForTest(JSON.stringify({
+  protocol: "misaka.reply.v1",
+  commands: [{ type: "memsearch", query: "旧问题" }],
+  action: "",
+  speech: "",
+}), "chat");
+assert.equal(rejectedLegacyMemoryCommand.usable, false);
+assert.equal(rejectedLegacyMemoryCommand.reason, "invalid-command-envelope");
+
+for (const speech of ["第一行\n第二行", "*不应自行加星号*"]) {
+  const rejectedVisibleFormat = hooks.inspectGeneratedReplyForTest(JSON.stringify({
+    protocol: "misaka.reply.v1",
+    commands: [],
+    action: "",
+    speech,
+  }), "chat");
+  assert.equal(rejectedVisibleFormat.usable, false);
+  assert.equal(rejectedVisibleFormat.reason, "invalid-visible-field-format");
+}
 
 const validReply = JSON.stringify({
   protocol: "misaka.reply.v1",
@@ -226,6 +246,56 @@ assert.deepEqual(
   { ReplyId: "msg-generation-failed", Tag: "ReplyId" },
   "the two-attempt failure notice must reply to the task that failed",
 );
+
+for (const name of ["GIMP 001", "Gimp 1001", "Doll 441", "GIMP Pet 104", "Pet 777", "Error 795"]) {
+  assert.equal(hooks.isDollNameForTest(name), true, `${name} must be classified as a doll`);
+}
+for (const name of ["GIMP 12", "Error 12345", "Player 123"]) {
+  assert.equal(hooks.isDollNameForTest(name), false, `${name} must remain a player name`);
+}
+assert.equal(hooks.semanticMemoryLimitForTest(), 5000);
+assert.equal(hooks.containsEmbeddedOperationTagForTest("普通回复|ω･)"), false);
+assert.equal(hooks.containsEmbeddedOperationTagForTest("[ITEMADD:123:BallGag]"), true);
+assert.equal(hooks.containsEmbeddedOperationTagForTest("[UNKNOWN_ACTION:payload]"), true);
+context.navigator.userAgent = "Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X)";
+context.navigator.maxTouchPoints = 5;
+assert.equal(hooks.semanticMemoryLimitForTest(), 1000);
+context.navigator.userAgent = "";
+context.navigator.maxTouchPoints = 0;
+
+hooks.replaceSemanticMemoriesForTest(Array.from({ length: 60 }, (_, index) => ({
+  id: index + 1,
+  text: `memory-${index}`,
+  time: Date.now() - index * 1000,
+  embedding: [index],
+})));
+assert.equal(await hooks.smartForgetForTest(10), 50);
+assert.equal(hooks.inspectLifecycleForTest().semanticMemories, 10);
+hooks.replaceSemanticMemoriesForTest([]);
+
+assert.equal(hooks.handleCommandForTest("/misaka off"), true);
+assert.equal(hooks.inspectRuntimeSettingsForTest().enabled, false);
+assert.equal(store.get("misaka_enabled"), "false");
+assert.equal(hooks.handleCommandForTest("/misaka on"), true);
+assert.equal(hooks.inspectRuntimeSettingsForTest().enabled, true);
+assert.equal(store.get("misaka_enabled"), "true");
+
+const gmSecrets = new Map();
+context.__GM_getValue = key => gmSecrets.get(key);
+context.__GM_setValue = (key, value) => {
+  gmSecrets.set(key, value);
+  return true;
+};
+store.set("misaka_apikey", "stale-local-key");
+assert.equal(hooks.migrateStoredSecretForTest("misaka_apikey"), true);
+assert.equal(gmSecrets.get("misaka_apikey"), "stale-local-key");
+assert.equal(store.has("misaka_apikey"), false);
+assert.equal(hooks.handleCommandForTest("/misaka key replacement-chat-key"), true);
+assert.equal(gmSecrets.get("misaka_apikey"), "replacement-chat-key");
+assert.equal(store.has("misaka_apikey"), false);
+assert.equal(hooks.handleCommandForTest("/misaka embedkey replacement-embed-key"), true);
+assert.equal(gmSecrets.get("misaka_openai_key"), "replacement-embed-key");
+assert.equal(store.has("misaka_openai_key"), false);
 
 context.__misakaTestLifecycle.dispose("reply-queue-suite-complete");
 console.log("MisakaChat reply queue/native reply regression: PASS");

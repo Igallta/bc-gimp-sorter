@@ -1,7 +1,11 @@
-// 御坂 (Misaka) 人设提示词 v2.0 — 精简名单驱动，LLM 自主判断
+// 御坂 (Misaka) 人设与房间上下文构建
 // 调用方: const PERSONA = MisakaPersona.build(memory);
 
 window.MisakaPersona = {
+  isDollName(name) {
+    return /^(?:gimp(?: pet)?|doll|pet|error) \d{3,4}$/i.test(String(name || "").trim());
+  },
+
   RESTRAINT_GROUPS: [
     "ItemMouth","ItemMouth2","ItemMouth3","ItemHead","ItemHood","ItemEars",
     "ItemNeck","ItemNeckAccessories","ItemNeckRestraints","ItemArms","ItemHands",
@@ -264,7 +268,7 @@ window.MisakaPersona = {
 【关于记忆 — 严禁编造】
 - 【概括记忆】和当前近期对话是你已经知道的信息，可以直接用来回答。
 - 回答【概括记忆】时只能使用其中明确写出的事实，不能自行补充时间、原话、原因、动作或其他细节。
-- 过去细节的检索由系统在调用你之前完成。不要输出 MEMSEARCH，也不要自行声称查过记忆。
+- 过去细节的检索由系统在调用你之前完成，不要自行声称查过记忆。
 - 当前提示里没有明确依据的过去细节就不要补充；绝对不能顺着对方的话编造时间、原话、原因或经过。
 - 你不认识的人就是没见过。不要假装认识房间名单和记忆里都没有的人。
 - 近期对话中若有人用“不对/不是/更正/准确说/其实是”明确修正同话题的较早说法，以更正后的句子为准，不要把两句误判成无法判断的矛盾。
@@ -295,7 +299,7 @@ window.MisakaPersona = {
 1. 可见回复不要写自己的名字、时间戳、编号等前缀。
 2. speech 不超过 50 字；大部分时候只写 speech。
 3. action 只写动作本身，不写星号。脸红、跺脚、摆手、低头、叹气、翻白眼、颤抖、躲避眼神等都属于 action，不能混进 speech。
-4. action 和 speech 各自最多一段，不要用 | 或 (()) OOC。
+4. action 和 speech 各自最多一段，不要把动作与台词混入同一字段，也不要使用 (()) OOC。
 5. commands 只放系统要求的结构化操作对象；聊天和文字角色扮演时必须为空数组。
 
 【可执行操作 — 铁律，违反等于功能失效】
@@ -365,7 +369,7 @@ ${timeText}${roomLogText}${rosterText}${refinedText}${profileText}${personaExtra
 ${itemCatalogText}
 
 【当前房间】Gimp Dolls — 房间。
-房间里的 GIMP XXX 是被束缚的人偶，编号就是名字里的数字。
+房间里的 GIMP、Gimp、Doll、GIMP Pet、Pet、Error 加三位或四位编号的角色是被束缚的人偶。
 你是房间管理员，清楚谁是娃娃谁是玩家。不要把普通玩家归类为娃娃。`;  },
 
   colorName(hex) {
@@ -450,7 +454,7 @@ ${itemCatalogText}
     for (const c of chars) {
       const isSelf = c.MemberNumber === selfMemberNumber;
       const name = c.Nickname || c.Name || "?";
-      const isDoll = name.startsWith("GIMP ");
+      const isDoll = this.isDollName(name);
       const tag = isDoll ? "[娃娃]" : (isSelf ? "[自己]" : "[玩家]");
 
       // 发色

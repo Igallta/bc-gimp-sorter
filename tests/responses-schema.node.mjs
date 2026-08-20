@@ -92,8 +92,8 @@ const schema = request.body.text.format.schema;
 assert.equal(schema.additionalProperties, false);
 assert.deepEqual(schema.required, ["protocol", "commands", "action", "speech"]);
 assert.deepEqual(schema.properties.protocol.enum, ["misaka.reply.v1"]);
-assert.equal(schema.properties.action.pattern, "^[^|\\r\\n*]*$");
-assert.equal(schema.properties.speech.pattern, "^[^|\\r\\n*]*$");
+assert.equal(schema.properties.action.pattern, "^[^\\r\\n*]*$");
+assert.equal(schema.properties.speech.pattern, "^[^\\r\\n*]*$");
 assert.match(schema.properties.action.description, /physical action/i);
 assert.match(schema.properties.speech.description, /spoken dialogue/i);
 const commandTypes = new Set(schema.properties.commands.items.anyOf.flatMap(variant =>
@@ -101,7 +101,7 @@ const commandTypes = new Set(schema.properties.commands.items.anyOf.flatMap(vari
 assert.deepEqual(commandTypes, new Set([
   "move", "moveTo", "moveEdge", "itemadd", "itemdel", "itemdelall",
   "itemcolor", "itemset", "snapshotSave", "snapshotRestore", "copyRestraint",
-  "emote", "bcequery", "memsearch",
+  "emote", "bcequery",
 ]));
 for (const variant of schema.properties.commands.items.anyOf) {
   assert.equal(variant.additionalProperties, false);

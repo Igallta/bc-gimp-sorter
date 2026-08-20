@@ -30,7 +30,7 @@
         !hooks?.stripQuotedSegmentsForTest || !hooks?.recentConversationHasAnswerForTest ||
         !hooks?.buildPlannerRecentContextForTest ||
         !hooks?.formatMessageForContextForTest ||
-        !hooks?.isLegacySelfFormattingMemoryForTest ||
+        !hooks?.removeLegacySelfPipeMemoriesForTest ||
         !hooks?.parseAssistantReplyForTest ||
         !hooks?.formatStructuredVisibleReplyForTest ||
         !hooks?.normalizePlannerMemoryDecisionForTest ||
@@ -679,27 +679,18 @@
         },
       });
 
-      const oldSelfPipeMemory = hooks.isLegacySelfFormattingMemoryForTest({
-        text: "御搬: 歪了歪头|怎么了？",
-        isSelf: true,
-        messageType: "Chat",
-      });
-      const oldSelfEmoteMemory = hooks.isLegacySelfFormattingMemoryForTest({
-        text: "御搬: 歪了歪头",
-        isSelf: true,
-        messageType: "Emote",
-      });
-      const otherPersonPipeMemory = hooks.isLegacySelfFormattingMemoryForTest({
-        text: "Rin: 看这里|ω･)",
-        isSelf: false,
-        messageType: "Chat",
-      });
+      const legacyPipeInput = [
+        { id: 1, text: "御搬: 歪了歪头|怎么了？", isSelf: true, messageType: "Chat" },
+        { id: 2, text: "御搬: 歪了歪头", isSelf: true, messageType: "Emote" },
+        { id: 3, text: "Rin: 看这里|ω･)", isSelf: false, messageType: "Chat" },
+        { id: 4, text: "御搬: 普通回复", isSelf: true, messageType: "Chat" },
+      ];
+      const legacyPipeCleaned = hooks.removeLegacySelfPipeMemoriesForTest(legacyPipeInput);
       results.push({
-        id: "guard-legacy-self-formatting-memories-are-quarantined-without-deletion",
+        id: "guard-old-self-pipe-memories-are-physically-migrated",
         repetition: 1,
-        passed: oldSelfPipeMemory === true && oldSelfEmoteMemory === true &&
-          otherPersonPipeMemory === false,
-        actual: { oldSelfPipeMemory, oldSelfEmoteMemory, otherPersonPipeMemory },
+        passed: JSON.stringify(legacyPipeCleaned.map(memory => memory.id)) === JSON.stringify([2, 3, 4]),
+        actual: legacyPipeCleaned,
       });
 
       const legacyTextReply = hooks.parseAssistantReplyForTest(
@@ -715,18 +706,19 @@
         actual: legacyTextReply,
       });
 
-      const structuredLegacyPipe = hooks.parseAssistantReplyForTest(JSON.stringify({
+      const structuredLiteralPipe = hooks.parseAssistantReplyForTest(JSON.stringify({
         protocol: "misaka.reply.v1",
         commands: [],
         action: "",
-        speech: "歪了歪头|怎么了？",
+        speech: "看这里|ω･)",
       }), "chat");
       results.push({
-        id: "guard-schema-fields-reject-legacy-pipe-separator",
+        id: "guard-schema-fields-allow-literal-pipe-emoticons",
         repetition: 1,
-        passed: structuredLegacyPipe.structured === true &&
-          structuredLegacyPipe.protocolError === "invalid-visible-field-format",
-        actual: structuredLegacyPipe,
+        passed: structuredLiteralPipe.structured === true &&
+          structuredLiteralPipe.protocolError === "" &&
+          structuredLiteralPipe.cleaned === "看这里|ω･)",
+        actual: structuredLiteralPipe,
       });
 
       const structuredChat = hooks.parseAssistantReplyForTest(JSON.stringify({

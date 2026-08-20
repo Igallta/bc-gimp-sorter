@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BC Misaka Auto Chat
 // @namespace    https://igallta.github.io/bc-gimp-sorter
-// @version      3.1.3
+// @version      3.2.0
 // @description  御坂 BC 自动回复系统 — LLM 驱动 + 语义记忆(IDB) + 房间上下文
 // @match        https://*.bondageprojects.elementfx.com/R*/*
 // @match        https://*.bondage-europe.com/R*/*
@@ -25,15 +25,21 @@
 (function() {
   "use strict";
 
-  // 不再硬编码任何 API key — 通过 BC 控制台手动设置：
-  // localStorage.setItem("misaka_apikey", "sk-xxx")
-  // localStorage.setItem("misaka_openai_key", "sk-proj-xxx")
-
-  // 把 GM 函数暴露到 window，让注入的脚本能用
+  // 仅向页面运行时开放两个模型密钥；诊断密钥始终留在 loader 闭包中。
   try { window.__GM_xmlhttpRequest = GM_xmlhttpRequest; } catch(e) {}
   try {
-    const readableRuntimeKeys = new Set(["misaka_apikey", "misaka_openai_key"]);
-    window.__GM_getValue = key => readableRuntimeKeys.has(String(key || "")) ? GM_getValue(key) : "";
+    const runtimeSecretKeys = new Set(["misaka_apikey", "misaka_openai_key"]);
+    window.__GM_getValue = key => runtimeSecretKeys.has(String(key || "")) ? GM_getValue(key, "") : "";
+    window.__GM_setValue = (key, value) => {
+      if (!runtimeSecretKeys.has(String(key || ""))) return false;
+      GM_setValue(key, String(value || ""));
+      return true;
+    };
+    window.__GM_deleteValue = key => {
+      if (!runtimeSecretKeys.has(String(key || ""))) return false;
+      GM_deleteValue(key);
+      return true;
+    };
   } catch(e) {}
 
   const DIAGNOSTIC_ENDPOINT = "https://misaka-diagnostics.misaka-diagnostics.workers.dev/v1/reply-failures";
@@ -188,9 +194,8 @@
     Promise.resolve().then(() => void flushDiagnosticPending());
   } catch (e) {}
 
-  const SCRIPT_VERSION = "3.1.3";
-  // GitHub Pages 部署曾长期卡住并返回 2.5.3。资源钉住本版本对应的 commit，
-  // 避免 Pages/master CDN 缓存让 loader 版本与实际主脚本不一致。
+  const SCRIPT_VERSION = "3.2.0";
+  // 固定 revision，保证 loader、persona 与 runtime 始终来自同一版本。
   const ASSET_REVISION = "7273e52";
   const BASE_URL = `https://raw.githack.com/Igallta/bc-gimp-sorter/${ASSET_REVISION}`;
 

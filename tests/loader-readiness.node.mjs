@@ -6,6 +6,7 @@ function makeContext() {
   const timers = [];
   const scripts = [];
   const elements = new Map();
+  const gmStore = new Map();
   const context = {
     console: { log() {}, error() {} },
     CurrentScreen: "Login",
@@ -16,6 +17,11 @@ function makeContext() {
     },
     bcModSdk: {},
     ChatSearchAutoJoinRoom() {},
+    GM_xmlhttpRequest() {},
+    GM_getValue(key, fallback = "") { return gmStore.has(key) ? gmStore.get(key) : fallback; },
+    GM_setValue(key, value) { gmStore.set(key, value); },
+    GM_deleteValue(key) { gmStore.delete(key); },
+    GM_registerMenuCommand() {},
     setTimeout(fn, delay) {
       timers.push({ fn, delay });
       return timers.length;
@@ -69,6 +75,10 @@ sorter.runNextTimer();
 assert.equal(sorter.scripts.at(-1)?.id, "gimp-sorter-script");
 
 const misaka = runLoader("../misaka-chat.user.js");
+assert.equal(misaka.context.__GM_setValue("misaka_apikey", "chat-secret"), true);
+assert.equal(misaka.context.__GM_getValue("misaka_apikey"), "chat-secret");
+assert.equal(misaka.context.__GM_setValue("misaka_diagnostics_upload_secret_v1", "blocked"), false);
+assert.equal(misaka.context.__GM_getValue("misaka_diagnostics_upload_secret_v1"), "");
 assert.equal(misaka.scripts.length, 0, "MisakaChat must not inject on the login screen");
 misaka.context.CurrentScreen = "ChatRoom";
 misaka.runNextTimer();
@@ -78,4 +88,4 @@ misaka.context.ChatRoomSendChat = () => {};
 misaka.runNextTimer();
 assert.equal(misaka.scripts.at(-1)?.id, "misaka-persona-script");
 
-console.log("loader chat readiness: 6/6");
+console.log("loader chat readiness and secret bridge: 10/10");

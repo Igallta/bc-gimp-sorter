@@ -1,21 +1,10 @@
-// MisakaChat v3.1.3 - BC 御坂自动回复系统
-// 模块分区:
-//   [Config]      L15-55   配置 + 状态
-//   [Memory]      L56-440  IndexedDB / Embedding / 语义记忆 / Refine
-//   [Idle]        L441-527 闲聊 / Heartbeat
-//   [API]         L528-633 callLLM / Token 预算 / 响应诊断
-//   [Persona]     L634-664 人设 + 房间名单缓存
-//   [Actions]     L665-1459 指令解析 / 道具操作 / 移动 / ToolPolicy
-//   [Chat]        L1460-1830 消息处理 / 噪音过滤 / handleReply / sanitize
-//   [BCE]         L1582-1641 BCE 查询
-//   [Commands]    L1831-1892 /misaka 命令系统
-//   [Init]        L1893-end 初始化 / hook 安装
+// MisakaChat v3.2.0 - BC 御坂自动回复系统
+// 模块：配置与生命周期、记忆、API、规划、BC 操作、回复、命令和初始化。
 
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "3.1.3";
-  const RELEASE_CHANNEL = "stable";
+  const SCRIPT_VERSION = "3.2.0";
   const bootstrapOptions = window.__misakaNextBootstrapOptions || {};
   delete window.__misakaNextBootstrapOptions;
   const TEST_MODE = bootstrapOptions.mode === "test";
@@ -134,7 +123,9 @@
         dimensions: 3072,
       },
     ],
-    maxMemoryEntries: 5000, // 约 30 天对话量
+    maxMemoryEntries: 5000,
+    maxMemoryEntriesIPad: 1000,
+    memoryForgetBatch: 50,
     memoryRefineInterval: 50,  // 每 N 条消息提炼一次长期记忆
     maxRefinedMemories: 20,  // 保留最近 N 条提炼记忆
     topKMemories: 3,  // 查询时返回最相似的 K 条记忆
@@ -151,8 +142,8 @@
     stickerCooldownMs: 2 * 60 * 1000,
     stickerRepeatCooldownMs: 30 * 60 * 1000,
     stickerDailyLimit: 12,
-    // 自主修改真人关系属于高影响能力，首次发布默认关闭；通过
-    // /misaka friend on 明确启用后才会评估或执行。
+    // 自主修改真人关系属于高影响能力；只有通过 /misaka friend on
+    // 明确启用后才会评估或执行。
     autoFriendEnabled: false,
     autoFriendMinInteractions: 20,
     autoFriendMinDirectMessages: 5,
@@ -160,6 +151,21 @@
     autoFriendCooldownMs: 6 * 60 * 60 * 1000,
     autoFriendReviewCooldownMs: 7 * 24 * 60 * 60 * 1000,
   };
+
+  function isIPadRuntime() {
+    const userAgent = String(globalThis.navigator?.userAgent || "");
+    return /iPad/i.test(userAgent) ||
+      (/Macintosh/i.test(userAgent) && Number(globalThis.navigator?.maxTouchPoints || 0) > 1);
+  }
+
+  function semanticMemoryLimit() {
+    return isIPadRuntime() ? CONFIG.maxMemoryEntriesIPad : CONFIG.maxMemoryEntries;
+  }
+
+  function isDollName(name) {
+    if (typeof window.MisakaPersona?.isDollName === "function") return window.MisakaPersona.isDollName(name);
+    return /^(?:gimp(?: pet)?|doll|pet|error) \d{3,4}$/i.test(String(name || "").trim());
+  }
 
   // 只允许模型选择固定 ID，绝不让模型生成网址。label 刻意写明适用边界，
   // 避免把玩闹式气鼓鼓用于严重冲突，或把恍然大悟误作长时间思考。
@@ -410,11 +416,75 @@
       }
     }
 
+    async function putOne(store, item) {
+      try {
+        const db = await openDB();
+        return await new Promise((resolve, reject) => {
+          const tx = db.transaction(store, "readwrite");
+          const req = tx.objectStore(store).put(item);
+          let key = null;
+          req.onsuccess = () => { key = req.result; };
+          req.onerror = () => reject(req.error);
+          tx.oncomplete = () => resolve(key);
+          tx.onerror = () => reject(tx.error);
+        });
+      } catch (e) {
+        console.warn("[MisakaChat] IDB put 失败:", e.message);
+        return null;
+      }
+    }
+
+    async function deleteKeys(store, keys) {
+      const uniqueKeys = [...new Set((keys || []).filter(key => key !== null && key !== undefined))];
+      if (uniqueKeys.length === 0) return 0;
+      try {
+        const db = await openDB();
+        return await new Promise((resolve, reject) => {
+          const tx = db.transaction(store, "readwrite");
+          const objectStore = tx.objectStore(store);
+          for (const key of uniqueKeys) objectStore.delete(key);
+          tx.oncomplete = () => resolve(uniqueKeys.length);
+          tx.onerror = () => reject(tx.error);
+        });
+      } catch (e) {
+        console.warn("[MisakaChat] IDB 批量删除失败:", e.message);
+        return null;
+      }
+    }
+
+    async function deleteWhere(store, predicate) {
+      try {
+        const db = await openDB();
+        return await new Promise((resolve, reject) => {
+          let deleted = 0;
+          const tx = db.transaction(store, "readwrite");
+          const req = tx.objectStore(store).openCursor();
+          req.onsuccess = () => {
+            const cursor = req.result;
+            if (!cursor) return;
+            if (predicate(cursor.value)) {
+              cursor.delete();
+              deleted++;
+            }
+            cursor.continue();
+          };
+          req.onerror = () => reject(req.error);
+          tx.oncomplete = () => resolve(deleted);
+          tx.onerror = () => reject(tx.error);
+        });
+      } catch (e) {
+        console.warn("[MisakaChat] IDB 条件删除失败:", e.message);
+        return null;
+      }
+    }
+
     return {
       getSemantic: () => getAll(STORE_SEMANTIC),
       getRefined: () => getAll(STORE_REFINED),
-      putSemanticOne: (item) => transact(STORE_SEMANTIC, "readwrite", os => os.put(item)),
-      putRefinedOne: (item) => transact(STORE_REFINED, "readwrite", os => os.put(item)),
+      putSemanticOne: (item) => putOne(STORE_SEMANTIC, item),
+      putRefinedOne: (item) => putOne(STORE_REFINED, item),
+      deleteSemanticKeys: (keys) => deleteKeys(STORE_SEMANTIC, keys),
+      deleteSemanticWhere: (predicate) => deleteWhere(STORE_SEMANTIC, predicate),
       clearSemantic: () => transact(STORE_SEMANTIC, "readwrite", os => os.clear()),
       clearRefined: () => transact(STORE_REFINED, "readwrite", os => os.clear()),
       clearAll: () => Promise.all([
@@ -442,23 +512,59 @@
   state.idbReady = false;
   state.refinedIdbReady = false;
 
+  const LEGACY_SELF_PIPE_CLEANUP_KEY = storageKey("migration_self_pipe_cleanup_v1");
+  const legacySelfPipeCleanupPending = (() => {
+    try { return localStorage.getItem(LEGACY_SELF_PIPE_CLEANUP_KEY) !== "done"; }
+    catch (e) { return true; }
+  })();
+
+  function removeLegacySelfPipeMemories(entries) {
+    return (Array.isArray(entries) ? entries : [])
+      .filter(memory => !isLegacySelfPipeMemory(memory));
+  }
+
+  function finishLegacySelfPipeCleanup(deleted) {
+    if (!Number.isInteger(deleted)) return;
+    try { localStorage.setItem(LEGACY_SELF_PIPE_CLEANUP_KEY, "done"); }
+    catch (e) {}
+    if (deleted > 0) {
+      console.log(`[MisakaChat] 已迁移删除 ${deleted} 条御坂竖线语义记忆`);
+    }
+  }
+
   if (TEST_MODE) {
     state.idbReady = true;
     state.refinedIdbReady = true;
   } else if (handedOffMemory) {
+    if (legacySelfPipeCleanupPending) {
+      state.semanticMemories = removeLegacySelfPipeMemories(state.semanticMemories);
+      IDB.deleteSemanticWhere(isLegacySelfPipeMemory).then(finishLegacySelfPipeCleanup);
+    }
     state.idbReady = true;
     state.refinedIdbReady = true;
+    if (state.semanticMemories.length > semanticMemoryLimit()) {
+      void smartForget(semanticMemoryLimit());
+    }
     console.log(
       `[MisakaChat] 生命周期移交完成: ${state.semanticMemories.length} 条语义记忆, ` +
       `${state.refinedMemories.length} 条提炼记忆`
     );
   } else {
-    IDB.getSemantic().then(entries => {
+    IDB.getSemantic().then(async entries => {
       if (!isCurrent()) return;
       if (Array.isArray(entries)) {
+        if (legacySelfPipeCleanupPending) {
+          entries = removeLegacySelfPipeMemories(entries);
+          const deleted = await IDB.deleteSemanticWhere(isLegacySelfPipeMemory);
+          if (!isCurrent()) return;
+          finishLegacySelfPipeCleanup(deleted);
+        }
         // 按 time 排序(IndexedDB autoIncrement id 基本保序,但显式排序更稳)
         entries.sort((a, b) => (a.time || 0) - (b.time || 0));
         state.semanticMemories = entries;
+        if (state.semanticMemories.length > semanticMemoryLimit()) {
+          await smartForget(semanticMemoryLimit());
+        }
       }
       state.idbReady = true;
       console.log(`[MisakaChat] IDB 加载完成: ${state.semanticMemories.length} 条语义记忆`);
@@ -561,6 +667,45 @@
       if (localValue) return { value: localValue, source: "localStorage:" + keyName };
     } catch(e) {}
     return { value: "", source: "missing:" + keyName };
+  }
+
+  function writeStoredSecret(keyName, value) {
+    const secret = String(value || "").trim();
+    if (!secret) return { ok: false, source: "missing" };
+    if (typeof window.__GM_setValue === "function") {
+      try {
+        if (window.__GM_setValue(keyName, secret) !== false) {
+          localStorage.removeItem(keyName);
+          return { ok: true, source: "GM" };
+        }
+      } catch (e) {}
+    }
+    if (typeof window.__GM_getValue === "function") {
+      return { ok: false, source: "loader-update-required" };
+    }
+    try {
+      localStorage.setItem(keyName, secret);
+      return { ok: true, source: "localStorage" };
+    } catch (e) {
+      return { ok: false, source: "unavailable" };
+    }
+  }
+
+  function migrateStoredSecret(keyName) {
+    if (typeof window.__GM_getValue !== "function" || typeof window.__GM_setValue !== "function") return false;
+    try {
+      const gmValue = String(window.__GM_getValue(keyName) || "").trim();
+      const localValue = String(localStorage.getItem(keyName) || "").trim();
+      if (gmValue) {
+        if (localValue) localStorage.removeItem(keyName);
+        return true;
+      }
+      if (localValue && window.__GM_setValue(keyName, localValue) !== false) {
+        localStorage.removeItem(keyName);
+        return true;
+      }
+    } catch (e) {}
+    return false;
   }
 
   // === [Memory] Semantic Memory (Embedding-based) ===
@@ -672,8 +817,10 @@
     return denom > 0 ? dot / denom : 0;
   }
 
-  // 智能遗忘:超限时按价值评分淘汰低价值记忆,而非简单 FIFO
-  function smartForget() {
+  // 超限时按价值评分淘汰，并在一个 IndexedDB 事务中按主键删除。
+  async function smartForget(targetSize = Math.max(0, semanticMemoryLimit() - CONFIG.memoryForgetBatch)) {
+    const dropCount = Math.max(0, state.semanticMemories.length - targetSize);
+    if (dropCount === 0) return 0;
     const now = Date.now();
     const scored = state.semanticMemories.map((m, i) => {
       const ageDays = (now - (m.time || 0)) / 86400000;
@@ -683,14 +830,24 @@
       return { idx: i, value };
     });
     scored.sort((a, b) => a.value - b.value);
-    // 淘汰价值最低的 10 条
-    const toDrop = scored.slice(0, 10).map(s => s.idx).sort((a, b) => b - a);
+    const toDrop = scored.slice(0, dropCount).map(s => s.idx).sort((a, b) => b - a);
+    const dropped = [];
     for (const idx of toDrop) {
+      dropped.push(state.semanticMemories[idx]);
       state.semanticMemories.splice(idx, 1);
     }
-    // 全量同步 semantic store(超限淘汰是稀有事件,全量写可接受)
-    IDB.clearSemantic().then(() => Promise.all(state.semanticMemories.map(m => IDB.putSemanticOne(m))));
+    const ids = dropped.map(memory => memory?.id).filter(id => id !== null && id !== undefined);
+    if (!TEST_MODE) {
+      if (ids.length === dropped.length) {
+        await IDB.deleteSemanticKeys(ids);
+      } else {
+        const signatures = new Set(dropped.map(memory => `${Number(memory?.time) || 0}\u0000${String(memory?.text || "")}`));
+        await IDB.deleteSemanticWhere(memory =>
+          signatures.has(`${Number(memory?.time) || 0}\u0000${String(memory?.text || "")}`));
+      }
+    }
     console.log(`[MisakaChat] 智能遗忘: 淘汰 ${toDrop.length} 条低价值记忆`);
+    return toDrop.length;
   }
 
   // 存一条语义记忆(带 embedding)
@@ -701,19 +858,20 @@
     const dup = await searchMemories(text, 1);
     if (dup.length > 0 && dup[0].score > 0.92) return;
 
-    if (state.semanticMemories.length >= CONFIG.maxMemoryEntries) {
-      smartForget();
-    }
     const emb = await getEmbedding(text);
     if (!emb) return;  // embedding 失败就不存
+    if (state.semanticMemories.length >= semanticMemoryLimit()) {
+      await smartForget();
+    }
     const entry = {
       text: text.slice(0, 500),
       embedding: emb,
       time: Date.now(),
       ...meta,
     };
+    const id = await IDB.putSemanticOne(entry);
+    if (id !== null && id !== undefined) entry.id = id;
     state.semanticMemories.push(entry);
-    IDB.putSemanticOne(entry); // 增量写入,不再全量覆盖
   }
 
   // 语义搜索:用 query embedding 找最相似的 K 条记忆(带时间衰减)
@@ -761,17 +919,13 @@
     return prefix + content;
   }
 
-  function isLegacySelfFormattingMemory(memory) {
-    if (memory?.isSelf !== true) return false;
-    const messageType = String(memory?.messageType || "");
-    const text = String(memory?.text || "");
-    return ["Activity", "Action", "Emote"].includes(messageType) || text.includes("|");
+  function isLegacySelfPipeMemory(memory) {
+    return memory?.isSelf === true && String(memory?.text || "").includes("|");
   }
 
   function isRefinementSourceMemory(memory) {
     const text = String(memory?.text || "");
     if (!text) return false;
-    if (isLegacySelfFormattingMemory(memory)) return false;
     if (["Activity", "Action", "Emote"].includes(memory?.messageType)) return false;
     return !/(?:VibeModeAction|Chat(?:Other|Self)-Item[A-Za-z]+-|OrgasmFailSurrender\d*|TriggerShock[12]|ActionActivateSafewordRelease)/i.test(text);
   }
@@ -843,10 +997,10 @@
         const emb = typeof m === "string" ? null : m?.embedding;
         if (!text) continue;
         if (source === "semantic") {
-          // 旧版保存的“问题 → 御坂回复”是重复合成文本，不是聊天原文；
-          // 当前问题与刚发生的对话则应由 recentMessages 负责，不能抢占旧事召回 Top K。
+          // 合成的“问题 → 御坂回复”不是聊天原文；当前对话则由
+          // recentMessages 负责，二者都不能抢占旧事召回 Top K。
           if (isSyntheticDialogueMemory(text) || isHistoricalPromptMemory(text, m) ||
-              isLegacySelfFormattingMemory(m)) continue;
+              ["Activity", "Action", "Emote"].includes(String(m?.messageType || ""))) continue;
           const memoryTime = Number(m?.time) || 0;
           if (memoryTime > 0 && now - memoryTime < CONFIG.memoryRecallExcludeRecentMs) continue;
         }
@@ -1042,7 +1196,7 @@
 7. 足以回答时 status=supported；无法回答核心问题时 status=insufficient。不要提“候选、证据、数据库、记录、相似度”等技术词。
 8. 只要任一候选直接回答了用户所问的人物或事件，就应使用该事实，不要因为其他候选无关而判为 insufficient。
 9. 没有原文明确支持时，不得补充“开玩笑”“凶巴巴”“改口”“后来原谅了”“看谁辛苦”等评价或后续；不得把陈述改写成提问、把推测改写成确认，或改变原话的说话方式。
-10. answer 只回答用户所问的最小核心事实；用户只问“是不是/谁”时，不要顺带复述其他候选。answer 不超过50字，不输出 MEMSEARCH、操作指令或解释。若包含动作，第一行只能是 *动作*，第二行只能是台词。`;
+10. answer 只回答用户所问的最小核心事实；用户只问“是不是/谁”时，不要顺带复述其他候选。answer 不超过50字，不输出操作指令或解释。若包含动作，第一行只能是 *动作*，第二行只能是台词。`;
     const user = `【用户问题】\n${senderName}: ${content}\n\n${evidence.context}`;
     const raw = await callLLM(system, [{ role: "user", content: user }], {
       thinking: false,
@@ -1054,12 +1208,11 @@
       console.warn("[MisakaChat] 记忆回答器返回异常，改用保守兜底:", String(raw || "").slice(0, 120));
       return { reply: "唔……我记得不太清，不敢乱说。", query, status: "insufficient", hitCount: evidence.hits.length };
     }
-    const parsed = parseActionCommands(result.answer);
-    if (parsed.commands.length > 0 || result.status === "insufficient") {
+    if (containsEmbeddedOperationTag(result.answer) || result.status === "insufficient") {
       return { reply: "唔……我记得不太清，不敢乱说。", query, status: "insufficient", hitCount: evidence.hits.length };
     }
     const reply = minimizeBinaryMemoryReply(
-      normalizeMemoryFinalReply(parsed.cleaned),
+      normalizeMemoryFinalReply(result.answer),
       content,
       result.status,
     );
@@ -1364,16 +1517,12 @@ ${recentSemantic}`;
   }
 
   function getApiKeyStatus() {
-    let gmValue = "";
-    if (typeof window.__GM_getValue === "function") {
-      try { gmValue = window.__GM_getValue("misaka_apikey") || ""; } catch(e) {}
-    }
-    const localValue = localStorage.getItem(storageKey("apikey")) || "";
+    const stored = readStoredSecret("misaka_apikey");
     return {
-      value: gmValue || localValue,
-      source: gmValue ? "GM" : (localValue ? "localStorage" : "missing"),
-      hasGM: !!gmValue,
-      hasLocal: !!localValue,
+      value: stored.value,
+      source: stored.source.startsWith("GM:")
+        ? "GM"
+        : (stored.source.startsWith("localStorage:") ? "localStorage" : "missing"),
     };
   }
 
@@ -2226,7 +2375,7 @@ ${recentSemantic}`;
     const asks = /[?？]|(?:吗|呢|什么|谁|怎么回事|为什么|记得|发生过|说过|做过)/.test(text);
     const past = /(?:还记得|记不记得|之前|以前|上次|昨天|前天|前几天|上周|当时|当初|后来|曾经|过去|来着)/.test(text);
     // “Rin为什么老说你笨”没有显式时间词，但仍是在追问跨多轮互动形成的
-    // 历史原因。只对已知人物或御坂本人启用这条窄护栏，避免把
+    // 只对已知人物或御坂本人启用这条窄护栏，避免把
     // “猫为什么总是睡觉”一类常识问题误送进记忆检索。
     const habitual = /(?:为什么.*(?:老(?:是)?|总是|一直|经常)|(?:老(?:是)?|总是|一直|经常).*(?:说|叫|做|对|给))/.test(text);
     let mentionsKnownPerson =
@@ -2477,7 +2626,7 @@ ${recentSemantic}`;
     return plan;
   }
 
-  // 自然语言操作规划由独立 LLM 调用完成。执行层不再用关键词/正则猜测用户意图。
+  // 自然语言操作规划由独立 LLM 调用完成，执行层只验证结构化计划。
   async function planUserRequest(senderNum, senderName, content, pendingClarification, messageType = "Chat") {
     const roster = (typeof MisakaPersona !== "undefined" && Array.isArray(ChatRoomCharacter))
       ? MisakaPersona.buildCompactRoster(ChatRoomCharacter, Player.MemberNumber)
@@ -2760,77 +2909,10 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
     return MisakaPersona.build(mem, includeCatalog !== false);
   }
 
-  // === [Actions] 操作指令解析 ===
-  // 支持3种MOVE格式:
-  //   [MOVE:166706:left]           - 往左移一步
-  //   [MOVE:166706:right]          - 往右移一步
-  //   [MOVE:166706:to:182401:left]  - 把166706移到182401左边(自动多步)
-  //   [MOVE:166706:to:182401:right] - 把166706移到182401右边(自动多步)
-  function parseActionCommands(reply) {
-    const commands = [];
-    // 单次从左到右扫描，严格保留模型输出顺序。过去按类型连续 replace 会把
-    // DEL → ADD → SET 重排成 ADD → SET → DEL，导致替换操作最后反而删掉新道具。
-    const cleaned = String(reply || "").replace(/\[([A-Z]+):([^\]]*)\]/gi, (raw, rawType, body) => {
-      const type = rawType.toUpperCase();
-      const parts = String(body).split(":").map(s => s.trim());
-      const mn = Number(parts[0]);
-      const hasMemberNumber = /^\d+$/.test(parts[0] || "");
-      let cmd = null;
-      if (type === "MEMSEARCH" && body.trim()) cmd = { type: "memsearch", query: body.trim() };
-      else if (type === "BCEQUERY" && body.trim()) cmd = { type: "bcequery", target: body.trim() };
-      else if (type === "MOVE" && hasMemberNumber) {
-        if (parts[1] === "to" && /^\d+$/.test(parts[2] || "") && /^(left|right)$/i.test(parts[3] || ""))
-          cmd = { type: "moveTo", memberNumber: mn, targetNumber: Number(parts[2]), side: parts[3].toLowerCase() };
-        else if (parts[1] === "edge" && /^(left|right)$/i.test(parts[2] || ""))
-          cmd = { type: "moveEdge", memberNumber: mn, edge: parts[2].toLowerCase() };
-        else if (/^(left|right)$/i.test(parts[1] || ""))
-          cmd = { type: "move", memberNumber: mn, direction: parts[1].toLowerCase() };
-      } else if (type === "ITEMADD" && hasMemberNumber && parts[1]) {
-        const item = parts[1];
-        const part = parts[2] || "";
-        const tail = parts.slice(3).join(":");
-        const isColor = !tail || !!colorNameToHex(tail);
-        cmd = { type: "itemadd", memberNumber: mn, item, part, color: isColor ? tail : "" };
-        // 模型偶尔把 typed 样式误写在 ITEMADD 第五段（如 :Arms:BoxTie）。
-        // 该位置若不是合法颜色，就按原顺序补成紧随其后的 ITEMSET，而非报“未知颜色”。
-        if (tail && !isColor) {
-          commands.push(cmd);
-          commands.push({ type: "itemset", memberNumber: mn, item, part, property: "样式", value: tail });
-          return "";
-        }
-      } else if (type === "ITEMDEL" && hasMemberNumber && parts[1]) {
-        cmd = parts[1].toLowerCase() === "all"
-          ? { type: "itemdelall", memberNumber: mn }
-          : { type: "itemdel", memberNumber: mn, item: parts[1], part: parts.slice(2).join(":") };
-      } else if (type === "ITEMCOLOR" && hasMemberNumber && parts[1] && parts.length >= 3) {
-        cmd = parts.length >= 4
-          ? { type: "itemcolor", memberNumber: mn, item: parts[1], part: parts[2], color: parts.slice(3).join(":") }
-          : { type: "itemcolor", memberNumber: mn, item: parts[1], part: "", color: parts[2] };
-      } else if (type === "ITEMSET" && hasMemberNumber && parts[1] && parts.length >= 4) {
-        const item = parts[1];
-        const hasBodyPart = !!BODY_PART_GROUPS[parts[2]];
-        const explicitEmptyPart = parts[2] === "" && parts.length >= 5;
-        const part = hasBodyPart ? parts[2] : "";
-        const propertyIndex = (hasBodyPart || explicitEmptyPart) ? 3 : 2;
-        const value = parts.slice(propertyIndex + 1).join(":");
-        const property = parts[propertyIndex];
-        if (property && value) {
-          if (/^#[0-9A-Fa-f]{6}$/.test(value) || /^(默认|Default|原色)$/.test(value))
-            cmd = { type: "itemcolor", memberNumber: mn, item, part: property, color: value };
-          else cmd = { type: "itemset", memberNumber: mn, item, part, property, value };
-        }
-      } else if (type === "SNAPSHOT" && /^(save|restore)$/i.test(parts[0] || "") && /^\d+$/.test(parts[1] || "")) {
-        cmd = { type: parts[0].toLowerCase() === "save" ? "snapshotSave" : "snapshotRestore", memberNumber: Number(parts[1]) };
-      } else if (type === "COPY" && hasMemberNumber && parts[1] === "to" && /^\d+$/.test(parts[2] || "")) {
-        cmd = { type: "copyRestraint", sourceNumber: mn, targetNumber: Number(parts[2]) };
-      } else if (type === "EMOTE" && hasMemberNumber && parts.slice(1).join(":").trim()) {
-        cmd = { type: "emote", memberNumber: mn, expression: parts.slice(1).join(":").trim() };
-      }
-      if (!cmd) return raw; // 未识别或格式错误的标签保留，避免静默吞字。
-      commands.push(cmd);
-      return "";
-    });
-    return { commands, cleaned: cleaned.trim() };
+  // 记忆回答器不得夹带文本操作标签；这里只检测，不解析。
+  function containsEmbeddedOperationTag(value) {
+    return /\[[A-Z][A-Z0-9_]{1,31}:[^\]\r\n]{0,500}\]/
+      .test(String(value || ""));
   }
 
   const STRUCTURED_REPLY_PROTOCOL = "misaka.reply.v1";
@@ -2968,27 +3050,18 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
               required: ["type", "target"],
               additionalProperties: false,
             },
-            {
-              type: "object",
-              properties: {
-                type: { type: "string", enum: ["memsearch"] },
-                query: { type: "string" },
-              },
-              required: ["type", "query"],
-              additionalProperties: false,
-            },
           ],
         },
       },
       action: {
         type: "string",
-        description: "Only the character's physical action, without stars, dialogue, line breaks, or legacy separators.",
-        pattern: "^[^|\\r\\n*]*$",
+        description: "Only the character's physical action, without stars, dialogue, or line breaks.",
+        pattern: "^[^\\r\\n*]*$",
       },
       speech: {
         type: "string",
-        description: "Only spoken dialogue, without actions, stars, line breaks, or legacy separators.",
-        pattern: "^[^|\\r\\n*]*$",
+        description: "Only spoken dialogue, without actions, stars, or line breaks.",
+        pattern: "^[^\\r\\n*]*$",
       },
     },
     required: ["protocol", "commands", "action", "speech"],
@@ -3078,7 +3151,7 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
 - 表情: {"type":"emote","memberNumber":123,"expression":"Hearts"}
 - BCE 查询: {"type":"bcequery","target":"名字或编号"}
 part 可以使用上文列出的语义部位，也可以使用道具清单中的精确 BC group（例如 ItemDevices、ItemHandheld）；没有必要限定部位时留空。精确 group 必须与 item 真实所属 group 一致。
-复合操作按真实执行顺序排列 commands。字段不可省略时不要改名，也不要使用旧的 [ITEMADD:...] 文本标签。`;
+复合操作按真实执行顺序排列 commands。字段不可省略时不要改名。`;
   }
 
   function normalizeStructuredCommand(raw) {
@@ -3097,7 +3170,6 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
       copyrestraint: "copyRestraint",
       emote: "emote",
       bcequery: "bcequery",
-      memsearch: "memsearch",
     };
     const type = aliases[String(raw.type || "").replace(/[_\s-]/g, "").toLowerCase()];
     if (!type) return null;
@@ -3105,7 +3177,6 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
     const hasMemberNumber = Number.isInteger(memberNumber) && memberNumber > 0;
     const text = key => String(raw[key] || "").trim();
     if (type === "bcequery" && text("target")) return { type, target: text("target") };
-    if (type === "memsearch" && text("query")) return { type, query: text("query") };
     if (type === "move" && hasMemberNumber && /^(left|right)$/i.test(text("direction"))) {
       return { type, memberNumber, direction: text("direction").toLowerCase() };
     }
@@ -3219,7 +3290,7 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
     }
     const action = typeof parsed.action === "string" ? parsed.action : "";
     const speech = typeof parsed.speech === "string" ? parsed.speech : "";
-    if (/[|\r\n*]/.test(action) || /[|\r\n*]/.test(speech)) {
+    if (/[\r\n*]/.test(action) || /[\r\n*]/.test(speech)) {
       return {
         matched: true,
         ok: false,
@@ -3398,35 +3469,6 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
     });
   }
 
-  function commandMatchesPlannedOperation(cmd, operation) {
-    if (!cmd || !operation) return false;
-    const types = Array.isArray(operation.types) ? operation.types : [];
-    if (!types.includes(cmd.type)) return false;
-    const targets = (Array.isArray(operation.targets) ? operation.targets : []).map(Number);
-    const target = commandPrimaryTarget(cmd);
-    if (targets.length > 0 && target !== null && !targets.includes(target)) return false;
-    if (cmd.type === "moveTo") {
-      const referenceTargets = (Array.isArray(operation.referenceTargets)
-        ? operation.referenceTargets : []).map(Number);
-      if (!referenceTargets.includes(Number(cmd.targetNumber))) return false;
-      if (!operation.side || String(operation.side).toLowerCase() !== String(cmd.side).toLowerCase()) return false;
-    }
-    const parts = Array.isArray(operation.parts) ? operation.parts : [];
-    if (parts.length > 0 && ["itemadd", "itemdel", "itemset"].includes(cmd.type)) {
-      if (!itemCommandTouchesPlannedParts(cmd, parts)) return false;
-    }
-    // assets 是规划器已从权威目录解析出的精确目标道具。添加、设置与改色
-    // 必须命中它；替换时的 ITEMDEL 仍允许删除当前旧道具。
-    const assets = (Array.isArray(operation.assets) ? operation.assets : [])
-      .map(name => String(name).toLowerCase());
-    if (assets.length > 0 && ["itemadd", "itemset", "itemcolor"].includes(cmd.type)) {
-      const mapping = findItemAsset(cmd.item, actionTargetCharacter(target));
-      const actualAsset = String(mapping?.asset || cmd.item || "").toLowerCase();
-      if (!assets.includes(actualAsset)) return false;
-    }
-    return true;
-  }
-
   function commandFamily(type) {
     if (["itemadd", "itemdel", "itemset", "itemcolor"].includes(type)) return "item";
     if (["move", "moveTo", "moveEdge"].includes(type)) return "move";
@@ -3503,11 +3545,11 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
   }
 
   // 宽松审查：只拦截跨对象、跨操作大类、明确禁止项与高影响未授权操作。
-  // Asset、部位和 ADD/SET/DEL 细分不再要求与规划器逐字匹配。
+  // Asset、部位和 ADD/SET/DEL 细分不要求与规划器逐字匹配。
   function filterCommandsByPlan(plan, commands) {
     const operations = Array.isArray(plan?.operations) ? plan.operations : [];
     const executable = commands
-      .filter(c => !["memsearch", "bcequery"].includes(c.type))
+      .filter(c => c.type !== "bcequery")
       .map(command => canonicalizeUnscopedExactAssetPart({ ...command }, operations))
       .map(command => canonicalizeExactAssetPartToPlan(command, operations));
     if (!plan || plan.intent !== "action") {
@@ -3589,7 +3631,6 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
   // 供浏览器现场回归读取；不暴露密钥或底层执行函数。
   window.__misakaPlanDebug = {
     filterCommandsByPlan,
-    parseActionCommands,
     parseStructuredReply,
     parseAssistantReply,
     dryRunStructuredReplyForTest,
@@ -3618,7 +3659,22 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
         JSON.parse(JSON.stringify(plan || {})), content),
     buildPlannerRecentContextForTest: buildPlannerRecentContext,
     formatMessageForContextForTest: formatMessageForContext,
-    isLegacySelfFormattingMemoryForTest: isLegacySelfFormattingMemory,
+    containsEmbeddedOperationTagForTest: containsEmbeddedOperationTag,
+    removeLegacySelfPipeMemoriesForTest: removeLegacySelfPipeMemories,
+    isDollNameForTest: isDollName,
+    semanticMemoryLimitForTest: semanticMemoryLimit,
+    replaceSemanticMemoriesForTest: memories => {
+      state.semanticMemories = (Array.isArray(memories) ? memories : []).map(memory => ({ ...memory }));
+    },
+    smartForgetForTest: targetSize => smartForget(targetSize),
+    migrateStoredSecretForTest: migrateStoredSecret,
+    handleCommandForTest: handleCommand,
+    inspectRuntimeSettingsForTest: () => ({
+      enabled: CONFIG.enabled,
+      activityEnabled: CONFIG.activityEnabled,
+      stickerEnabled: CONFIG.stickerEnabled,
+      autoFriendEnabled: CONFIG.autoFriendEnabled,
+    }),
     normalizePlannerOperationsForTest: rawOperations => normalizePlannerOperations(
       rawOperations,
       new Set((ChatRoomCharacter || []).map(c => Number(c.MemberNumber)).concat(Number(Player?.MemberNumber))),
@@ -4060,8 +4116,8 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
     const constraints = verifyPlanConstraints(plan, baseline);
     if (!constraints.satisfied) return { satisfied: false, reason: constraints.reason, postconditions, constraints };
     const effects = verifiedEffectSummary(postconditions);
-    // 不再调用第二个 LLM 审查“这算不算实现了用户语义”。主模型负责理解意图，
-    // 执行后只核对客观事实：指令是否生效、最终状态是否正确、用户明确限制是否违反。
+    // 主模型负责理解意图；执行后只核对指令是否生效、最终状态是否正确，
+    // 以及用户明确限制是否违反。
     return {
       satisfied: true,
       reason: "确定性后置条件与明确限制均满足",
@@ -4346,7 +4402,7 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
         layers.push({ name: layer.Name, index: layer.ColorIndex });
       }
     }
-    // fallback: 如果没找到 AllowColorize 的 layer,用旧逻辑
+    // 没有可着色 layer 时，按 Asset 的基础颜色槽处理。
     if (layers.length === 0) {
       const count = asset.ColorableLayerCount || asset.DefaultColor?.length || 0;
       let colorIdx = 0;
@@ -5067,7 +5123,7 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
     const resolved = resolveSticker(stickerId);
     pushDebugTrace({ id: debugId, stage: "sticker:planned", stickerId, resolved });
     if (!resolved.ok) return false;
-    const messageCount = String(reply || "").split(/\n|\|/).map(v => v.trim()).filter(Boolean).length;
+    const messageCount = String(reply || "").split(/\n/).map(v => v.trim()).filter(Boolean).length;
     const delay = Math.max(900, messageCount * 650 + 250);
     trackedTimeout(() => {
       const result = sendSticker(stickerId);
@@ -5612,8 +5668,8 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
       for (const mn of [cmd.sourceNumber, cmd.targetNumber]) {
         if (mn === selfMn) continue;
         const c = ChatRoomCharacter.find(ch => ch.MemberNumber === mn);
-        const isGimp = !!(c && (c.Nickname || c.Name || "").startsWith("GIMP "));
-        if (!isGimp) targets.push(c?.Nickname || c?.Name || ("#" + mn));
+        const isDoll = !!(c && isDollName(c.Nickname || c.Name));
+        if (!isDoll) targets.push(c?.Nickname || c?.Name || ("#" + mn));
       }
       if (targets.length > 0) return { ok: true, dangerous: true, target: targets.join(" → ") };
       return { ok: true, dangerous: false };
@@ -5622,15 +5678,15 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
     if (cmd.type === "snapshotSave" || cmd.type === "snapshotRestore") {
       if (cmd.memberNumber === selfMn) return { ok: true, dangerous: false };
       const c = ChatRoomCharacter.find(ch => ch.MemberNumber === cmd.memberNumber);
-      const isGimp = !!(c && (c.Nickname || c.Name || "").startsWith("GIMP "));
-      if (!isGimp) return { ok: true, dangerous: true, target: c?.Nickname || c?.Name || ("#" + cmd.memberNumber) };
+      const isDoll = !!(c && isDollName(c.Nickname || c.Name));
+      if (!isDoll) return { ok: true, dangerous: true, target: c?.Nickname || c?.Name || ("#" + cmd.memberNumber) };
       return { ok: true, dangerous: false };
     }
     if (cmd.memberNumber === selfMn) return { ok: true, dangerous: false };
-    // 检查目标是否为真人(不是 GIMP 娃娃)
+    // 检查目标是否为真人，而不是房间娃娃账号。
     const c = ChatRoomCharacter.find(ch => ch.MemberNumber === cmd.memberNumber);
-    const isGimp = !!(c && (c.Nickname || c.Name || "").startsWith("GIMP "));
-    if (!isGimp) {
+    const isDoll = !!(c && isDollName(c.Nickname || c.Name));
+    if (!isDoll) {
       return { ok: true, dangerous: true, target: c?.Nickname || c?.Name || ("#" + cmd.memberNumber) };
     }
     return { ok: true, dangerous: false };
@@ -5646,9 +5702,9 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
       return ok;
     };
 
-    // parseActionCommands 已保留模型原始顺序；执行器不得再次按类型排序。
+    // 严格按结构化 commands 的原始顺序执行。
     for (const cmd of commands) {
-      if (cmd.type === "memsearch" || cmd.type === "bcequery") continue;
+      if (cmd.type === "bcequery") continue;
       const policy = checkToolPolicy(cmd);
       if (policy.dangerous) {
         const who = policy.target;
@@ -5851,8 +5907,8 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
       /^ChatSelf-ItemMouth-MoanGag(Giggle)?$/i,
     ];
     function isNoise(type, rawContent, senderName) {
-      // GIMP 娃娃只过滤自动消息类型(Activity/Emote/Action),保留 Chat/Talk/Whisper(可能是真人)
-      if (senderName && senderName.startsWith("GIMP ")) {
+      // 娃娃账号只过滤自动消息类型，保留可能由真人输入的聊天消息。
+      if (isDollName(senderName)) {
         return type === "Activity" || type === "Emote" || type === "Action" ||
                NOISE_PATTERNS.some(pat => pat.test(rawContent));
       }
@@ -5896,7 +5952,12 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
       if (state.recentMessages.length > CONFIG.maxContext) state.recentMessages.shift();
       // 御坂自己的消息也存语义记忆
       if (readableContent.length >= 15 && !["Activity", "Action", "Emote"].includes(data.Type)) {
-        storeSemanticMemory(`御搬: ${readableContent}`, { sender: "御搬", memberNum: Player.MemberNumber, isSelf: true, messageType: data.Type }).catch(() => {});
+        storeSemanticMemory(`御搬: ${readableContent}`, {
+          sender: "御搬",
+          memberNum: Player.MemberNumber,
+          isSelf: true,
+          messageType: data.Type,
+        }).catch(() => {});
       }
       return;
     }
@@ -6305,7 +6366,7 @@ function unescapeHTML(s) {
     }));
     if (!reply) return fallback;
     const parsed = parseAssistantReply(reply, "chat");
-    if (parsed.commands.some(c => !["memsearch", "bcequery"].includes(c.type))) return fallback;
+    if (parsed.commands.some(c => c.type !== "bcequery")) return fallback;
     return parsed.cleaned || fallback;
   }
 
@@ -6583,8 +6644,7 @@ function unescapeHTML(s) {
         pushDebugTrace({ id: debugId, stage: "clarification:resolved", used: requestPlan.usedPendingClarification });
       }
 
-      // 过去细节由规划器统一分流到单路 RAG。主回复模型不再决定是否搜索，
-      // 也不再经历“自由草稿 → 二次查询 → 证据编辑器”的多轮链路。
+      // 过去细节由规划器统一分流到单路 RAG，主回复模型不参与检索决策。
       if (requestPlan.memorySearch) {
         const memoryResult = await answerMemoryQuestion(requestPlan, senderName, content);
         const finalReply = normalizeAssistantIdentity(memoryResult.reply, content);
@@ -6793,7 +6853,7 @@ function unescapeHTML(s) {
         }
       } else if (requestPlan.intent === "action" && initialExecutable.length === 0 && initialIsClarifyingQuestion) {
         // 模型已经基于实时道具清单明确说明不可执行并追问时，这就是安全且有用的结果。
-        // 不再用“必须输出指令”的纠错提示覆盖它，否则会诱导模型编造不存在的样式。
+        // 保留确定性澄清，避免纠错提示诱导模型编造不存在的样式。
         pushDebugTrace({ id: debugId, stage: "retry:skipped-clarification", reply: initialCleaned });
       }
 
@@ -6872,7 +6932,7 @@ function unescapeHTML(s) {
             pushDebugTrace({ id: debugId, stage: "execute:rollback", reason: "action-failed", details: commandResult.rollbackDetails });
           }
           // 子指令成功后继续核对客观后置条件与明确限制；只有这些确定性检查
-          // 失败才会回滚。LLM 语义复核只写入 debug，不再拥有驳回权。
+          // 客观后置条件失败时才回滚；LLM 语义复核只写入 debug。
           if ((commandResult.failures || []).length === 0) {
             const postExecutionAppearance = buildCurrentAppearanceFacts(requestPlan);
             commandResult.outcomeVerdict = await verifyActionOutcome(requestPlan, executableCommands, actionBaseline);
@@ -6975,10 +7035,28 @@ function unescapeHTML(s) {
     const cmd = msg.slice("/misaka".length).trim();
     const parts = cmd.split(/\s+/);
     const sub = parts[0];
-    if (sub === "on") { CONFIG.enabled = true; sendLocal("✅ 已开启：自动回复"); }
-    else if (sub === "off") { CONFIG.enabled = false; sendLocal("⏹ 已关闭：自动回复"); }
-    else if (sub === "key" && parts[1]) { localStorage.setItem(storageKey("apikey"), parts[1]); sendLocal("✅ 已保存：API key"); }
-    else if (sub === "embedkey" && parts[1]) { localStorage.setItem("misaka_openai_key", parts[1]); sendLocal("✅ 已保存：OpenAI embedding key"); }
+    if (sub === "on") {
+      CONFIG.enabled = true;
+      localStorage.setItem(storageKey("enabled"), "true");
+      sendLocal("✅ 已开启：自动回复");
+    }
+    else if (sub === "off") {
+      CONFIG.enabled = false;
+      localStorage.setItem(storageKey("enabled"), "false");
+      sendLocal("⏹ 已关闭：自动回复");
+    }
+    else if (sub === "key" && parts[1]) {
+      const saved = writeStoredSecret("misaka_apikey", parts[1]);
+      sendLocal(saved.ok
+        ? `✅ 已保存：API key（${saved.source}）`
+        : (saved.source === "loader-update-required" ? "❌ 请先更新 MisakaChat loader" : "❌ API key 保存失败"));
+    }
+    else if (sub === "embedkey" && parts[1]) {
+      const saved = writeStoredSecret("misaka_openai_key", parts[1]);
+      sendLocal(saved.ok
+        ? `✅ 已保存：OpenAI embedding key（${saved.source}）`
+        : (saved.source === "loader-update-required" ? "❌ 请先更新 MisakaChat loader" : "❌ embedding key 保存失败"));
+    }
     else if (sub === "model" && parts[1]) { localStorage.setItem(storageKey("model"), parts[1]); CONFIG.model = parts[1]; sendLocal("✅ 已切换：模型 | 当前模型：" + parts[1]); }
     else if (sub === "activity" && ["on", "off"].includes(parts[1])) {
       CONFIG.activityEnabled = parts[1] === "on";
@@ -7003,7 +7081,10 @@ function unescapeHTML(s) {
     else if (sub === "status") {
       const key = getApiKeyStatus();
       const embed = getEmbeddingProviderStatus();
-      sendLocal(`状态：${CONFIG.enabled?"开启":"关闭"} | 原生互动：${CONFIG.activityEnabled?"开启":"关闭"} | 表情包：${CONFIG.stickerEnabled?"开启":"关闭"} | 自动加好友：${CONFIG.autoFriendEnabled?"开启":"关闭"} | 模型：${CONFIG.model} | 语义记忆：${state.semanticMemories.length} | 提炼记忆：${state.refinedMemories.length} | 人物：${Object.keys(loadMemory().profiles||{}).length}`);
+      const embedSource = embed.key.value
+        ? (embed.key.source.startsWith("GM:") ? "GM" : "localStorage")
+        : "缺失";
+      sendLocal(`版本：${SCRIPT_VERSION} | Loader：${window.__misakaUserLoaderLoaded || "未知"} | 状态：${CONFIG.enabled?"开启":"关闭"} | 原生互动：${CONFIG.activityEnabled?"开启":"关闭"} | 表情包：${CONFIG.stickerEnabled?"开启":"关闭"} | 自动加好友：${CONFIG.autoFriendEnabled?"开启":"关闭"} | 模型：${CONFIG.model} | 对话Key：${key.source === "missing" ? "缺失" : key.source} | Embedding：${embed.provider.name}/${embedSource} | 语义记忆：${state.semanticMemories.length}/${semanticMemoryLimit()} | 提炼记忆：${state.refinedMemories.length} | 人物：${Object.keys(loadMemory().profiles||{}).length}`);
     } else if (sub === "forget") {
       localStorage.setItem(storageKey("memory"), "{}");
       state.semanticMemories = [];
@@ -7024,10 +7105,17 @@ function unescapeHTML(s) {
       else {
         try {
           const data = JSON.parse(blob);
-          IDB.importAll(data).then(() => {
-            state.semanticMemories = data.semantic || [];
-            state.refinedMemories = data.refined || [];
-            sendLocal(`✅ 已导入记忆 | 语义记忆：${data.semantic?.length || 0} | 提炼记忆：${data.refined?.length || 0}`);
+          const imported = {
+            semantic: removeLegacySelfPipeMemories(data.semantic),
+            refined: Array.isArray(data.refined) ? data.refined : [],
+          };
+          IDB.importAll(imported).then(async () => {
+            state.semanticMemories = imported.semantic;
+            state.refinedMemories = imported.refined;
+            if (state.semanticMemories.length > semanticMemoryLimit()) {
+              await smartForget(semanticMemoryLimit());
+            }
+            sendLocal(`✅ 已导入记忆 | 语义记忆：${imported.semantic.length} | 提炼记忆：${imported.refined.length}`);
           });
         } catch(e) { sendLocal("❌ 导入记忆失败：" + e.message); }
       }
@@ -7092,8 +7180,12 @@ function unescapeHTML(s) {
     if (!isCurrent() || TEST_MODE) return;
     if (typeof Player === "undefined" || !Player) { trackedTimeout(init, 1000); return; }
     if (Player.MemberNumber !== 194331) { console.log("[MisakaChat] 非御坂账号,跳过"); return; }
+    migrateStoredSecret("misaka_apikey");
+    migrateStoredSecret("misaka_openai_key");
     const savedModel = localStorage.getItem(storageKey("model")) || "";
     if (savedModel) CONFIG.model = savedModel;
+    const savedEnabled = localStorage.getItem(storageKey("enabled"));
+    if (savedEnabled !== null) CONFIG.enabled = savedEnabled === "true";
     const savedActivityEnabled = localStorage.getItem(storageKey("activity_enabled"));
     if (savedActivityEnabled !== null) CONFIG.activityEnabled = savedActivityEnabled === "true";
     const savedStickerEnabled = localStorage.getItem(storageKey("sticker_enabled"));
@@ -7115,7 +7207,7 @@ function unescapeHTML(s) {
 
    window.__misakaOnMessage = onChatRoomMessage;
 
-   // 方案 1: hook ServerSocket.onevent - 在 socket 事件层拦截,最可靠
+   // 主消息入口：在 socket 事件层接收 ChatRoomMessage。
    if (isCurrent() && typeof ServerSocket !== "undefined" && ServerSocket.onevent) {
      if (!window.__misakaSocketHooked) {
        const origOnevent = ServerSocket.onevent;
@@ -7133,7 +7225,7 @@ function unescapeHTML(s) {
      }
    }
 
-   // 方案 2 (fallback): window.ChatRoomMessage wrapper
+   // 备用消息入口：包装 window.ChatRoomMessage。
    if (isCurrent()) {
      const orig = window.__misakaOrigChatRoomMessage || window.ChatRoomMessage;
      window.__misakaOrigChatRoomMessage = orig;
@@ -7142,12 +7234,11 @@ function unescapeHTML(s) {
        catch(e) { console.error("[MisakaChat] wrapper error:", e.message); }
        return orig.apply(this, arguments);
      };
-     console.log("[MisakaChat] ChatRoomMessage wrapper 已设置/刷新 v2.0");
+     console.log("[MisakaChat] ChatRoomMessage wrapper 已设置/刷新");
    }
 
     mod.hookFunction("ChatRoomSendChat", 10, (args, next) => {
-      // ChatRoomSendChat 通常没有消息参数，BC 会直接从 InputChat 读取文本。
-      // 旧逻辑只看 args[0]，导致 /misaka 被放行给 BC 原生命令系统并报“没有该命令”。
+      // ChatRoomSendChat 通常从 InputChat 读取文本，因此参数为空时读取输入框。
       let msg = typeof args?.[0] === "string" ? args[0] : "";
       if (!msg) {
         try { msg = ElementValue("InputChat") || ""; } catch(e) {}

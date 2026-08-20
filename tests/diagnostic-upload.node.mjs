@@ -58,7 +58,7 @@ context.window = context;
 vm.createContext(context);
 vm.runInContext(source, context, { filename: "misaka-chat.user.js" });
 
-assert.equal(context.__GM_getValue("misaka_apikey"), undefined);
+assert.equal(context.__GM_getValue("misaka_apikey"), "");
 assert.equal(context.__GM_getValue("misaka_diagnostics_upload_secret_v1"), "",
   "diagnostic secret must not be exposed to the page runtime");
 assert.equal(menuCommands.length, 2);
