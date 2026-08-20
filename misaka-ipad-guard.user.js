@@ -36,7 +36,7 @@
     "github-pages": "https://igallta.github.io/bc-gimp-sorter/ipad-recycle.html",
     httpbingo: "https://httpbingo.org/response-headers",
   });
-  const ASSET_REVISION = "bbda67e";
+  const ASSET_REVISION = "cd9561d";
   const pageWindow = typeof unsafeWindow === "object" && unsafeWindow ? unsafeWindow : window;
 
   if (pageWindow.__MisakaIPadGuardLoaderStarted === VERSION) return;
