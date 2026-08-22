@@ -2,8 +2,9 @@
 
 import { readFile } from "node:fs/promises";
 import process from "node:process";
+import { requireCdpBase } from "./cdp-runner-config.mjs";
 
-const cdpBase = process.env.MISAKA_CDP_URL || "http://127.0.0.1:9222";
+const cdpBase = requireCdpBase();
 const iterationsArg = process.argv.find(arg => arg.startsWith("--iterations="));
 const iterations = Math.max(2, Math.min(30, Number(iterationsArg?.split("=")[1]) || 10));
 const source = await readFile(new URL("../misaka-chat.js", import.meta.url), "utf8");

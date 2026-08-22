@@ -538,7 +538,7 @@
       document.dispatchEvent(new Event("misaka-ipad-guard-open-login-config"));
       sendLocal("✅ 已打开：自动登录配置 | 账号：MSK002 | 登录校验：#194331");
     } else if (sub === "recycle") {
-      sendLocal("已安排手动回收：2秒后执行");
+      sendLocal("✅ 已安排：手动回收 | 2秒后执行");
       setTimeout(() => recycle("manual"), 2000);
     } else if (sub === "log") {
       const records = readJSON(LOG_KEY, []);

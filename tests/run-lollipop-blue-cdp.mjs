@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 import { readFile } from "node:fs/promises";
+import { requireCdpBase } from "./cdp-runner-config.mjs";
 
-const cdpBase = process.env.MISAKA_CDP_URL || "http://127.0.0.1:9222";
+const cdpBase = requireCdpBase();
 const playerMemberNumber = Number(process.env.MISAKA_PLAYER_MEMBER || 194331);
 const repeats = Math.max(1, Math.min(10, Number(process.argv.find(arg => arg.startsWith("--repeats="))?.split("=")[1]) || 1));
 const helpersOnly = process.argv.includes("--helpers-only");

@@ -83,14 +83,24 @@ const pageBridge = misaka.context.unsafeWindow;
 assert.equal(typeof pageBridge.__GM_getValue, "undefined", "page must not receive a raw secret reader");
 assert.equal(pageBridge.__misakaSetSecret("misaka_apikey", "chat-secret"), true);
 assert.equal(pageBridge.__misakaHasSecret("misaka_apikey"), true);
+assert.equal(pageBridge.__misakaSetSecret("misaka_openrouter_key", "embedding-secret"), true);
+assert.equal(pageBridge.__misakaHasSecret("misaka_openrouter_key"), true);
+assert.equal(pageBridge.__misakaSetSecret("misaka_openai_key", "retired"), false);
 assert.equal(pageBridge.__misakaSetSecret("misaka_diagnostics_upload_secret_v1", "blocked"), false);
 assert.equal(pageBridge.__misakaHasSecret("misaka_diagnostics_upload_secret_v1"), false);
+assert.equal(pageBridge.__misakaDiagnosticsConfigured(), false);
 const privateResponse = await pageBridge.__misakaPrivateRequest({
   kind: "deepseek",
   url: "https://api.deepseek.com/beta/chat/completions",
   data: "{}",
 });
 assert.equal(privateResponse.status, 200);
+const embeddingResponse = await pageBridge.__misakaPrivateRequest({
+  kind: "openrouter-embedding",
+  url: "https://openrouter.ai/api/v1/embeddings",
+  data: "{}",
+});
+assert.equal(embeddingResponse.status, 200);
 const blockedResponse = await pageBridge.__misakaPrivateRequest({
   kind: "deepseek",
   url: "https://example.invalid/steal",
@@ -106,4 +116,4 @@ misaka.context.ChatRoomSendChat = () => {};
 misaka.runNextTimer();
 assert.equal(misaka.scripts.at(-1)?.id, "misaka-persona-script");
 
-console.log("loader chat readiness and private request bridge: 14/14");
+console.log("loader chat readiness and private request bridge: PASS");

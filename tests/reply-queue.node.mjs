@@ -7,6 +7,7 @@ import vm from "node:vm";
 const source = fs.readFileSync(new URL("../misaka-chat.js", import.meta.url), "utf8");
 const store = new Map();
 const sent = [];
+const localMessages = [];
 const timers = [];
 let inputWrites = 0;
 
@@ -35,6 +36,7 @@ const context = {
   ChatRoomGenerateChatRoomChatMessage(type, content) {
     return { Type: type, Content: content, Dictionary: [{ Tag: "SourceCharacter", MemberNumber: 194331 }] };
   },
+  ChatRoomMessage(message) { localMessages.push(structuredClone(message)); },
   ServerSend(name, data) { sent.push({ name, data: structuredClone(data) }); },
   ChatRoomOwnerPresenceRule() { return false; },
   ChatRoomOwnerForbiddenWordCheck() { return true; },
@@ -272,8 +274,26 @@ assert.equal(hooks.handleCommandForTest("/misaka key replacement-chat-key"), tru
 assert.equal(gmSecrets.get("misaka_apikey"), "replacement-chat-key");
 assert.equal(store.has("misaka_apikey"), false);
 assert.equal(hooks.handleCommandForTest("/misaka embedkey replacement-embed-key"), true);
-assert.equal(gmSecrets.get("misaka_openai_key"), "replacement-embed-key");
-assert.equal(store.has("misaka_openai_key"), false);
+assert.equal(gmSecrets.get("misaka_openrouter_key"), "replacement-embed-key");
+assert.equal(store.has("misaka_openrouter_key"), false);
+
+localMessages.length = 0;
+assert.equal(hooks.handleCommandForTest("/misaka status"), true);
+assert.equal(localMessages.length, 1);
+assert.match(localMessages[0].Content, /\[MisakaChat\] 状态：开启 \| 原生互动：开启/);
+assert.doesNotMatch(localMessages[0].Content, /版本：|Loader：|对话Key：|Embedding：/);
+
+localMessages.length = 0;
+assert.equal(hooks.handleCommandForTest("/misaka diag"), true);
+assert.equal(localMessages.length, 1);
+assert.match(localMessages[0].Content, /\[MisakaChat\] 运行时：3\.3\.0 \| Loader：未知/);
+assert.match(localMessages[0].Content, /Embedding：OpenRouter Voyage 4 Large\/voyageai\/voyage-4-large\/1024维/);
+
+gmSecrets.delete("misaka_openrouter_key");
+localMessages.length = 0;
+assert.equal(hooks.handleCommandForTest("/misaka diag"), true);
+assert.equal(localMessages.length, 2);
+assert.match(localMessages[1].Content, /语义记忆不可用.*对话仍可运行.*不会写入或召回向量记忆/);
 
 context.__misakaTestLifecycle.dispose("reply-queue-suite-complete");
 console.log("MisakaChat reply queue/native reply regression: PASS");

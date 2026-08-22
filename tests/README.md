@@ -1,5 +1,76 @@
 # MisakaChat tests
 
+## Regression model
+
+回归按“越靠下越接近真实设备、外部状态越多”分成四层。不能用某一层通过来替代其他层：
+
+| 层级 | 入口 | 真实网络 | 写入 | 证明范围 |
+|---|---|---:|---|---|
+| Node协议/安全 | `*.node.mjs` | 否 | 仅内存mock | Schema、队列、loader白名单、诊断签名、Voyage typed body、自检汇总 |
+| 确定性浏览器 | `run-context-blue-node.mjs` 或browser hooks | 默认否 | test mode，不写生产IDB | 浏览器语义守卫、上下文、生命周期和规划边界 |
+| raw-CDP兼容 | `run-*-cdp.mjs` | 部分用真实模型 | 只读debug hooks；禁止BC状态写入 | 当前BC runtime、目录、人物与模型集成 |
+| iPad设备自检 | `/misaka selftest` | 是 | 仅一条临时IDB记录，读回后删除 | 私有Key、DeepSeek strict、Voyage query/document、WebKit存储与配额 |
+
+### 发布前本地基线
+
+不需要浏览器或真实API的基线：
+
+```bash
+node --check misaka-chat.js
+node --check misaka-chat.user.js
+node --check misaka-persona.js
+node tests/responses-schema.node.mjs
+node tests/embedding-selftest.node.mjs
+node tests/reply-queue.node.mjs
+node tests/loader-readiness.node.mjs
+node tests/loader-room-guard.node.mjs
+node tests/diagnostic-upload.node.mjs
+node tests/ipad-guard.node.mjs
+node tests/gimp-sorter.node.mjs
+node tests/run-context-blue-node.mjs
+git diff --check
+```
+
+其中 `embedding-selftest.node.mjs` 必须锁定：
+
+- 唯一provider为OpenRouter `voyageai/voyage-4-large`；
+- 维度为1,024；
+- query/document请求分别携带对应 `input_type`；
+- 私有Key名为 `misaka_openrouter_key`；
+- iPad语义记忆上限为1,000；
+- 自检任一子项失败时总结果必须失败；
+- Node test mode不得上传诊断包或触碰真实IndexedDB。
+
+### iPad集成验收
+
+在御坂实际运行的iPad房间内执行：
+
+```text
+/misaka diag
+/misaka selftest
+```
+
+`selftest`不会发公屏或执行BC人物操作。它会真实调用一次DeepSeek strict reply、各一次Voyage query/document embedding，并在 `semantic_mem` 中写入一条带唯一标记的临时记录，读回后立即删除；随后读取 `navigator.storage.estimate()` 与 `persisted()`。详细脱敏报告保存在：
+
+```js
+window.__misakaSelftestReport
+```
+
+成功报告只保留在当前页面。若自检失败且已通过 `/misaka diagnostics` 配置私有诊断上传，失败摘要会复用现有 `misaka.reply-failure.v1` 签名上传队列；不引入未经服务端验证的新上传协议。验收要求8项检查全部通过；现存语义记忆只要包含非1,024维历史向量，`stored-vector-dimensions` 就会失败并要求先备份、重建。设备自检不验证真人指令语义、多步BC事务或回滚，这些仍由黑箱案例覆盖。
+
+`deepseek-strict-tool.live.mjs` 是人工、显式的远程协议探针，不属于默认基线；只有在安全凭据文件已配置且确需验证DeepSeek服务端兼容性时运行。测试输出不得包含Key或模型正文。
+
+## Browser runner connection
+
+Ubuntu日常浏览器自动化使用OpenClaw的 `profile=user` existing-session入口。仓库中的 `run-*-cdp.mjs` 是兼容性raw-CDP runner，不再默认连接历史端口 `127.0.0.1:9222`；只有在明确存在支持 `/json` 与 `webSocketDebuggerUrl` 的CDP HTTP端点时才显式设置：
+
+```bash
+export MISAKA_CDP_URL=http://127.0.0.1:<port>
+node tests/run-memory-blue-cdp.mjs --repeats=3
+```
+
+下文所有raw-CDP命令都假定该变量已显式导出。缺少 `MISAKA_CDP_URL` 时runner会在连接前退出，不会自行启动、接管或重启用户Chrome。
+
 ## Pending reply queue and native reply suite
 
 `reply-queue.node.mjs` verifies the bounded five-message FIFO used while
@@ -34,8 +105,8 @@ The report is returned and retained at:
 window.__misakaMemoryBlueLastReport
 ```
 
-With the CDP Chrome already running, the repository runner hot-loads the local
-candidate and runs the suite without touching the page UI:
+With an explicitly configured compatible raw-CDP endpoint, the repository runner
+hot-loads the local candidate and runs the suite without touching the page UI:
 
 ```bash
 node tests/run-memory-blue-cdp.mjs --repeats=3
@@ -162,8 +233,8 @@ node tests/responses-schema.node.mjs
 
 `run-reply-protocol-cdp.mjs` loads the local candidate in side-effect-free test
 mode and asks the real reply model for chat, action+speech, roleplay and one
-typed command envelope. The chat cases include the two production empty-reply
-reports and repeated invocation of the Misaka name.
+typed command envelope. The chat cases include known production structured-reply
+failure fixtures and repeated invocation of the Misaka name.
 It validates `misaka.reply.v1` parsing without calling `ChatRoomSendChat`,
 `ActivityRun` or any character mutation path:
 

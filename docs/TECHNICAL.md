@@ -1,9 +1,8 @@
 # MisakaChat 技术手册
 
-> 最后更新：2026-08-21
-> 当前稳定版：MisakaChat **v3.2.0** / GimpSorter **v1.7.4**
-> 当前阶段：v3.2.0 统一私有配置存储、清退旧文本协议与失效兼容，并将语义记忆改为按平台限额的增量淘汰。
-> 当前维护候选：统一娃娃分类与GM密钥配置，持久化总开关，移除最终回复中的遗留文本命令，并降低iPad语义记忆峰值。
+> 最后更新：2026-08-23
+> 当前稳定版：MisakaChat **v3.3.0** / GimpSorter **v1.7.4**
+> 当前阶段：DeepSeek严格工具回复、中性上下文、单次生成故障包、OpenRouter Voyage typed embedding、iPad自检、私有请求代理，以及三脚本状态文案、文档和测试入口重新对齐。
 
 本文是御坂项目的长期技术事实源。它不仅记录“代码现在怎么工作”，也记录“为什么会变成这样”：项目从一个整理 GIMP 娃娃站位的小脚本开始，逐步长成了一个能感知房间、理解自然语言、记住访客并真正改变 BC 状态的角色型 Bot。
 
@@ -210,13 +209,13 @@ v2.11.2 进一步修复多人语境的确定性边界：
 - 已知问题：`tearful` 在明确的“委屈、难过得掉眼泪”正例中仍可能漏选；v3.0.0 发布回归为 0/3。其他三张贴纸及普通聊天、记忆查询、Activity 的不误发边界均通过。该问题只影响贴纸是否附带，不影响文字回复。
 - 已知限制：原生梳头需要御坂先持有 `Hairbrush`。v3.0.0 尚无“先拿梳子，再执行 `TakeCare@ItemHead`”的复合 Activity 规划；无梳子时不得把 `Pet@ItemHead` 当成等价动作。
 
-### 阶段 13：Schema-only 回复与相对移动（v3.1.x）
+### 阶段 13：Schema-only 回复与相对移动（v3.1.x，历史实现）
 
-- DeepSeek Responses API 的 strict `json_schema` 成为唯一正式回复协议；旧纯文本回复、字符串命令和 `|` 动作/台词分隔格式不再解析或发送。
+- 当时曾将DeepSeek Responses API的strict `json_schema`作为唯一正式回复协议；真实故障后来证明该兼容层不会稳定落实Schema，已被阶段14的严格工具调用替代。旧纯文本回复、字符串命令和 `|` 动作/台词分隔格式不再解析或发送。
 - `action` 与 `speech` 字段禁止星号和换行；`|` 是普通可见字符，可用于颜文字，不再承担协议分隔语义。
 - 所有近期消息在送给模型时同时保留语义类型与原始 BC 类型，例如 `【speech/Chat】`、`【action/Emote】`、`【interaction/Activity】` 与 `【event/Action】`。旧御坂自消息中含 `|` 的语义记录通过一次性迁移物理删除，之后不再保留逐条兼容过滤器。
 - `moveTo` 计划明确区分 `targets`、`referenceTargets` 和 `side`，安全层同时校验被移动者、参照人物与左右方向。
-- 回复仍保留一次 2 秒退避重试、五条有界队列、原生 `ReplyId` 和 10 分钟最终 watchdog。
+- 当时仍保留一次2秒退避重试；当前候选已删除该重试，只保留五条有界队列、原生 `ReplyId` 和10分钟最终watchdog。
 
 ### 阶段 14：严格工具回复与中性上下文（v3.2.x）
 
@@ -233,7 +232,7 @@ Tampermonkey
        └─ 固定 revision 加载 misaka-chat.js
                │
                ├─ DeepSeek Beta Chat Completions（forced strict function call）
-               ├─ OpenAI Embeddings
+               ├─ OpenRouter Voyage 4 Large Embeddings
                ├─ localStorage：配置、人物档案、计数
                ├─ IndexedDB：语义记忆、提炼记忆
                └─ BC / ModSDK：消息、人物、道具、移动
@@ -443,7 +442,7 @@ v2.10.15 的回退链路是：
 | `misaka_sticker_catalog` | 可选的外部固定表情包目录；不能覆盖内置 ID |
 | `misaka_migration_self_pipe_cleanup_v1` | 旧御坂竖线语义记忆一次性迁移状态 |
 
-对话与 embedding Key 存在 Tampermonkey 私有存储中的 `misaka_apikey`、`misaka_openai_key`。runtime 启动时会把旧 localStorage 值迁入 GM 存储并删除网页副本；通过命令重新保存时也只写 GM。诊断上传密钥和最多 5 个待重试故障包分别使用 `misaka_diagnostics_upload_secret_v1`、`misaka_diagnostics_pending_v1`，仅由 loader 访问。Key 不得写入源码、提交、日志、文档或公开 issue。
+对话与embedding Key存在Tampermonkey私有存储，分别使用 `misaka_apikey`、`misaka_openrouter_key`。runtime启动时会把同名旧localStorage值迁入GM存储并删除网页副本；通过命令重新保存时也只写GM。页面runtime不能读取密钥明文，只能查询是否存在、覆盖/删除指定Key，并通过白名单代理向DeepSeek或固定OpenRouter endpoint代发请求。诊断上传密钥和最多5个待重试诊断包分别使用 `misaka_diagnostics_upload_secret_v1`、`misaka_diagnostics_pending_v1`，仅由loader访问。Key不得写入源码、提交、日志、文档或公开issue。
 
 ### IndexedDB
 
@@ -457,9 +456,10 @@ v2.10.15 的回退链路是：
 ### 模型
 
 - 规划和辅助链：DeepSeek Chat Completions；正式回复：DeepSeek Beta Chat Completions forced strict function call。默认模型均为 `deepseek-v4-flash`。
-- Embedding：OpenAI `text-embedding-3-large`，3,072 维。
+- Embedding：OpenRouter `voyageai/voyage-4-large`，1,024维；查询使用 `input_type=query`，入库与提炼事实使用 `input_type=document`。
+- 每个向量响应必须严格为1,024维；维度不符时拒绝入库。缓存键包含模型、维度和query/document类型，避免不同语义空间互相复用。
 
-当前语义库全部是 3,072 维 OpenAI 向量。切换 embedding 模型必须检查维度和语义空间兼容，必要时备份后全量重建。
+不能从“御坂能正常回复”推断embedding可用：DeepSeek对话Key与embedding Key相互独立；embedding缺失或失败时，当前代码会静默跳过向量入库并返回空召回，主回复仍可继续。切换embedding模型必须检查现有向量维度和语义空间；有历史数据时先备份并全量重建，空库可直接从新模型开始。
 
 ### 导入导出
 
@@ -502,7 +502,7 @@ node --check misaka-chat.user.js
 git diff --check
 ```
 
-8. 推送后核对本地与 `origin/master`、固定 revision、Tampermonkey loader 和 `/misaka status`。
+8. 推送后核对本地与 `origin/master`、固定revision、Tampermonkey loader、`/misaka status`和`/misaka diag`。
 
 ### BC 版本兼容
 
@@ -519,7 +519,10 @@ git diff --check
 
 ### 内置观测
 
-- `/misaka status`：版本、loader、模型、Key 来源、embedding、记忆数量和人物数。
+- `/misaka status`：面向日常使用，始终从“状态：开启/关闭”开始，只显示功能开关、模型、记忆数量和人物数。
+- `/misaka diag`：面向维护，显示runtime、loader、对话Key来源、embedding provider/model/维度、embedding Key来源及语义上限；embedding Key缺失时明确说明对话仍可运行但向量记忆不可用。
+- `/misaka selftest`：在实际设备内只读测试严格回复与两类Voyage请求，并用一条临时记录验证IndexedDB写入、读取和删除；同时记录origin、向量维度分布、Safari存储用量/配额及持久化状态。不会发公屏或执行BC操作。报告保存到 `window.__misakaSelftestReport`；成功报告不上传，自检失败且已配置私有诊断时才复用已验证的回复故障包协议上传脱敏摘要。
+- `/misaka diagnostics`：只打开私有诊断上传密钥设置，不是通用运行诊断。
 - `window.__misakaDebugTrace`：最近 30 条内部 trace。
 - 控制台前缀：`[MisakaChat]`、`[GimpSorter]`。
 
@@ -545,13 +548,20 @@ OpenClaw 的页面 console 拦截器使用最多 1,000 条的环形缓存。MCP 
 
 ### 自动化与 CDP 回归
 
-仓库现有三条不会改变房间状态的浏览器回归：
+回归分为四层，详细命令、网络边界和发布门槛见 `tests/README.md`：
+
+1. 纯Node协议/安全回归：严格Schema、loader私有桥、诊断签名、队列、iPad Guard、Voyage typed body与selftest汇总；默认不访问真实模型或浏览器。
+2. 确定性浏览器回归：把本地候选以test mode注入BC页面，只调用只读debug hooks，不发公屏、不改人物状态。
+3. raw-CDP兼容runner：仅在显式提供 `MISAKA_CDP_URL` 时使用，不再默认固定9222；日常操作仍走OpenClaw `profile=user` existing-session。
+4. iPad `/misaka selftest`：验证Tampermonkey私有Key、真实DeepSeek/Voyage、WebKit IndexedDB及存储配额，是设备集成验收，不替代桌面确定性回归。
+
+仓库现有11条不会主动改变房间状态的浏览器/CDP回归，覆盖记忆、上下文、Activity、好友、表情包、生命周期、道具语义与操作、棒棒糖、随机对话和严格回复协议。主要入口包括：
 
 - `tests/run-memory-blue-cdp.mjs`：规划器记忆触发、跳过与证据回答。
 - `tests/run-activity-blue-cdp.mjs`：动态 Activity 目录、目标/部位解析、执行前权限重验与 dry-run。
 - `tests/run-friend-blue-cdp.mjs`：本人请求、第三方边界、社交表达、强弱证据与 FriendList 不变性。
 
-三条 runner 都热加载本地候选，避免误测当前 Tampermonkey 标签页中的稳定版。它们仍不能替代真实房间黑箱测试；命令解析、事务回滚和多人复合操作仍需继续固化。
+这些runner都热加载本地候选，避免误测当前Tampermonkey标签页中的稳定版。raw-CDP runner不再默认假定 `127.0.0.1:9222`；只有显式提供兼容的 `MISAKA_CDP_URL` 时才运行。Ubuntu日常浏览器自动化使用OpenClaw `profile=user` existing-session入口。它们仍不能替代真实房间黑箱测试；`/misaka selftest`也只证明协议、模型和设备存储链健康，不证明真人操作语义或多步事务正确。
 
 ## 12. 当前状态、技术债与风险
 
@@ -568,7 +578,7 @@ OpenClaw 的页面 console 拦截器使用最多 1,000 条的环形缓存。MCP 
 5. **人物档案不是永久关系库。** 高价值旧人物仍可能被淘汰并重置统计。
 6. **`tearful` 贴纸存在稳定漏选。** 明确伤心语境仍可能只回复文字；其他贴纸与不误发边界正常。
 7. **规划仍依赖 LLM。** 模组道具、锁、权限、复杂 layer 和多人复合操作仍有长尾风险。
-8. **复杂链路有延迟和 API 成本。** 规划、回复、召回、审核、纠错和执行会扩大故障面。
+8. **复杂链路有延迟和API成本。** 规划、一次正式回复、按需召回及执行会扩大故障面；当前候选不再进行同阶段模型重试或第二次语义审核。
 9. **部分状态仅在内存。** 束缚快照刷新后会丢失。
 10. **主运行时体积较大。** 模块边界主要靠函数分区；顶部只维护稳定模块名称，不保存易过时的行号索引。
 11. **发布链可能制造版本错觉。** loader、revision、Tampermonkey profile 和缓存必须同时核对。
@@ -576,7 +586,7 @@ OpenClaw 的页面 console 拦截器使用最多 1,000 条的环形缓存。MCP 
 
 ## 13. 路线图
 
-### 当前：v3.2.0 准最终成果观察
+### 当前：v3.3.0 严格回复与Voyage设备自检
 
 1. 继续积累真实房间样本，只修稳定复现的漏查、误查、假阴性或能力误触发。
 2. Activity 继续验证不同动作、部位、距离和权限变化；自动化回归不使用真人做写入测试。

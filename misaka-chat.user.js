@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BC Misaka Auto Chat
 // @namespace    https://igallta.github.io/bc-gimp-sorter
-// @version      3.2.0
+// @version      3.3.0
 // @description  御坂 BC 自动回复系统 — LLM 驱动 + 语义记忆(IDB) + 房间上下文
 // @match        https://*.bondageprojects.elementfx.com/R*/*
 // @match        https://*.bondage-europe.com/R*/*
@@ -18,7 +18,7 @@
 // @grant        GM_registerMenuCommand
 // @grant        unsafeWindow
 // @connect      api.deepseek.com
-// @connect      api.openai.com
+// @connect      openrouter.ai
 // @connect      misaka-diagnostics.misaka-diagnostics.workers.dev
 // @run-at       document-end
 // ==/UserScript==
@@ -31,7 +31,7 @@
   // 模型密钥只留在 Tampermonkey 私有存储。页面运行时只能查询是否存在、
   // 覆盖/删除指定密钥，以及让 loader 代发到固定 API 的请求，不能读取明文。
   try {
-    const runtimeSecretKeys = new Set(["misaka_apikey", "misaka_openai_key"]);
+    const runtimeSecretKeys = new Set(["misaka_apikey", "misaka_openrouter_key"]);
     const requestKinds = {
       deepseek: {
         key: "misaka_apikey",
@@ -41,9 +41,9 @@
           "https://api.deepseek.com/responses",
         ]),
       },
-      "openai-embedding": {
-        key: "misaka_openai_key",
-        urls: new Set(["https://api.openai.com/v1/embeddings"]),
+      "openrouter-embedding": {
+        key: "misaka_openrouter_key",
+        urls: new Set(["https://openrouter.ai/api/v1/embeddings"]),
       },
     };
     pageWindow.__misakaHasSecret = key => {
@@ -110,6 +110,8 @@
     try { return String(GM_getValue(DIAGNOSTIC_SECRET_KEY, "") || ""); }
     catch (e) { return ""; }
   }
+
+  pageWindow.__misakaDiagnosticsConfigured = () => diagnosticSecret().length >= 24;
 
   function readDiagnosticPending() {
     try {
@@ -250,7 +252,7 @@
     Promise.resolve().then(() => void flushDiagnosticPending());
   } catch (e) {}
 
-  const SCRIPT_VERSION = "3.2.0";
+  const SCRIPT_VERSION = "3.3.0";
   // 固定 revision，保证 loader、persona 与 runtime 始终来自同一版本。
   const ASSET_REVISION = "cf8d46f";
   const BASE_URL = `https://raw.githack.com/Igallta/bc-gimp-sorter/${ASSET_REVISION}`;

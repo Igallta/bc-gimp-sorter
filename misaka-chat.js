@@ -1,10 +1,10 @@
-// MisakaChat v3.2.0 - BC 御坂自动回复系统
+// MisakaChat v3.3.0 - BC 御坂自动回复系统
 // 模块：配置与生命周期、记忆、API、规划、BC 操作、回复、命令和初始化。
 
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "3.2.0";
+  const SCRIPT_VERSION = "3.3.0";
   const bootstrapOptions = window.__misakaNextBootstrapOptions || {};
   delete window.__misakaNextBootstrapOptions;
   const TEST_MODE = bootstrapOptions.mode === "test";
@@ -113,11 +113,13 @@
     idleCheckMs: 60000,  // 每分钟检查一次 idle
     embeddingProviders: [
       {
-        name: "OpenAI",
-        base: "https://api.openai.com/v1/embeddings",
-        model: "text-embedding-3-large",
-        keyNames: ["misaka_openai_key"],
-        dimensions: 3072,
+        name: "OpenRouter Voyage 4 Large",
+        base: "https://openrouter.ai/api/v1/embeddings",
+        model: "voyageai/voyage-4-large",
+        keyNames: ["misaka_openrouter_key"],
+        dimensions: 1024,
+        queryInputType: "query",
+        documentInputType: "document",
       },
     ],
     maxMemoryEntries: 5000,
@@ -215,6 +217,7 @@
     pendingClarifications: {}, // 按发送者保存的待澄清请求；他人插话不会打断
     pendingReplies: [], // busy/冷却期间最多保留 5 条直接点名，按到达顺序续跑
     pendingReplyTimer: null,
+    selftestRunning: false,
   };
   onDispose(() => {
     state.semanticMemories = [];
@@ -431,6 +434,20 @@
       }
     }
 
+    async function getOne(store, key) {
+      try {
+        const db = await openDB();
+        return await new Promise((resolve, reject) => {
+          const req = db.transaction(store, "readonly").objectStore(store).get(key);
+          req.onsuccess = () => resolve(req.result || null);
+          req.onerror = () => reject(req.error);
+        });
+      } catch (e) {
+        console.warn("[MisakaChat] IDB get 失败:", e.message);
+        return null;
+      }
+    }
+
     async function deleteKeys(store, keys) {
       const uniqueKeys = [...new Set((keys || []).filter(key => key !== null && key !== undefined))];
       if (uniqueKeys.length === 0) return 0;
@@ -478,6 +495,7 @@
     return {
       getSemantic: () => getAll(STORE_SEMANTIC),
       getRefined: () => getAll(STORE_REFINED),
+      getSemanticOne: (key) => getOne(STORE_SEMANTIC, key),
       putSemanticOne: (item) => putOne(STORE_SEMANTIC, item),
       putRefinedOne: (item) => putOne(STORE_REFINED, item),
       deleteSemanticKeys: (keys) => deleteKeys(STORE_SEMANTIC, keys),
@@ -738,7 +756,8 @@
   }
 
   // === [Memory] Semantic Memory (Embedding-based) ===
-  // 语义库一直使用 OpenAI text-embedding-3-large 的 3,072 维向量。
+  // 语义库使用 OpenRouter 的 Voyage 4 Large；查询和文档必须使用不同的
+  // input_type，才能保持 Voyage 推荐的 query/document 语义空间。
   // 对话用的 misaka_apikey 不得作为 embedding key 回退。
   function getEmbeddingProviderStatus() {
     for (const provider of CONFIG.embeddingProviders) {
@@ -750,17 +769,26 @@
     return { provider: CONFIG.embeddingProviders[0], key: { value: "", source: "missing" } };
   }
 
-  function buildEmbeddingBody(provider, text) {
+  function resolveEmbeddingInputType(provider, kind) {
+    return kind === "document"
+      ? (provider.documentInputType || "document")
+      : (provider.queryInputType || "query");
+  }
+
+  function buildEmbeddingBody(provider, text, kind = "query") {
     const body = { model: provider.model, input: text.slice(0, 2000) };
+    if (provider.queryInputType || provider.documentInputType) {
+      body.input_type = resolveEmbeddingInputType(provider, kind);
+    }
     if (provider.dimensions) body.dimensions = provider.dimensions;
     return JSON.stringify(body);
   }
 
-  function requestEmbedding(provider, key, text) {
-    const reqBody = buildEmbeddingBody(provider, text);
+  function requestEmbedding(provider, key, text, kind = "query") {
+    const reqBody = buildEmbeddingBody(provider, text, kind);
     if (typeof window.__misakaPrivateRequest === "function" && key.private) {
       return Promise.resolve(window.__misakaPrivateRequest({
-        kind: "openai-embedding",
+        kind: "openrouter-embedding",
         url: provider.base,
         data: reqBody,
         timeout: 15000,
@@ -817,8 +845,10 @@
     });
   }
 
-  async function getEmbedding(text) {
-    const cacheKey = CONFIG.embeddingProviders.map(p => p.model).join("|") + "::" + text.slice(0, 200);
+  async function getEmbedding(text, kind = "query") {
+    const cacheKey = CONFIG.embeddingProviders
+      .map(provider => `${provider.model}:${provider.dimensions || 0}`)
+      .join("|") + `:${kind}::` + text.slice(0, 200);
     if (embeddingCache.has(cacheKey)) {
       const cached = embeddingCache.get(cacheKey);
       embeddingCache.delete(cacheKey);
@@ -830,9 +860,12 @@
         const key = readStoredSecret(keyName);
         if (!key.value) continue;
         try {
-          const resp = await requestEmbedding(provider, key, text);
+          const resp = await requestEmbedding(provider, key, text, kind);
           if (resp && resp.data && resp.data[0] && resp.data[0].embedding) {
             const result = resp.data[0].embedding;
+            if (!Array.isArray(result) || (provider.dimensions && result.length !== provider.dimensions)) {
+              throw new Error(`${provider.name} embedding dimension mismatch`);
+            }
             if (embeddingCache.size >= EMBEDDING_CACHE_MAX) {
               const firstKey = embeddingCache.keys().next().value;
               embeddingCache.delete(firstKey);
@@ -901,7 +934,7 @@
     const dup = await searchMemories(text, 1);
     if (dup.length > 0 && dup[0].score > 0.92) return;
 
-    const emb = await getEmbedding(text);
+    const emb = await getEmbedding(text, "document");
     if (!emb) return;  // embedding 失败就不存
     if (state.semanticMemories.length >= semanticMemoryLimit()) {
       await smartForget();
@@ -1334,7 +1367,7 @@ ${recentSemantic}`;
         }
         // 候选只与 refined_mem 比较，避免误接到原始 semantic_mem。
         let refinedEmb = null;
-        try { refinedEmb = await getEmbedding(refinedContent(refinedText)); } catch(e) {}
+        try { refinedEmb = await getEmbedding(refinedContent(refinedText), "document"); } catch(e) {}
         const refDup = await findRefinedDuplicate(refinedText, refinedEmb);
         if (refDup) {
           console.log("[MisakaChat] 提炼记忆去重跳过:", refined.slice(0, 40));
@@ -3814,7 +3847,13 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
       model: provider.model,
       keyNames: [...provider.keyNames],
       dimensions: provider.dimensions,
+      queryInputType: provider.queryInputType || "",
+      documentInputType: provider.documentInputType || "",
     })),
+    inspectEmbeddingBodyForTest: (text, kind = "query") => JSON.parse(
+      buildEmbeddingBody(CONFIG.embeddingProviders[0], String(text || ""), kind)
+    ),
+    runSelftestForTest: overrides => runSelftest(overrides || {}),
     inspectPendingReplyConfigForTest: () => ({
       max: CONFIG.pendingReplyMax,
       ttlMs: CONFIG.pendingReplyTtlMs,
@@ -6337,6 +6376,155 @@ function unescapeHTML(s) {
     return { ...result, diagnostics };
   }
 
+  function semanticVectorDimensions() {
+    const counts = {};
+    for (const memory of state.semanticMemories) {
+      const dimensions = Array.isArray(memory?.embedding) ? memory.embedding.length : 0;
+      counts[String(dimensions)] = (counts[String(dimensions)] || 0) + 1;
+    }
+    return counts;
+  }
+
+  async function runSelftest(overrides = {}) {
+    const startedAt = Date.now();
+    const provider = CONFIG.embeddingProviders[0];
+    const checks = [];
+    const addCheck = (id, ok, detail = {}) => {
+      checks.push({ id, ok: ok === true, ...sanitizeReplyFailureValue(detail) });
+    };
+    const runCheck = async (id, fn) => {
+      try {
+        const result = await fn();
+        addCheck(id, result?.ok === true, result || {});
+      } catch (error) {
+        addCheck(id, false, { error: String(error?.message || error || "unknown-error") });
+      }
+    };
+
+    addCheck("runtime", isCurrent(), {
+      runtime: SCRIPT_VERSION,
+      loader: window.__misakaUserLoaderLoaded || "unknown",
+      origin: String(globalThis.location?.origin || "unknown"),
+      platform: isIPadRuntime() ? "ipad" : "desktop",
+    });
+
+    const chatKey = getApiKeyStatus();
+    const embeddingKey = getEmbeddingProviderStatus();
+    addCheck("secrets", chatKey.source !== "missing" && Boolean(embeddingKey.key.value), {
+      chatKey: chatKey.source === "missing" ? "missing" : chatKey.source,
+      embeddingKey: embeddingKey.key.value ? embeddingKey.key.source : "missing",
+    });
+    const storedVectorDimensions = semanticVectorDimensions();
+    const incompatibleStoredDimensions = Object.entries(storedVectorDimensions)
+      .filter(([dimensions, count]) => Number(count) > 0 && Number(dimensions) !== Number(provider.dimensions));
+    addCheck("stored-vector-dimensions", incompatibleStoredDimensions.length === 0, {
+      dimensions: storedVectorDimensions,
+      expected: provider.dimensions,
+      incompatible: Object.fromEntries(incompatibleStoredDimensions),
+    });
+
+    await runCheck("strict-reply", overrides.strictReplyProbe || (async () => {
+      const result = await callGeneratedReply(
+        "你是御坂自检器。必须调用指定的最终回复工具，返回一句简短测试文本，不生成任何 commands。\n" +
+          structuredReplyInstruction(),
+        [{ role: "user", content: "执行一次只读严格工具调用自检。" }],
+        "chat",
+        structuredReplyLLMOptions({ thinking: false, temperature: 0, maxTokens: 512 }),
+        { id: `selftest-${startedAt}`, stage: "selftest:strict-reply" },
+      );
+      return { ok: result.exhausted === false, reason: result.reason || "" };
+    }));
+
+    await runCheck("embedding-query", overrides.embeddingQueryProbe || (async () => {
+      const vector = await getEmbedding(`御坂自检查询 ${startedAt}`, "query");
+      return { ok: Array.isArray(vector) && vector.length === provider.dimensions, dimensions: vector?.length || 0 };
+    }));
+    await runCheck("embedding-document", overrides.embeddingDocumentProbe || (async () => {
+      const vector = await getEmbedding(`御坂自检文档 ${startedAt}`, "document");
+      return { ok: Array.isArray(vector) && vector.length === provider.dimensions, dimensions: vector?.length || 0 };
+    }));
+
+    await runCheck("indexeddb-roundtrip", overrides.idbProbe || (async () => {
+      let key = null;
+      let cleaned = false;
+      const marker = `misaka-selftest-${startedAt}-${Math.random().toString(36).slice(2, 8)}`;
+      try {
+        key = await IDB.putSemanticOne({
+          text: marker,
+          embedding: new Array(provider.dimensions).fill(0),
+          time: startedAt,
+          selftest: true,
+        });
+        const stored = key === null || key === undefined ? null : await IDB.getSemanticOne(key);
+        const deleted = key === null || key === undefined ? 0 : await IDB.deleteSemanticKeys([key]);
+        const afterDelete = key === null || key === undefined ? null : await IDB.getSemanticOne(key);
+        cleaned = deleted === 1 && afterDelete === null;
+        return {
+          ok: Boolean(stored && stored.text === marker) && cleaned,
+          wrote: key !== null && key !== undefined,
+          read: Boolean(stored),
+          deleted: cleaned,
+        };
+      } finally {
+        if (!cleaned && key !== null && key !== undefined) await IDB.deleteSemanticKeys([key]);
+      }
+    }));
+
+    await runCheck("storage", overrides.storageProbe || (async () => {
+      const storage = navigator?.storage;
+      if (!storage || typeof storage.estimate !== "function") {
+        return { ok: false, supported: false };
+      }
+      const estimate = await storage.estimate();
+      const persisted = typeof storage.persisted === "function" ? await storage.persisted() : null;
+      return {
+        ok: Number.isFinite(Number(estimate?.usage)) && Number.isFinite(Number(estimate?.quota)),
+        supported: true,
+        usageBytes: Number(estimate?.usage) || 0,
+        quotaBytes: Number(estimate?.quota) || 0,
+        persisted,
+      };
+    }));
+
+    const report = {
+      protocol: "misaka.selftest.v1",
+      time: new Date().toISOString(),
+      durationMs: Date.now() - startedAt,
+      ok: checks.every(check => check.ok),
+      embedding: {
+        provider: provider.name,
+        model: provider.model,
+        dimensions: provider.dimensions,
+        queryInputType: provider.queryInputType || "",
+        documentInputType: provider.documentInputType || "",
+        storedVectorDimensions,
+        semanticCount: state.semanticMemories.length,
+        refinedCount: state.refinedMemories.length,
+        limit: semanticMemoryLimit(),
+      },
+      checks,
+    };
+    const diagnosticsConfigured = typeof window.__misakaDiagnosticsConfigured === "function" &&
+      window.__misakaDiagnosticsConfigured() === true;
+    if (!TEST_MODE && !report.ok && diagnosticsConfigured) {
+      persistReplyFailureBundle({
+        id: `selftest-${startedAt}`,
+        stage: "selftest",
+        errorCode: "selftest-failed",
+        selftest: {
+          durationMs: report.durationMs,
+          checks: report.checks,
+          memory: report.embedding,
+        },
+      });
+      report.uploadQueued = true;
+    } else {
+      report.uploadQueued = false;
+    }
+    window.__misakaSelftestReport = JSON.stringify(report, null, 2);
+    return report;
+  }
+
   const GENERATION_FAILURE_REPLY = "呜……这次御坂怎么都没生成出来。麻烦提醒咲来修一下御坂吧。";
 
   function sendGenerationFailure(replyId = "") {
@@ -7069,9 +7257,9 @@ function unescapeHTML(s) {
         : (saved.source === "loader-update-required" ? "❌ 请先更新 MisakaChat loader" : "❌ API key 保存失败"));
     }
     else if (sub === "embedkey" && parts[1]) {
-      const saved = writeStoredSecret("misaka_openai_key", parts[1]);
+      const saved = writeStoredSecret("misaka_openrouter_key", parts[1]);
       sendLocal(saved.ok
-        ? `✅ 已保存：OpenAI embedding key（${saved.source}）`
+        ? `✅ 已保存：OpenRouter embedding key（${saved.source}）`
         : (saved.source === "loader-update-required" ? "❌ 请先更新 MisakaChat loader" : "❌ embedding key 保存失败"));
     }
     else if (sub === "model" && parts[1]) { localStorage.setItem(storageKey("model"), parts[1]); CONFIG.model = parts[1]; sendLocal("✅ 已切换：模型 | 当前模型：" + parts[1]); }
@@ -7096,12 +7284,36 @@ function unescapeHTML(s) {
       sendLocal(`${CONFIG.autoFriendEnabled ? "✅ 已开启" : "⏹ 已关闭"}：自动加好友`);
     }
     else if (sub === "status") {
+      sendLocal(`状态：${CONFIG.enabled?"开启":"关闭"} | 原生互动：${CONFIG.activityEnabled?"开启":"关闭"} | 表情包：${CONFIG.stickerEnabled?"开启":"关闭"} | 自动加好友：${CONFIG.autoFriendEnabled?"开启":"关闭"} | 模型：${CONFIG.model} | 语义记忆：${state.semanticMemories.length} | 提炼记忆：${state.refinedMemories.length} | 人物：${Object.keys(loadMemory().profiles||{}).length}`);
+    } else if (sub === "diag") {
       const key = getApiKeyStatus();
       const embed = getEmbeddingProviderStatus();
       const embedSource = embed.key.value
         ? (embed.key.source.startsWith("GM:") ? "GM" : "localStorage")
         : "缺失";
-      sendLocal(`版本：${SCRIPT_VERSION} | Loader：${window.__misakaUserLoaderLoaded || "未知"} | 状态：${CONFIG.enabled?"开启":"关闭"} | 原生互动：${CONFIG.activityEnabled?"开启":"关闭"} | 表情包：${CONFIG.stickerEnabled?"开启":"关闭"} | 自动加好友：${CONFIG.autoFriendEnabled?"开启":"关闭"} | 模型：${CONFIG.model} | 对话Key：${key.source === "missing" ? "缺失" : key.source} | Embedding：${embed.provider.name}/${embedSource} | 语义记忆：${state.semanticMemories.length}/${semanticMemoryLimit()} | 提炼记忆：${state.refinedMemories.length} | 人物：${Object.keys(loadMemory().profiles||{}).length}`);
+      const dimensions = Number(embed.provider.dimensions) || "未知";
+      sendLocal(`运行时：${SCRIPT_VERSION} | Loader：${window.__misakaUserLoaderLoaded || "未知"} | 对话Key：${key.source === "missing" ? "缺失" : key.source} | Embedding：${embed.provider.name}/${embed.provider.model}/${dimensions}维 | Embedding Key：${embedSource} | 语义上限：${semanticMemoryLimit()}`);
+      if (!embed.key.value) {
+        sendLocal("⚠️ 语义记忆不可用：缺少 embedding key；对话仍可运行，但不会写入或召回向量记忆");
+      }
+    } else if (sub === "selftest") {
+      if (state.selftestRunning) {
+        sendLocal("⏳ 自检正在运行");
+      } else {
+        state.selftestRunning = true;
+        sendLocal("⏳ 开始自检：回复、Embedding、IndexedDB 与存储配额");
+        runSelftest().then(report => {
+          const passed = report.checks.filter(check => check.ok).length;
+          const suffix = report.uploadQueued
+            ? "；失败报告已加入私有诊断上传队列"
+            : "；详细报告：window.__misakaSelftestReport";
+          sendLocal(`${report.ok ? "✅ 自检通过" : "❌ 自检未通过"}：${passed}/${report.checks.length}${suffix}`);
+        }).catch(error => {
+          sendLocal("❌ 自检失败：" + String(error?.message || error || "unknown-error"));
+        }).finally(() => {
+          state.selftestRunning = false;
+        });
+      }
     } else if (sub === "forget") {
       localStorage.setItem(storageKey("memory"), "{}");
       state.semanticMemories = [];
@@ -7171,7 +7383,7 @@ function unescapeHTML(s) {
     } else if (sub === "diagnostics") {
       try {
         document.dispatchEvent(new CustomEvent("misaka-diagnostics-config-open-v1"));
-        sendLocal("已打开诊断上传密钥设置");
+        sendLocal("✅ 已打开：诊断上传密钥设置");
       } catch (e) {
         sendLocal("❌ 无法打开诊断上传设置");
       }
@@ -7179,7 +7391,7 @@ function unescapeHTML(s) {
       localStorage.setItem(storageKey("persona_extra"), parts.slice(1).join(" "));
       sendLocal("✅ 已更新：人设附加备注");
     } else {
-      sendLocal("用法：/misaka on|off|activity on|off|sticker on|off|friend on|off|key <key>|embedkey <openai-key>|model <name>|status|trace [clear]|diagnostics|forget|memory|persona <text>|export|import");
+      sendLocal("用法：/misaka on|off|activity on|off|sticker on|off|friend on|off|key <key>|embedkey <openrouter-key>|model <name>|status|diag|selftest|trace [clear]|diagnostics|forget|memory|persona <text>|export|import");
     }
     return true;
   }
@@ -7198,7 +7410,7 @@ function unescapeHTML(s) {
     if (typeof Player === "undefined" || !Player) { trackedTimeout(init, 1000); return; }
     if (Player.MemberNumber !== 194331) { console.log("[MisakaChat] 非御坂账号,跳过"); return; }
     migrateStoredSecret("misaka_apikey");
-    migrateStoredSecret("misaka_openai_key");
+    migrateStoredSecret("misaka_openrouter_key");
     const savedModel = localStorage.getItem(storageKey("model")) || "";
     if (savedModel) CONFIG.model = savedModel;
     const savedEnabled = localStorage.getItem(storageKey("enabled"));
