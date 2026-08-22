@@ -17,7 +17,10 @@ function makeContext() {
     },
     bcModSdk: {},
     ChatSearchAutoJoinRoom() {},
-    GM_xmlhttpRequest() {},
+    GM_xmlhttpRequest(options) {
+      queueMicrotask(() => options.onload?.({ status: 200, responseText: '{"ok":true}' }));
+      return { abort() {} };
+    },
     GM_getValue(key, fallback = "") { return gmStore.has(key) ? gmStore.get(key) : fallback; },
     GM_setValue(key, value) { gmStore.set(key, value); },
     GM_deleteValue(key) { gmStore.delete(key); },
@@ -45,6 +48,7 @@ function makeContext() {
     },
   };
   context.window = context;
+  context.unsafeWindow = {};
   vm.createContext(context);
   return {
     context,
@@ -75,10 +79,24 @@ sorter.runNextTimer();
 assert.equal(sorter.scripts.at(-1)?.id, "gimp-sorter-script");
 
 const misaka = runLoader("../misaka-chat.user.js");
-assert.equal(misaka.context.__GM_setValue("misaka_apikey", "chat-secret"), true);
-assert.equal(misaka.context.__GM_getValue("misaka_apikey"), "chat-secret");
-assert.equal(misaka.context.__GM_setValue("misaka_diagnostics_upload_secret_v1", "blocked"), false);
-assert.equal(misaka.context.__GM_getValue("misaka_diagnostics_upload_secret_v1"), "");
+const pageBridge = misaka.context.unsafeWindow;
+assert.equal(typeof pageBridge.__GM_getValue, "undefined", "page must not receive a raw secret reader");
+assert.equal(pageBridge.__misakaSetSecret("misaka_apikey", "chat-secret"), true);
+assert.equal(pageBridge.__misakaHasSecret("misaka_apikey"), true);
+assert.equal(pageBridge.__misakaSetSecret("misaka_diagnostics_upload_secret_v1", "blocked"), false);
+assert.equal(pageBridge.__misakaHasSecret("misaka_diagnostics_upload_secret_v1"), false);
+const privateResponse = await pageBridge.__misakaPrivateRequest({
+  kind: "deepseek",
+  url: "https://api.deepseek.com/beta/chat/completions",
+  data: "{}",
+});
+assert.equal(privateResponse.status, 200);
+const blockedResponse = await pageBridge.__misakaPrivateRequest({
+  kind: "deepseek",
+  url: "https://example.invalid/steal",
+  data: "{}",
+});
+assert.equal(blockedResponse.error, "request-not-allowed");
 assert.equal(misaka.scripts.length, 0, "MisakaChat must not inject on the login screen");
 misaka.context.CurrentScreen = "ChatRoom";
 misaka.runNextTimer();
@@ -88,4 +106,4 @@ misaka.context.ChatRoomSendChat = () => {};
 misaka.runNextTimer();
 assert.equal(misaka.scripts.at(-1)?.id, "misaka-persona-script");
 
-console.log("loader chat readiness and secret bridge: 10/10");
+console.log("loader chat readiness and private request bridge: 14/14");

@@ -55,12 +55,14 @@ const context = {
   },
 };
 context.window = context;
+context.unsafeWindow = {};
 vm.createContext(context);
 vm.runInContext(source, context, { filename: "misaka-chat.user.js" });
 
-assert.equal(context.__GM_getValue("misaka_apikey"), "");
-assert.equal(context.__GM_getValue("misaka_diagnostics_upload_secret_v1"), "",
-  "diagnostic secret must not be exposed to the page runtime");
+assert.equal(typeof context.unsafeWindow.__GM_getValue, "undefined",
+  "no raw secret reader may be exposed to the page runtime");
+assert.equal(context.unsafeWindow.__misakaHasSecret("misaka_diagnostics_upload_secret_v1"), false,
+  "diagnostic secret existence must not be exposed to the page runtime");
 assert.equal(menuCommands.length, 2);
 assert.match(menuCommands[0].label, /设置御坂诊断上传密钥/);
 assert.match(source, /@connect\s+misaka-diagnostics\.misaka-diagnostics\.workers\.dev/);

@@ -218,6 +218,12 @@ v2.11.2 进一步修复多人语境的确定性边界：
 - `moveTo` 计划明确区分 `targets`、`referenceTargets` 和 `side`，安全层同时校验被移动者、参照人物与左右方向。
 - 回复仍保留一次 2 秒退避重试、五条有界队列、原生 `ReplyId` 和 10 分钟最终 watchdog。
 
+### 阶段 14：严格工具回复与中性上下文（v3.2.x）
+
+- 正式回复改用 DeepSeek Beta Chat Completions 的强制 strict function call；只接收 `emit_misaka_reply` 的参数，不再接受普通 assistant 文本。
+- 每条正式回复只生成一次；失败时记录脱敏故障包并继续处理有界队列，不再重复请求同一模型。
+- 近期消息改为 `上下文元数据(语义=…,BC类型=…) 内容=…` 的中性输入表示，避免输入标签被模型模仿成动作或台词输出。
+
 ## 3. 当前运行组成
 
 ```text
@@ -226,7 +232,7 @@ Tampermonkey
        ├─ 固定 revision 加载 misaka-persona.js
        └─ 固定 revision 加载 misaka-chat.js
                │
-               ├─ DeepSeek Responses API（strict json_schema）
+               ├─ DeepSeek Beta Chat Completions（forced strict function call）
                ├─ OpenAI Embeddings
                ├─ localStorage：配置、人物档案、计数
                ├─ IndexedDB：语义记忆、提炼记忆
@@ -251,7 +257,7 @@ Tampermonkey
 - 对话模型：`deepseek-v4-flash`，最大输出 8,192 tokens。
 - 短期上下文：最多 50 条、约 20,000 tokens。
 - 全局冷却 3 秒；单用户冷却 5 秒；拟人化发送延迟 800ms。
-- 一轮复杂操作可能包含规划、主回复、纠错和验收，hard timeout 为 600 秒。
+- 一轮复杂操作可能包含规划、一次正式回复、BCE 查询后的回答和验收，hard timeout 为 600 秒；同一生成阶段不自动重试模型。
 - idle：10 分钟无人说话触发，每分钟检查一次。
 - 澄清承接窗口：120 秒。
 
@@ -262,7 +268,7 @@ Tampermonkey
 1. **感知**：读取发送者、房间成员、关系、在线描述、Appearance、道具、时间与进出记录。
 2. **理解**：结合短期上下文、人物档案、提炼事实和按需召回，判断是聊天、角色扮演、BC 原生 Activity、好友关系、真实操作还是澄清。
 3. **规划**：把自然语言转为目标人物、部位、Asset、允许动作和限制。
-4. **生成**：通过 Responses API strict `json_schema` 输出 `commands`、`action` 与 `speech`。
+4. **生成**：通过强制 strict function call 输出 `commands`、`action` 与 `speech`。
 5. **执行**：按原顺序执行移动、道具、样式、颜色、快照和复制。
 6. **验收**：重新读取 Appearance 与站位，验证后置条件。
 7. **回滚**：任一确定性条件失败时恢复操作前状态，并给出简短、诚实的角色化反馈。
@@ -450,7 +456,7 @@ v2.10.15 的回退链路是：
 
 ### 模型
 
-- 规划和辅助链：DeepSeek Chat Completions；正式回复：DeepSeek Responses API strict `json_schema`。默认模型均为 `deepseek-v4-flash`。
+- 规划和辅助链：DeepSeek Chat Completions；正式回复：DeepSeek Beta Chat Completions forced strict function call。默认模型均为 `deepseek-v4-flash`。
 - Embedding：OpenAI `text-embedding-3-large`，3,072 维。
 
 当前语义库全部是 3,072 维 OpenAI 向量。切换 embedding 模型必须检查维度和语义空间兼容，必要时备份后全量重建。

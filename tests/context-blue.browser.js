@@ -130,15 +130,18 @@
         setRequestHeader() {}
         send(body) {
           const request = JSON.parse(String(body || "{}"));
-          const thinkingMode = request?.reasoning?.effort || "missing";
+          const thinkingMode = request?.thinking?.type || "missing";
+          const tool = request?.tools?.[0]?.function;
           attemptThinkingModes.push(thinkingMode);
           structuredRequestShapes.push({
             url: this.url,
-            format: request?.text?.format?.type || "",
-            strict: request?.text?.format?.strict === true,
-            protocol: request?.text?.format?.schema?.properties?.protocol?.enum?.[0] || "",
+            format: request?.tools?.[0]?.type || "",
+            strict: tool?.strict === true,
+            toolName: tool?.name || "",
+            forcedTool: request?.tool_choice?.function?.name || "",
+            protocol: tool?.parameters?.properties?.protocol?.enum?.[0] || "",
           });
-          const content = thinkingMode === "none"
+          const content = thinkingMode === "disabled"
             ? JSON.stringify({
                 protocol: "misaka.reply.v1",
                 commands: [],
@@ -148,12 +151,17 @@
             : "";
           this.status = 200;
           this.responseText = JSON.stringify({
-            status: "completed",
-            output: [{
-              type: "message",
-              content: [{ type: "output_text", text: content }],
+            choices: [{
+              finish_reason: content ? "tool_calls" : "stop",
+              message: {
+                content: content ? null : "普通文本不会被接收。",
+                tool_calls: content ? [{
+                  type: "function",
+                  function: { name: "emit_misaka_reply", arguments: content },
+                }] : [],
+              },
             }],
-            usage: { output_tokens: 20, output_tokens_details: { reasoning_tokens: 10 } },
+            usage: { completion_tokens: 20, completion_tokens_details: { reasoning_tokens: 10 } },
           });
           queueMicrotask(() => this.onload?.());
         }
@@ -169,13 +177,20 @@
         window.__GM_xmlhttpRequest = originalGMRequest;
       }
       results.push({
-        id: "guard-empty-thinking-content-does-not-trigger-a-second-model-call",
+        id: "guard-strict-tool-call-disables-thinking-and-does-not-retry",
         repetition: 1,
-        passed: emptyContentRecovery === null &&
-          JSON.stringify(attemptThinkingModes) === JSON.stringify(["high"]) &&
-          structuredRequestShapes[0]?.url === "https://api.deepseek.com/responses" &&
-          structuredRequestShapes[0]?.format === "json_schema" &&
+        passed: emptyContentRecovery === JSON.stringify({
+          protocol: "misaka.reply.v1",
+          commands: [],
+          action: "",
+          speech: "恢复成功。",
+        }) &&
+          JSON.stringify(attemptThinkingModes) === JSON.stringify(["disabled"]) &&
+          structuredRequestShapes[0]?.url === "https://api.deepseek.com/beta/chat/completions" &&
+          structuredRequestShapes[0]?.format === "function" &&
           structuredRequestShapes[0]?.strict === true &&
+          structuredRequestShapes[0]?.toolName === "emit_misaka_reply" &&
+          structuredRequestShapes[0]?.forcedTool === "emit_misaka_reply" &&
           structuredRequestShapes[0]?.protocol === "misaka.reply.v1",
         actual: { emptyContentRecovery, attemptThinkingModes, structuredRequestShapes },
       });
@@ -185,28 +200,32 @@
         setRequestHeader() {}
         send(body) {
           const request = JSON.parse(String(body || "{}"));
+          const tool = request?.tools?.[0]?.function;
           structuredRequestShapes.push({
             url: this.url,
-            format: request?.text?.format?.type || "",
-            strict: request?.text?.format?.strict === true,
-            reasoning: request?.reasoning?.effort || "",
+            format: request?.tools?.[0]?.type || "",
+            strict: tool?.strict === true,
+            reasoning: request?.thinking?.type || "",
+          });
+          const argumentsText = JSON.stringify({
+            protocol: "misaka.reply.v1",
+            commands: [],
+            action: "",
+            speech: "正常回复。",
           });
           this.status = 200;
           this.responseText = JSON.stringify({
-            status: "completed",
-            output: [{
-              type: "message",
-              content: [{
-                type: "output_text",
-                text: JSON.stringify({
-                  protocol: "misaka.reply.v1",
-                  commands: [],
-                  action: "",
-                  speech: "正常回复。",
-                }),
-              }],
+            choices: [{
+              finish_reason: "tool_calls",
+              message: {
+                content: null,
+                tool_calls: [{
+                  type: "function",
+                  function: { name: "emit_misaka_reply", arguments: argumentsText },
+                }],
+              },
             }],
-            usage: { output_tokens: 20, output_tokens_details: { reasoning_tokens: 0 } },
+            usage: { completion_tokens: 20, completion_tokens_details: { reasoning_tokens: 0 } },
           });
           queueMicrotask(() => this.onload?.());
         }
@@ -665,11 +684,11 @@
       results.push({
         id: "guard-all-recent-history-preserves-semantic-and-raw-bc-types",
         repetition: 1,
-        passed: typedActionContext === "【action/Emote】歪了歪头" &&
-          typedSpeechContext === "【speech/Chat】怎么了？" &&
-          typedOtherActivityContext === "【interaction/Activity】摸了摸御坂的头" &&
-          typedWhisperContext === "【speech/Whisper】悄悄告诉你" &&
-          typedSystemActionContext === "【event/Action】Rin离开了房间",
+        passed: typedActionContext === "上下文元数据(语义=动作,BC类型=Emote) 内容=歪了歪头" &&
+          typedSpeechContext === "上下文元数据(语义=台词,BC类型=Chat) 内容=怎么了？" &&
+          typedOtherActivityContext === "上下文元数据(语义=互动,BC类型=Activity) 内容=摸了摸御坂的头" &&
+          typedWhisperContext === "上下文元数据(语义=台词,BC类型=Whisper) 内容=悄悄告诉你" &&
+          typedSystemActionContext === "上下文元数据(语义=事件,BC类型=Action) 内容=Rin离开了房间",
         actual: {
           typedActionContext,
           typedSpeechContext,

@@ -90,7 +90,7 @@
   const CONFIG = {
     enabled: true,
     apiBase: "https://api.deepseek.com/chat/completions",
-    responsesApiBase: "https://api.deepseek.com/responses",
+    strictToolApiBase: "https://api.deepseek.com/beta/chat/completions",
     model: "deepseek-v4-flash",
     maxTokens: 8192,
     maxContext: 50,
@@ -99,13 +99,10 @@
     perUserCooldownMs: 5000,
     pendingReplyMax: 5,
     pendingReplyTtlMs: 300000,
-    generatedReplyMaxAttempts: 2,
-    generatedReplyRetryDelaysMs: [2000],
     plannerMaxTokens: 4096,
     apiKeyTimeout: 45000,
-    // 一轮 action 最多包含规划、主回复、纠错、结果验收等多次 API 调用。
-    // 规划器 + 最多两次主回复 + 退避，及少数需要 BCE 二次生成的请求。
-    // 不能在重试仍进行时提前释放 busy，否则下一条会与旧任务并发串线。
+    // 一轮 action 可能包含规划、一次正式回复、BCE 查询后的回答与结果验收。
+    // hard timeout 覆盖整个任务，避免下一条与尚未结束的任务并发串线。
     replyHardTimeoutMs: 600000,
     replyDelayMs: 800,
     clarificationTtlMs: 120000, // 同一发送者回答上一轮追问的承接窗口
@@ -656,6 +653,13 @@
   const EMBEDDING_CACHE_MAX = 20;
 
   function readStoredSecret(keyName) {
+    if (typeof window.__misakaHasSecret === "function") {
+      try {
+        if (window.__misakaHasSecret(keyName)) {
+          return { value: "[private]", source: "GM:" + keyName, private: true };
+        }
+      } catch (e) {}
+    }
     if (typeof window.__GM_getValue === "function") {
       try {
         const v = window.__GM_getValue(keyName);
@@ -672,6 +676,15 @@
   function writeStoredSecret(keyName, value) {
     const secret = String(value || "").trim();
     if (!secret) return { ok: false, source: "missing" };
+    if (typeof window.__misakaSetSecret === "function") {
+      try {
+        if (window.__misakaSetSecret(keyName, secret) !== false) {
+          localStorage.removeItem(keyName);
+          return { ok: true, source: "GM" };
+        }
+      } catch (e) {}
+      return { ok: false, source: "loader-update-required" };
+    }
     if (typeof window.__GM_setValue === "function") {
       try {
         if (window.__GM_setValue(keyName, secret) !== false) {
@@ -692,6 +705,22 @@
   }
 
   function migrateStoredSecret(keyName) {
+    if (typeof window.__misakaHasSecret === "function" &&
+        typeof window.__misakaSetSecret === "function") {
+      try {
+        const hasPrivateValue = Boolean(window.__misakaHasSecret(keyName));
+        const localValue = String(localStorage.getItem(keyName) || "").trim();
+        if (hasPrivateValue) {
+          if (localValue) localStorage.removeItem(keyName);
+          return true;
+        }
+        if (localValue && window.__misakaSetSecret(keyName, localValue) !== false) {
+          localStorage.removeItem(keyName);
+          return true;
+        }
+      } catch (e) {}
+      return false;
+    }
     if (typeof window.__GM_getValue !== "function" || typeof window.__GM_setValue !== "function") return false;
     try {
       const gmValue = String(window.__GM_getValue(keyName) || "").trim();
@@ -729,6 +758,20 @@
 
   function requestEmbedding(provider, key, text) {
     const reqBody = buildEmbeddingBody(provider, text);
+    if (typeof window.__misakaPrivateRequest === "function" && key.private) {
+      return Promise.resolve(window.__misakaPrivateRequest({
+        kind: "openai-embedding",
+        url: provider.base,
+        data: reqBody,
+        timeout: 15000,
+      })).then(response => {
+        if (response?.status === 200) {
+          try { return JSON.parse(response.responseText || "{}"); }
+          catch (e) { throw new Error(provider.name + " embedding parse error"); }
+        }
+        throw new Error(provider.name + " embedding " + (response?.error || ("HTTP " + (response?.status || 0))));
+      });
+    }
     const useGM = typeof window.__GM_xmlhttpRequest !== "undefined";
     return new Promise((resolve, reject) => {
       if (useGM) {
@@ -1474,19 +1517,15 @@ ${recentSemantic}`;
     return (msg.content || "").trim() || null;
   }
 
-  function extractResponsesReply(data) {
-    if (typeof data?.output_text === "string" && data.output_text.trim()) {
-      return data.output_text.trim();
-    }
-    for (const item of data?.output || []) {
-      if (item?.type !== "message") continue;
-      for (const part of item?.content || []) {
-        if (part?.type === "output_text" && typeof part.text === "string" && part.text.trim()) {
-          return part.text.trim();
-        }
-      }
-    }
-    return null;
+  function extractStrictToolReply(data, expectedName) {
+    const message = data?.choices?.[0]?.message;
+    const toolCalls = Array.isArray(message?.tool_calls) ? message.tool_calls : [];
+    const call = toolCalls.find(item =>
+      item?.type === "function" &&
+      item?.function?.name === expectedName &&
+      typeof item?.function?.arguments === "string"
+    );
+    return call?.function?.arguments?.trim() || null;
   }
 
   // === [API] callLLM ===
@@ -1520,6 +1559,8 @@ ${recentSemantic}`;
     const stored = readStoredSecret("misaka_apikey");
     return {
       value: stored.value,
+      private: stored.private === true,
+      available: Boolean(stored.value),
       source: stored.source.startsWith("GM:")
         ? "GM"
         : (stored.source.startsWith("localStorage:") ? "localStorage" : "missing"),
@@ -1528,14 +1569,15 @@ ${recentSemantic}`;
 
   async function callLLM(systemPrompt, contextMessages, options = {}) {
     if (!isCurrent()) return null;
-    const apiKey = getApiKeyStatus().value;
-    if (!apiKey) {
+    const apiKeyStatus = getApiKeyStatus();
+    const apiKey = apiKeyStatus.value;
+    if (!apiKeyStatus.available) {
       try {
         options.onDiagnostic?.({
           time: new Date().toISOString(),
           elapsedMs: 0,
           model: options.model || CONFIG.model,
-          apiKind: options.responseSchema ? "responses" : "chat-completions",
+          apiKind: options.responseSchema ? "strict-tool-call" : "chat-completions",
           event: "configuration-error",
           outcome: "unusable",
           errorCode: "missing-api-key",
@@ -1559,7 +1601,7 @@ ${recentSemantic}`;
           time: new Date().toISOString(),
           elapsedMs: Math.max(0, Date.now() - requestStartedAt),
           model: primaryModel,
-          apiKind: responseSchema ? "responses" : "chat-completions",
+          apiKind: responseSchema ? "strict-tool-call" : "chat-completions",
           ...detail,
         });
       } catch (e) {}
@@ -1578,33 +1620,41 @@ ${recentSemantic}`;
         try {
           const data = JSON.parse(responseText);
           if (responseSchema) {
-            const reply = extractResponsesReply(data);
+            const expectedToolName = String(options.responseToolName || "emit_misaka_reply").slice(0, 64);
+            const choice = data.choices?.[0];
+            const reply = extractStrictToolReply(data, expectedToolName);
             if (reply) {
               reportDiagnostic({
                 event: "response",
-                outcome: "usable",
+                outcome: "content-extracted",
                 status: Number(status || 0),
-                responseStatus: data.status || "",
-                incompleteReason: data.incomplete_details?.reason || "",
-                reasoningTokens: data.usage?.output_tokens_details?.reasoning_tokens || 0,
-                outputTokens: data.usage?.output_tokens || 0,
+                finishReason: choice?.finish_reason || "",
+                reasoningTokens: data.usage?.completion_tokens_details?.reasoning_tokens || 0,
+                completionTokens: data.usage?.completion_tokens || 0,
+                toolCallName: expectedToolName,
                 errorCode: data.error?.code || "",
               });
               finish(reply);
               return;
             }
+            const assistantText = extractReply(choice?.message) || "";
             const diagnostic = {
               event: "response",
               outcome: "unusable",
               status: Number(status || 0),
-              responseStatus: data.status || "",
-              incompleteReason: data.incomplete_details?.reason || "",
-              reasoningTokens: data.usage?.output_tokens_details?.reasoning_tokens || 0,
-              outputTokens: data.usage?.output_tokens || 0,
+              finishReason: choice?.finish_reason || "",
+              reasoningTokens: data.usage?.completion_tokens_details?.reasoning_tokens || 0,
+              completionTokens: data.usage?.completion_tokens || 0,
+              toolCallName: choice?.message?.tool_calls?.[0]?.function?.name || "",
+              toolCallCount: Array.isArray(choice?.message?.tool_calls)
+                ? choice.message.tool_calls.length
+                : 0,
+              assistantTextLength: assistantText.length,
+              assistantTextPreview: redactReplyFailureText(assistantText, 1000),
               errorCode: data.error?.code || "",
             };
             reportDiagnostic(diagnostic);
-            console.warn("[MisakaChat] Responses API 无有效结构化输出", { model, ...diagnostic });
+            console.warn("[MisakaChat] 严格工具调用未返回有效参数", { model, ...diagnostic });
             finish(null);
             return;
           }
@@ -1644,18 +1694,29 @@ ${recentSemantic}`;
         if (!isCurrent()) { finish(null); return; }
         let bodyObj;
         if (responseSchema) {
+          const toolName = String(options.responseToolName || "emit_misaka_reply").slice(0, 64);
           bodyObj = {
             model,
-            input: messages,
-            max_output_tokens: maxTokens,
-            reasoning: { effort: useThinking ? "high" : "none" },
-            text: {
-              format: {
-                type: "json_schema",
-                name: String(options.responseSchemaName || "misaka_reply").slice(0, 64),
+            messages,
+            max_tokens: maxTokens,
+            // DeepSeek Beta rejects a forced function tool_choice while thinking
+            // is enabled (HTTP 400: "Thinking mode does not support this
+            // tool_choice"). Strict reply envelopes therefore always use the
+            // non-thinking path; ordinary chat-completions keep their existing
+            // per-call thinking setting below.
+            thinking: { type: "disabled" },
+            tools: [{
+              type: "function",
+              function: {
+                name: toolName,
+                description: "Emit the final Misaka reply envelope.",
                 strict: true,
-                schema: responseSchema,
+                parameters: responseSchema,
               },
+            }],
+            tool_choice: {
+              type: "function",
+              function: { name: toolName },
             },
           };
         } else {
@@ -1666,6 +1727,30 @@ ${recentSemantic}`;
         }
         if (Number.isFinite(options.temperature)) bodyObj.temperature = options.temperature;
         const reqBody = JSON.stringify(bodyObj);
+        if (typeof window.__misakaPrivateRequest === "function" && apiKeyStatus.private) {
+          Promise.resolve(window.__misakaPrivateRequest({
+            kind: "deepseek",
+            url,
+            data: reqBody,
+            timeout: CONFIG.apiKeyTimeout,
+          })).then(response => {
+            if (!isCurrent()) { finish(null); return; }
+            if (response?.status > 0) {
+              handleResponse(response.status, response.responseText || "", model);
+              return;
+            }
+            const event = response?.error === "timeout" ? "timeout" : "network-error";
+            reportDiagnostic({ event, outcome: "unusable", errorCode: response?.error || "bridge-error" });
+            console.warn("[MisakaChat] LLM 私有请求失败:", response?.error || "bridge-error");
+            finish(null);
+          }).catch(error => {
+            if (!isCurrent()) { finish(null); return; }
+            reportDiagnostic({ event: "network-error", outcome: "unusable", errorCode: "bridge-error" });
+            console.warn("[MisakaChat] LLM 私有请求失败:", error?.message || "bridge-error");
+            finish(null);
+          });
+          return;
+        }
         const useGM = typeof window.__GM_xmlhttpRequest !== "undefined";
 
         if (useGM) {
@@ -1703,7 +1788,7 @@ ${recentSemantic}`;
           xhr.send(reqBody);
         }
       };
-      doRequest(responseSchema ? CONFIG.responsesApiBase : CONFIG.apiBase, primaryModel);
+      doRequest(responseSchema ? CONFIG.strictToolApiBase : CONFIG.apiBase, primaryModel);
     });
   }
 
@@ -1791,17 +1876,17 @@ ${recentSemantic}`;
       ? storedType
       : (starredAction ? "Emote" : "Chat");
     const semanticType = ({
-      Chat: "speech",
-      Talk: "speech",
-      Whisper: "speech",
-      Emote: "action",
-      Activity: "interaction",
-      Action: "event",
-    })[messageType] || "event";
+      Chat: "台词",
+      Talk: "台词",
+      Whisper: "台词",
+      Emote: "动作",
+      Activity: "互动",
+      Action: "事件",
+    })[messageType] || "事件";
     const isAction = ["Activity", "Action", "Emote"].includes(messageType) ||
       starredAction;
     const content = isAction ? raw.replace(/^\*+|\*+$/g, "").trim() : raw;
-    return `【${semanticType}/${messageType}】${content}`;
+    return `上下文元数据(语义=${semanticType},BC类型=${messageType}) 内容=${content}`;
   }
 
   function buildPlannerRecentContext(limit = 10) {
@@ -3074,7 +3159,7 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
     return {
       ...options,
       responseSchema: STRUCTURED_REPLY_SCHEMA,
-      responseSchemaName: "misaka_reply",
+      responseToolName: "emit_misaka_reply",
     };
   }
 
@@ -3131,8 +3216,8 @@ ItemHandheld 紧凑目录:${handheldCatalog || "不可用"}
   }
 
   function structuredReplyInstruction() {
-    return `【最终回复协议：${STRUCTURED_REPLY_PROTOCOL}】
-只输出一个严格 JSON 对象，不要 Markdown 代码块，不要在 JSON 前后添加文字：
+    return `【最终回复工具：emit_misaka_reply】
+必须调用一次 emit_misaka_reply，不要在普通 assistant content 中回答。工具参数结构为：
 {"protocol":"${STRUCTURED_REPLY_PROTOCOL}","commands":[],"action":"","speech":""}
 - commands 必须是对象数组。聊天和文字角色扮演时为空数组。
 - action 只写动作内容，不写 *；没有动作时为空字符串。
@@ -3735,27 +3820,18 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
       ttlMs: CONFIG.pendingReplyTtlMs,
     }),
     inspectGeneratedReplyConfigForTest: () => ({
-      maxAttempts: CONFIG.generatedReplyMaxAttempts,
-      retryDelaysMs: [...CONFIG.generatedReplyRetryDelaysMs],
+      attemptsPerGeneration: 1,
       plannerMaxTokens: CONFIG.plannerMaxTokens,
       hardTimeoutMs: CONFIG.replyHardTimeoutMs,
     }),
     inspectGeneratedReplyForTest: inspectGeneratedReply,
-    retryGeneratedReplyForTest: (replies, intent = "chat") => {
-      const values = Array.isArray(replies) ? replies : [];
-      return retryGeneratedReply(
-        attempt => Promise.resolve(values[attempt - 1] ?? ""),
-        intent,
-        { maxAttempts: CONFIG.generatedReplyMaxAttempts, retryDelaysMs: [0] },
-      );
-    },
-    callGeneratedReplyWithRetryForTest: (intent = "chat", content = "测试回复") =>
-      callGeneratedReplyWithRetry(
-        "你是结构化回复测试器，只输出指定 JSON。\n" + structuredReplyInstruction(),
+    callGeneratedReplyForTest: (intent = "chat", content = "测试回复") =>
+      callGeneratedReply(
+        "你是结构化回复测试器，必须使用指定的最终回复工具。\n" + structuredReplyInstruction(),
         [{ role: "user", content: String(content || "测试回复") }],
         intent,
         structuredReplyLLMOptions({ thinking: false, temperature: 0, maxTokens: 1024 }),
-        { id: "reply-failure-test", stage: "llm:test", retryDelaysMs: [0] },
+        { id: "reply-failure-test", stage: "llm:test" },
       ),
     generationFailureReplyForTest: () => GENERATION_FAILURE_REPLY,
     sendGenerationFailureForTest: sendGenerationFailure,
@@ -6221,86 +6297,43 @@ function unescapeHTML(s) {
     return { usable: true, reason: "", parsed };
   }
 
-  async function waitGeneratedReplyRetry(delayMs) {
-    if (!isCurrent()) return false;
-    const delay = Math.max(0, Number(delayMs) || 0);
-    if (delay === 0) return true;
-    return new Promise(resolve => {
-      let settled = false;
-      let timer = null;
-      const finish = value => {
-        if (settled) return;
-        settled = true;
-        lifecycle.cleanups.delete(disposeCleanup);
-        resolve(value);
-      };
-      const disposeCleanup = onDispose(() => {
-        if (timer !== null) clearTrackedTimeout(timer);
-        finish(false);
-      });
-      timer = trackedTimeout(() => finish(true), delay);
-    });
-  }
-
-  async function retryGeneratedReply(runAttempt, intent = "chat", options = {}) {
-    const maxAttempts = Math.max(1, Number(options.maxAttempts) || CONFIG.generatedReplyMaxAttempts);
-    const retryDelays = Array.isArray(options.retryDelaysMs)
-      ? options.retryDelaysMs
-      : CONFIG.generatedReplyRetryDelaysMs;
-    let lastReason = "not-attempted";
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      if (!isCurrent()) return { reply: "", attempts: attempt - 1, exhausted: false, reason: "disposed" };
-      const reply = await runAttempt(attempt);
-      const inspection = inspectGeneratedReply(reply, intent);
-      options.onAttempt?.({ attempt, reply, ...inspection });
-      if (inspection.usable) {
-        return { reply: String(reply), attempts: attempt, exhausted: false, reason: "" };
-      }
-      lastReason = inspection.reason;
-      if (attempt >= maxAttempts) break;
-      const fallbackDelay = retryDelays.length > 0 ? retryDelays[retryDelays.length - 1] : 0;
-      const continued = await waitGeneratedReplyRetry(retryDelays[attempt - 1] ?? fallbackDelay);
-      if (!continued) return { reply: "", attempts: attempt, exhausted: false, reason: "disposed" };
-    }
-    return { reply: "", attempts: maxAttempts, exhausted: true, reason: lastReason };
-  }
-
-  async function callGeneratedReplyWithRetry(systemPrompt, contextMessages, intent, llmOptions, debug = {}) {
+  async function callGeneratedReply(systemPrompt, contextMessages, intent, llmOptions, debug = {}) {
     const diagnostics = [];
-    const result = await retryGeneratedReply(
-      attempt => callLLM(systemPrompt, contextMessages, {
-        ...llmOptions,
-        onDiagnostic: diagnostic => {
-          diagnostics.push(sanitizeReplyFailureValue({ attempt, ...diagnostic }));
-          try { llmOptions?.onDiagnostic?.(diagnostic); } catch (e) {}
-        },
-      }),
-      intent,
-      {
-        retryDelaysMs: debug.retryDelaysMs,
-        onAttempt: ({ attempt, usable, reason, reply }) => {
-          diagnostics.push({
-            attempt,
-            event: "inspection",
-            outcome: usable ? "usable" : "unusable",
-            reason,
-            replyLength: String(reply || "").length,
-            replyPreview: usable ? "" : redactReplyFailureText(reply || "", 1000),
-          });
-          pushDebugTrace({
-            id: debug.id,
-            stage: `${debug.stage || "llm"}:attempt`,
-            attempt,
-            usable,
-            reason,
-            reply,
-          });
-          if (!usable) {
-            console.warn(`[MisakaChat] 第 ${attempt}/${CONFIG.generatedReplyMaxAttempts} 次生成不可用: ${reason}`);
-          }
-        },
+    const attempt = 1;
+    const reply = await callLLM(systemPrompt, contextMessages, {
+      ...llmOptions,
+      onDiagnostic: diagnostic => {
+        diagnostics.push(sanitizeReplyFailureValue({ attempt, ...diagnostic }));
+        try { llmOptions?.onDiagnostic?.(diagnostic); } catch (e) {}
       },
-    );
+    });
+    const transportDiagnostic = [...diagnostics].reverse().find(item => item?.event === "response");
+    const inspection = !reply && transportDiagnostic?.outcome === "unusable" &&
+      (Number(transportDiagnostic.toolCallCount) > 0 || Number(transportDiagnostic.assistantTextLength) > 0)
+      ? { usable: false, reason: "strict-tool-call-required", parsed: null }
+      : inspectGeneratedReply(reply, intent);
+    diagnostics.push({
+      attempt,
+      event: "inspection",
+      outcome: inspection.usable ? "usable" : "unusable",
+      reason: inspection.reason,
+      replyLength: String(reply || "").length,
+      replyPreview: inspection.usable ? "" : redactReplyFailureText(reply || "", 1000),
+    });
+    pushDebugTrace({
+      id: debug.id,
+      stage: `${debug.stage || "llm"}:attempt`,
+      attempt,
+      usable: inspection.usable,
+      reason: inspection.reason,
+      reply,
+    });
+    if (!inspection.usable) {
+      console.warn(`[MisakaChat] 正式回复生成不可用: ${inspection.reason}`);
+    }
+    const result = inspection.usable
+      ? { reply: String(reply), attempts: 1, exhausted: false, reason: "" }
+      : { reply: "", attempts: 1, exhausted: true, reason: inspection.reason };
     return { ...result, diagnostics };
   }
 
@@ -6331,7 +6364,7 @@ function unescapeHTML(s) {
 
   async function dryRunEmptyContentRecoveryForTest() {
     return callLLM(
-      "你是结构化回复测试器，只输出指定 JSON。",
+      "你是结构化回复测试器，必须使用指定的最终回复工具。",
       [{ role: "user", content: "请回复一条非空测试消息。" }],
       structuredReplyLLMOptions({
         thinking: true,
@@ -6346,7 +6379,7 @@ function unescapeHTML(s) {
     const runs = Math.max(1, Math.min(40, Number(count) || 31));
     for (let index = 0; index < runs; index++) {
       outputs.push(await callLLM(
-        "你是本地限流边界测试器，只输出指定 JSON。",
+        "你是本地调用边界测试器，必须使用指定的最终回复工具。",
         [{ role: "user", content: `第${index + 1}次调用` }],
         structuredReplyLLMOptions({ thinking: false, temperature: 0, maxTokens: 64 }),
       ));
@@ -6524,13 +6557,6 @@ function unescapeHTML(s) {
       const deterministic = buildDeterministicExactReplacementReply(requestPlan);
       if (deterministic) {
         raw = deterministic;
-      } else {
-        const correctionPrompt = `${systemPrompt}\n\n【本轮强制纠错】\n用户明确要求你执行操作，但你上一稿的 commands 没有任何可执行对象。必须根据当前名单和道具清单，在 commands 数组中输出正确的结构化操作对象，并在 speech 中简短回复。若 operations.assets 非空，则具体道具已经确定，必须直接使用其中的精确 Asset，禁止再次追问。只有计划本身没有精确目标、部位或道具时才能追问；绝不能只用 action 或 speech 声称已经完成。`;
-        raw = await callLLM(correctionPrompt, contextMessages, structuredReplyLLMOptions({
-          thinking: false,
-          temperature: 0,
-          maxTokens: 2048,
-        })) || raw;
       }
       parsed = parseAssistantReply(raw || "", requestPlan.intent);
       filtered = filterCommandsByPlan(requestPlan, parsed.commands);
@@ -6733,10 +6759,10 @@ function unescapeHTML(s) {
       }
 
       const needCatalog = requestPlan.intent === "action" && !!requestPlan.needsCatalog;
-      let systemPrompt = buildMainReplySystemPrompt(requestPlan);
+      const systemPrompt = buildMainReplySystemPrompt(requestPlan);
       console.log(`[MisakaChat] system prompt 构建完成(意图: ${requestPlan.intent}, 完整道具清单: ${needCatalog ? "是" : "否"})`);
 
-      const firstGeneration = await callGeneratedReplyWithRetry(
+      const firstGeneration = await callGeneratedReply(
         systemPrompt,
         contextMessages,
         requestPlan.intent,
@@ -6777,7 +6803,7 @@ function unescapeHTML(s) {
               extraContext += `\n\n【BCE档案查询结果:${cmd.target}】\n没有找到这个人的档案。\n`;
             }
           }
-          const enrichedGeneration = await callGeneratedReplyWithRetry(
+          const enrichedGeneration = await callGeneratedReply(
             systemPrompt + extraContext,
             contextMessages,
             requestPlan.intent,
@@ -6795,8 +6821,8 @@ function unescapeHTML(s) {
         }
       }
       if (!reply) {
-        console.warn("[MisakaChat] 连续两次生成不可用，发送故障提示并继续队列");
-        pushDebugTrace({ id: debugId, stage: "generation-exhausted", attempts: CONFIG.generatedReplyMaxAttempts });
+        console.warn("[MisakaChat] 正式回复生成不可用，发送故障提示并继续队列");
+        pushDebugTrace({ id: debugId, stage: "generation-exhausted", attempts: terminalGeneration.result?.attempts || 1 });
         persistReplyFailureBundle({
           id: debugId,
           stage: terminalGeneration.stage,
@@ -6826,8 +6852,8 @@ function unescapeHTML(s) {
         return;
       }
 
-      // 明确要求执行操作、但首轮没有任何可执行指令时，强制纠错一次。
-      // 这比把自然语言“好了”当成功更安全，也覆盖绑第三人和修改第三人道具的场景。
+      // 明确要求执行操作、但模型没有给出可执行指令时，只允许确定性恢复。
+      // 不为同一回复追加模型重试，也绝不把自然语言“好了”当成成功。
       const initialParsed = parseAssistantReply(reply, requestPlan.intent);
       const initialExecutable = filterCommandsByPlan(requestPlan, initialParsed.commands).allowed;
       const initialCleaned = initialParsed.cleaned;
@@ -6836,25 +6862,16 @@ function unescapeHTML(s) {
         Array.isArray(op.assets) && op.assets.length > 0);
       if (requestPlan.intent === "action" && initialExecutable.length === 0 &&
           (!initialIsClarifyingQuestion || planHasExactAssets)) {
-        pushDebugTrace({ id: debugId, stage: "retry:no-action-command", reply });
+        pushDebugTrace({ id: debugId, stage: "guard:no-action-command", reply });
         const deterministicReply = buildDeterministicExactReplacementReply(requestPlan);
         if (deterministicReply) {
           reply = deterministicReply;
           pushDebugTrace({ id: debugId, stage: "deterministic:exact-replacement", reply });
-        } else {
-          const correctionPrompt = `${systemPrompt}\n\n【本轮强制纠错】\n用户明确要求你执行操作，但你上一稿的 commands 没有任何可执行对象。必须根据当前名单和道具清单，在 commands 数组中输出正确的结构化操作对象，并在 speech 中简短回复。若 operations.assets 非空，则具体道具已经确定，必须直接使用其中的精确 Asset，禁止再次追问。只有计划本身没有精确目标、部位或道具时才能追问；绝不能只用 action 或 speech 声称已经完成。`;
-          const retryReply = await callLLM(correctionPrompt, contextMessages, structuredReplyLLMOptions({
-            thinking: false,
-          }));
-          if (retryReply) {
-            reply = retryReply;
-            pushDebugTrace({ id: debugId, stage: "llm:action-retry", reply });
-          }
         }
       } else if (requestPlan.intent === "action" && initialExecutable.length === 0 && initialIsClarifyingQuestion) {
         // 模型已经基于实时道具清单明确说明不可执行并追问时，这就是安全且有用的结果。
         // 保留确定性澄清，避免纠错提示诱导模型编造不存在的样式。
-        pushDebugTrace({ id: debugId, stage: "retry:skipped-clarification", reply: initialCleaned });
+        pushDebugTrace({ id: debugId, stage: "guard:kept-clarification", reply: initialCleaned });
       }
 
       // 解析操作指令
@@ -6876,7 +6893,7 @@ function unescapeHTML(s) {
         finalReply,
       });
 
-      // 二次纠错仍没有指令时，绝不能把“绑好了/调好了”之类口头成功发出去。
+      // 没有可执行指令时，绝不能把“绑好了/调好了”之类口头成功发出去。
       // 若模型确实在追问则保留追问，否则明确告知本轮没有执行。
       if (requestPlan.intent === "action" && executableCommands.length === 0) {
         pushDebugTrace({ id: debugId, stage: "guard:action-without-command", rejectedReply: finalReply });

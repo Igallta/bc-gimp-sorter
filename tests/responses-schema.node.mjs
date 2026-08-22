@@ -40,10 +40,10 @@ const context = {
   ChatRoomStimulationMessage() {},
   ElementValue() {},
   ChatRoomSendChat() {},
-  __GM_getValue(key) { return key === "misaka_apikey" ? "test-only-key" : ""; },
-  __GM_xmlhttpRequest(options) {
+  __misakaHasSecret(key) { return key === "misaka_apikey"; },
+  __misakaPrivateRequest(options) {
     const body = JSON.parse(String(options.data || "{}"));
-    requests.push({ url: options.url, body });
+    requests.push({ kind: options.kind, url: options.url, body });
     const output = JSON.stringify({
       protocol: "misaka.reply.v1",
       commands: [],
@@ -53,18 +53,23 @@ const context = {
     const payload = queuedResponsePayloads.length > 0
       ? queuedResponsePayloads.shift()
       : {
-          status: "completed",
-          output: [{
-            type: "message",
-            content: [{ type: "output_text", text: output }],
+          choices: [{
+            finish_reason: "tool_calls",
+            message: {
+              content: null,
+              tool_calls: [{
+                type: "function",
+                function: { name: "emit_misaka_reply", arguments: output },
+              }],
+            },
           }],
-          usage: { output_tokens: 80, output_tokens_details: { reasoning_tokens: 20 } },
+          usage: { completion_tokens: 80, completion_tokens_details: { reasoning_tokens: 20 } },
         };
-    queueMicrotask(() => options.onload?.({
+    return Promise.resolve({
       status: 200,
       responseText: JSON.stringify(payload),
-    }));
-    return { abort() {} };
+      error: "",
+    });
   },
 };
 context.window = context;
@@ -79,16 +84,21 @@ assert.match(result?.parsed?.cleaned || "", /可乐/);
 assert.equal(requests.length, 1);
 
 const request = requests[0];
-assert.equal(request.url, "https://api.deepseek.com/responses");
-assert.ok(Array.isArray(request.body.input));
-assert.equal(request.body.max_output_tokens, 2048);
-assert.equal(request.body.reasoning?.effort, "high");
-assert.equal(request.body.text?.format?.type, "json_schema");
-assert.equal(request.body.text?.format?.strict, true);
-assert.equal(request.body.text?.format?.name, "misaka_reply");
+assert.equal(request.kind, "deepseek");
+assert.equal(request.url, "https://api.deepseek.com/beta/chat/completions");
+assert.ok(Array.isArray(request.body.messages));
+assert.equal(request.body.max_tokens, 2048);
+assert.equal(request.body.thinking?.type, "disabled");
+assert.equal(request.body.tools?.length, 1);
+assert.equal(request.body.tools?.[0]?.type, "function");
+assert.equal(request.body.tools?.[0]?.function?.name, "emit_misaka_reply");
+assert.equal(request.body.tools?.[0]?.function?.strict, true);
+assert.equal(request.body.tool_choice?.type, "function");
+assert.equal(request.body.tool_choice?.function?.name, "emit_misaka_reply");
 assert.equal(request.body.response_format, undefined);
+assert.equal(request.body.text, undefined);
 
-const schema = request.body.text.format.schema;
+const schema = request.body.tools[0].function.parameters;
 assert.equal(schema.additionalProperties, false);
 assert.deepEqual(schema.required, ["protocol", "commands", "action", "speech"]);
 assert.deepEqual(schema.properties.protocol.enum, ["misaka.reply.v1"]);
@@ -105,38 +115,42 @@ assert.deepEqual(commandTypes, new Set([
 ]));
 for (const variant of schema.properties.commands.items.anyOf) {
   assert.equal(variant.additionalProperties, false);
-  assert.ok(Array.isArray(variant.required) && variant.required.includes("type"));
+  assert.deepEqual(new Set(variant.required), new Set(Object.keys(variant.properties)),
+    "DeepSeek strict tools require every object property to be required");
 }
 
-const diagnosticResult = await hooks.callGeneratedReplyWithRetryForTest("chat", "请回复诊断测试");
+const diagnosticResult = await hooks.callGeneratedReplyForTest("chat", "请回复诊断测试");
 assert.equal(diagnosticResult.exhausted, false);
 assert.equal(diagnosticResult.attempts, 1);
+assert.equal(requests.length, 2, "one generated reply must make exactly one model request");
 assert.ok(diagnosticResult.diagnostics.some(item =>
-  item.event === "response" && item.outcome === "usable" && item.status === 200));
+  item.event === "response" && item.outcome === "content-extracted" && item.status === 200));
 assert.ok(diagnosticResult.diagnostics.some(item =>
   item.event === "inspection" && item.outcome === "usable"));
 
 queuedResponsePayloads.push(
   {
-    status: "incomplete",
-    incomplete_details: { reason: "max_output_tokens" },
-    output: [],
-    usage: { output_tokens: 1024, output_tokens_details: { reasoning_tokens: 1024 } },
-  },
-  {
-    status: "completed",
-    output: [],
-    usage: { output_tokens: 12, output_tokens_details: { reasoning_tokens: 12 } },
+    choices: [{
+      finish_reason: "stop",
+      message: {
+        content: "【action/Emote】歪了歪头\n\n【speech/Chat】这是普通文本，不是工具调用。",
+        tool_calls: [],
+      },
+    }],
+    usage: { completion_tokens: 40, completion_tokens_details: { reasoning_tokens: 12 } },
   },
 );
-const exhaustedResult = await hooks.callGeneratedReplyWithRetryForTest("chat", "请制造两次空回复");
+const exhaustedResult = await hooks.callGeneratedReplyForTest("chat", "请制造一次非工具回复");
 assert.equal(exhaustedResult.exhausted, true);
-assert.equal(exhaustedResult.attempts, 2);
-assert.equal(exhaustedResult.reason, "empty-content");
+assert.equal(exhaustedResult.attempts, 1);
+assert.equal(requests.length, 3, "an unusable response must not trigger another model request");
+assert.equal(exhaustedResult.reason, "strict-tool-call-required");
 assert.ok(exhaustedResult.diagnostics.some(item =>
-  item.attempt === 1 && item.event === "response" && item.incompleteReason === "max_output_tokens"));
+  item.attempt === 1 && item.event === "response" && item.outcome === "unusable" &&
+  item.finishReason === "stop" && item.toolCallCount === 0 &&
+  /action\/Emote/.test(item.assistantTextPreview || "")));
 assert.ok(exhaustedResult.diagnostics.some(item =>
-  item.attempt === 2 && item.event === "inspection" && item.reason === "empty-content"));
+  item.attempt === 1 && item.event === "inspection" && item.reason === "strict-tool-call-required"));
 
 hooks.clearReplyFailureTraceForTest();
 for (let index = 0; index < 22; index++) {
@@ -160,4 +174,4 @@ assert.doesNotMatch(exportedFailureText, /secretvalue|token-\d/);
 assert.match(exportedFailureText, /REDACTED/);
 
 context.__misakaTestLifecycle.dispose("responses-schema-suite-complete");
-console.log("MisakaChat Responses json_schema regression: PASS");
+console.log("MisakaChat strict tool-call schema regression: PASS");

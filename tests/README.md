@@ -134,8 +134,8 @@ planner consumed the 30th shared local quota slot. The burst uses an immediate
 mock response, so all 31 calls must reach the transport and return non-empty;
 an empty thinking response must remain a single request rather than triggering
 an automatic model retry. The mock also verifies that structured replies use
-the DeepSeek Responses endpoint with strict `json_schema` rather than the
-legacy Chat Completions `json_object` mode:
+DeepSeek's forced strict function call on the Beta Chat Completions endpoint;
+ordinary assistant text is never accepted as a reply envelope:
 
 ```bash
 node tests/run-context-blue-cdp.mjs --repeats=3
@@ -152,7 +152,7 @@ node tests/run-context-blue-cdp.mjs --deterministic-only
 
 The standalone transport/schema regression does not require a browser or make
 network calls. It verifies the complete `misaka.reply.v1` command union and the
-Responses request/response adapter:
+strict tool-call request/response adapter:
 
 ```bash
 node tests/responses-schema.node.mjs

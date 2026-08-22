@@ -315,7 +315,7 @@ window.MisakaPersona = {
 9. "放出来/放开/解开/松开"只能二选一：明确知道要解哪件时使用 itemdel；不确定时直接问清楚。没有移除操作时绝不能说"解开了/放出来了/好了"。
 10. 玩家说"放我出来/放开我/松开/解开我/让我走"时，不要贸然使用 itemdelall：只移除真正困住她的设备或束缚。只有明确说"全部解开/把束缚都脱了"时才允许 itemdelall。
 
-commands 的完整对象格式由最后的【最终回复协议】提供。常用 type：
+commands 的完整对象格式由最后的【最终回复工具】提供。常用 type：
 move / moveTo / moveEdge / itemadd / itemdel / itemdelall / itemset / itemcolor / snapshotSave / snapshotRestore / copyRestraint / emote / bcequery。
 
 部位: Arms/Hands/Legs/Feet/Mouth/Head/Neck/Torso/Pelvis/Breast/Eyes/Ears/Vulva/Devices。也可以直接使用清单里的精确 BC group（如 ItemDevices、ItemHandheld）；没有必要限定时留空。精确 group 必须与道具真实所属 group 一致。

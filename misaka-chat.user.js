@@ -16,6 +16,7 @@
 // @grant        GM_getValue
 // @grant        GM_deleteValue
 // @grant        GM_registerMenuCommand
+// @grant        unsafeWindow
 // @connect      api.deepseek.com
 // @connect      api.openai.com
 // @connect      misaka-diagnostics.misaka-diagnostics.workers.dev
@@ -25,21 +26,76 @@
 (function() {
   "use strict";
 
-  // 仅向页面运行时开放两个模型密钥；诊断密钥始终留在 loader 闭包中。
-  try { window.__GM_xmlhttpRequest = GM_xmlhttpRequest; } catch(e) {}
+  const pageWindow = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
+
+  // 模型密钥只留在 Tampermonkey 私有存储。页面运行时只能查询是否存在、
+  // 覆盖/删除指定密钥，以及让 loader 代发到固定 API 的请求，不能读取明文。
   try {
     const runtimeSecretKeys = new Set(["misaka_apikey", "misaka_openai_key"]);
-    window.__GM_getValue = key => runtimeSecretKeys.has(String(key || "")) ? GM_getValue(key, "") : "";
-    window.__GM_setValue = (key, value) => {
+    const requestKinds = {
+      deepseek: {
+        key: "misaka_apikey",
+        urls: new Set([
+          "https://api.deepseek.com/chat/completions",
+          "https://api.deepseek.com/beta/chat/completions",
+          "https://api.deepseek.com/responses",
+        ]),
+      },
+      "openai-embedding": {
+        key: "misaka_openai_key",
+        urls: new Set(["https://api.openai.com/v1/embeddings"]),
+      },
+    };
+    pageWindow.__misakaHasSecret = key => {
       if (!runtimeSecretKeys.has(String(key || ""))) return false;
-      GM_setValue(key, String(value || ""));
+      return Boolean(String(GM_getValue(key, "") || "").trim());
+    };
+    pageWindow.__misakaSetSecret = (key, value) => {
+      if (!runtimeSecretKeys.has(String(key || ""))) return false;
+      const secret = String(value || "").trim();
+      if (!secret) return false;
+      GM_setValue(key, secret);
       return true;
     };
-    window.__GM_deleteValue = key => {
+    pageWindow.__misakaDeleteSecret = key => {
       if (!runtimeSecretKeys.has(String(key || ""))) return false;
       GM_deleteValue(key);
       return true;
     };
+    pageWindow.__misakaPrivateRequest = spec => new Promise(resolve => {
+      try {
+        const kind = requestKinds[String(spec?.kind || "")];
+        const url = String(spec?.url || "");
+        if (!kind || !kind.urls.has(url)) {
+          resolve({ status: 0, responseText: "", error: "request-not-allowed" });
+          return;
+        }
+        const secret = String(GM_getValue(kind.key, "") || "").trim();
+        if (!secret) {
+          resolve({ status: 0, responseText: "", error: "missing-api-key" });
+          return;
+        }
+        GM_xmlhttpRequest({
+          method: "POST",
+          url,
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + secret,
+          },
+          data: String(spec?.data || ""),
+          timeout: Math.min(600_000, Math.max(1_000, Number(spec?.timeout) || 15_000)),
+          onload: response => resolve({
+            status: Number(response.status || 0),
+            responseText: String(response.responseText || ""),
+            error: "",
+          }),
+          onerror: () => resolve({ status: 0, responseText: "", error: "network-error" }),
+          ontimeout: () => resolve({ status: 0, responseText: "", error: "timeout" }),
+        });
+      } catch (error) {
+        resolve({ status: 0, responseText: "", error: "bridge-error" });
+      }
+    });
   } catch(e) {}
 
   const DIAGNOSTIC_ENDPOINT = "https://misaka-diagnostics.misaka-diagnostics.workers.dev/v1/reply-failures";
