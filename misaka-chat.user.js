@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BC Misaka Auto Chat
 // @namespace    https://igallta.github.io/bc-gimp-sorter
-// @version      3.3.0
+// @version      3.3.1
 // @description  御坂 BC 自动回复系统 — LLM 驱动 + 语义记忆(IDB) + 房间上下文
 // @match        https://*.bondageprojects.elementfx.com/R*/*
 // @match        https://*.bondage-europe.com/R*/*
@@ -27,6 +27,7 @@
   "use strict";
 
   const pageWindow = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
+  const SCRIPT_VERSION = "3.3.1";
 
   // 模型密钥只留在 Tampermonkey 私有存储。页面运行时只能查询是否存在、
   // 覆盖/删除指定密钥，以及让 loader 代发到固定 API 的请求，不能读取明文。
@@ -104,7 +105,17 @@
   const DIAGNOSTIC_SECRET_KEY = "misaka_diagnostics_upload_secret_v1";
   const DIAGNOSTIC_PENDING_KEY = "misaka_diagnostics_pending_v1";
   const DIAGNOSTIC_PENDING_LIMIT = 5;
+  const SHADOW_EVENT_ENDPOINT = "https://misaka-diagnostics.misaka-diagnostics.workers.dev/v1/shadow/events";
+  const SHADOW_LEGACY_ENDPOINT = "https://misaka-diagnostics.misaka-diagnostics.workers.dev/v1/shadow/legacy";
+  const SHADOW_EVENT = "misaka-shadow-event-v1";
+  const SHADOW_LEGACY_EVENT = "misaka-shadow-legacy-v1";
+  const SHADOW_ENABLED_KEY = "misaka_shadow_enabled_v1";
+  const SHADOW_PENDING_KEY = "misaka_shadow_pending_v1";
+  const SHADOW_INSTALLATION_KEY = "misaka_shadow_installation_v1";
+  const SHADOW_PSEUDONYM_SALT_KEY = "misaka_shadow_pseudonym_salt_v1";
+  const SHADOW_PENDING_LIMIT = 20;
   let diagnosticUploadBusy = false;
+  let shadowUploadBusy = false;
 
   function diagnosticSecret() {
     try { return String(GM_getValue(DIAGNOSTIC_SECRET_KEY, "") || ""); }
@@ -134,7 +145,7 @@
     return [...new Uint8Array(signature)].map(byte => byte.toString(16).padStart(2, "0")).join("");
   }
 
-  function uploadDiagnosticEnvelope(envelope, secret) {
+  function uploadSignedEnvelope(url, envelope, secret) {
     return new Promise(async (resolve) => {
       try {
         const body = JSON.stringify(envelope);
@@ -143,7 +154,7 @@
         const signature = await signDiagnosticBody(secret, timestamp, body);
         GM_xmlhttpRequest({
           method: "POST",
-          url: DIAGNOSTIC_ENDPOINT,
+          url,
           headers: {
             "Content-Type": "application/json",
             "X-Misaka-Timestamp": timestamp,
@@ -163,6 +174,10 @@
         resolve(false);
       }
     });
+  }
+
+  function uploadDiagnosticEnvelope(envelope, secret) {
+    return uploadSignedEnvelope(DIAGNOSTIC_ENDPOINT, envelope, secret);
   }
 
   async function flushDiagnosticPending() {
@@ -192,6 +207,138 @@
     writeDiagnosticPending(pending);
     void flushDiagnosticPending();
   }
+
+  function shadowEnabled() {
+    try { return GM_getValue(SHADOW_ENABLED_KEY, false) === true; }
+    catch (e) { return false; }
+  }
+
+  function readShadowPending() {
+    try {
+      const value = GM_getValue(SHADOW_PENDING_KEY, []);
+      const parsed = typeof value === "string" ? JSON.parse(value) : value;
+      return Array.isArray(parsed) ? parsed.slice(-SHADOW_PENDING_LIMIT) : [];
+    } catch (e) { return []; }
+  }
+
+  function writeShadowPending(records) {
+    try { GM_setValue(SHADOW_PENDING_KEY, records.slice(-SHADOW_PENDING_LIMIT)); }
+    catch (e) {}
+  }
+
+  function shadowInstallationId() {
+    try {
+      let value = String(GM_getValue(SHADOW_INSTALLATION_KEY, "") || "");
+      if (!/^[A-Za-z0-9._:-]{8,160}$/.test(value)) {
+        value = `install-${crypto.randomUUID()}`;
+        GM_setValue(SHADOW_INSTALLATION_KEY, value);
+      }
+      return value;
+    } catch (e) { return "install-unavailable"; }
+  }
+
+  function shadowPseudonymSalt() {
+    try {
+      let value = String(GM_getValue(SHADOW_PSEUDONYM_SALT_KEY, "") || "");
+      if (!/^[a-f0-9]{64}$/.test(value)) {
+        const bytes = crypto.getRandomValues(new Uint8Array(32));
+        value = [...bytes].map(byte => byte.toString(16).padStart(2, "0")).join("");
+        GM_setValue(SHADOW_PSEUDONYM_SALT_KEY, value);
+      }
+      return value;
+    } catch (e) { return "shadow-pseudonym-fallback"; }
+  }
+
+  async function shadowHash(label, value) {
+    const material = `${shadowPseudonymSalt()}:${label}:${String(value ?? "")}`;
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(material));
+    return [...new Uint8Array(digest)].slice(0, 12)
+      .map(byte => byte.toString(16).padStart(2, "0")).join("");
+  }
+
+  async function pseudonymizeShadowEvent(rawEvent) {
+    const event = JSON.parse(JSON.stringify(rawEvent || {}));
+    if (event.roomEpoch) event.roomEpoch = `room-${await shadowHash("room", event.roomEpoch)}`;
+    if (event.message?.replyId) event.message.replyId = `msg-${await shadowHash("message", event.message.replyId)}`;
+    if (event.sender?.memberNumber !== undefined) {
+      event.sender.memberId = `member-${await shadowHash("member", event.sender.memberNumber)}`;
+      delete event.sender.memberNumber;
+      event.sender.name = event.sender.memberId;
+    }
+    for (const item of Array.isArray(event.context) ? event.context : []) {
+      if (item.memberNumber !== undefined) {
+        item.memberId = `member-${await shadowHash("member", item.memberNumber)}`;
+        delete item.memberNumber;
+        item.senderName = item.memberId;
+      }
+    }
+    for (const member of Array.isArray(event.projection?.members) ? event.projection.members : []) {
+      if (member.memberNumber !== undefined) {
+        member.memberId = `member-${await shadowHash("member", member.memberNumber)}`;
+        delete member.memberNumber;
+        member.name = member.memberId;
+      }
+    }
+    return event;
+  }
+
+  function shadowEndpoint(kind) {
+    return kind === "legacy" ? SHADOW_LEGACY_ENDPOINT : SHADOW_EVENT_ENDPOINT;
+  }
+
+  async function flushShadowPending() {
+    if (shadowUploadBusy || !shadowEnabled()) return;
+    const secret = diagnosticSecret();
+    if (secret.length < 24) return;
+    shadowUploadBusy = true;
+    try {
+      const pending = readShadowPending();
+      const remaining = [];
+      for (const record of pending) {
+        if (!await uploadSignedEnvelope(shadowEndpoint(record.kind), record.envelope, secret)) {
+          remaining.push(record);
+        }
+      }
+      writeShadowPending(remaining);
+      if (pending.length > remaining.length) {
+        console.log(`[MisakaShadow] 已上传 ${pending.length - remaining.length} 条影子记录`);
+      }
+    } finally {
+      shadowUploadBusy = false;
+    }
+  }
+
+  async function enqueueShadowDetail(kind, detail) {
+    if (!shadowEnabled() || !detail) return;
+    const payload = kind === "event"
+      ? { event: await pseudonymizeShadowEvent(detail) }
+      : { legacy: JSON.parse(JSON.stringify(detail)) };
+    const envelope = {
+      protocol: "misaka.shadow-upload.v1",
+      kind,
+      client: {
+        version: SCRIPT_VERSION,
+        installationId: shadowInstallationId(),
+      },
+      ...payload,
+    };
+    const pending = readShadowPending();
+    pending.push({ kind, envelope });
+    writeShadowPending(pending);
+    void flushShadowPending();
+  }
+
+  pageWindow.__misakaShadowStatus = () => ({
+    enabled: shadowEnabled(),
+    configured: diagnosticSecret().length >= 24,
+    pending: readShadowPending().length,
+  });
+  pageWindow.__misakaShadowSetEnabled = value => {
+    const enabled = value === true;
+    GM_setValue(SHADOW_ENABLED_KEY, enabled);
+    if (enabled) void flushShadowPending();
+    return pageWindow.__misakaShadowStatus();
+  };
 
   function openDiagnosticSecretDialog() {
     if (!document.body || document.getElementById("misaka-diagnostics-secret-dialog")) return;
@@ -243,16 +390,34 @@
   try {
     document.addEventListener(DIAGNOSTIC_UPLOAD_EVENT, event => enqueueDiagnosticEnvelope(event.detail));
     document.addEventListener(DIAGNOSTIC_CONFIG_EVENT, openDiagnosticSecretDialog);
+    document.addEventListener(SHADOW_EVENT, event => void enqueueShadowDetail("event", event.detail));
+    document.addEventListener(SHADOW_LEGACY_EVENT, event => void enqueueShadowDetail("legacy", event.detail));
     GM_registerMenuCommand("设置御坂诊断上传密钥", openDiagnosticSecretDialog);
     GM_registerMenuCommand("清除御坂诊断上传设置", () => {
       GM_deleteValue(DIAGNOSTIC_SECRET_KEY);
       GM_deleteValue(DIAGNOSTIC_PENDING_KEY);
       console.log("[MisakaChat] 诊断上传已停用");
     });
+    GM_registerMenuCommand("开启御坂只读影子模式", () => {
+      GM_setValue(SHADOW_ENABLED_KEY, true);
+      console.log("[MisakaShadow] 只读影子模式已开启");
+      void flushShadowPending();
+    });
+    GM_registerMenuCommand("关闭御坂只读影子模式", () => {
+      GM_setValue(SHADOW_ENABLED_KEY, false);
+      console.log("[MisakaShadow] 只读影子模式已关闭");
+    });
+    GM_registerMenuCommand("清除御坂影子本地数据", () => {
+      GM_setValue(SHADOW_ENABLED_KEY, false);
+      GM_deleteValue(SHADOW_PENDING_KEY);
+      GM_deleteValue(SHADOW_INSTALLATION_KEY);
+      GM_deleteValue(SHADOW_PSEUDONYM_SALT_KEY);
+      console.log("[MisakaShadow] 本地影子队列与匿名化标识已清除");
+    });
     Promise.resolve().then(() => void flushDiagnosticPending());
+    Promise.resolve().then(() => void flushShadowPending());
   } catch (e) {}
 
-  const SCRIPT_VERSION = "3.3.0";
   // 固定 revision，保证 loader、persona 与 runtime 始终来自同一版本。
   const ASSET_REVISION = "1a5ffc6";
   const BASE_URL = `https://raw.githack.com/Igallta/bc-gimp-sorter/${ASSET_REVISION}`;

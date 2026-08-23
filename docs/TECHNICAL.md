@@ -1,7 +1,7 @@
 # MisakaChat 技术手册
 
 > 最后更新：2026-08-23
-> 当前稳定版：MisakaChat **v3.3.0** / GimpSorter **v1.7.4**
+> 当前稳定版：MisakaChat **v3.3.1** / GimpSorter **v1.7.4**
 > 当前阶段：DeepSeek严格工具回复、中性上下文、单次生成故障包、OpenRouter Voyage typed embedding、iPad自检、私有请求代理，以及三脚本状态文案、文档和测试入口重新对齐。
 
 本文是御坂项目的长期技术事实源。它不仅记录“代码现在怎么工作”，也记录“为什么会变成这样”：项目从一个整理 GIMP 娃娃站位的小脚本开始，逐步长成了一个能感知房间、理解自然语言、记住访客并真正改变 BC 状态的角色型 Bot。
@@ -442,7 +442,7 @@ v2.10.15 的回退链路是：
 | `misaka_sticker_catalog` | 可选的外部固定表情包目录；不能覆盖内置 ID |
 | `misaka_migration_self_pipe_cleanup_v1` | 旧御坂竖线语义记忆一次性迁移状态 |
 
-对话与embedding Key存在Tampermonkey私有存储，分别使用 `misaka_apikey`、`misaka_openrouter_key`。runtime启动时会把同名旧localStorage值迁入GM存储并删除网页副本；通过命令重新保存时也只写GM。页面runtime不能读取密钥明文，只能查询是否存在、覆盖/删除指定Key，并通过白名单代理向DeepSeek或固定OpenRouter endpoint代发请求。诊断上传密钥和最多5个待重试诊断包分别使用 `misaka_diagnostics_upload_secret_v1`、`misaka_diagnostics_pending_v1`，仅由loader访问。Key不得写入源码、提交、日志、文档或公开issue。
+对话与embedding Key存在Tampermonkey私有存储，分别使用 `misaka_apikey`、`misaka_openrouter_key`。runtime启动时会把同名旧localStorage值迁入GM存储并删除网页副本；通过命令重新保存时也只写GM。页面runtime不能读取密钥明文，只能查询是否存在、覆盖/删除指定Key，并通过白名单代理向DeepSeek或固定OpenRouter endpoint代发请求。诊断上传密钥和最多5个待重试诊断包分别使用 `misaka_diagnostics_upload_secret_v1`、`misaka_diagnostics_pending_v1`，仅由loader访问。影子模式的开关、最多20条待上传记录、随机installation id及本地匿名化salt分别使用 `misaka_shadow_enabled_v1`、`misaka_shadow_pending_v1`、`misaka_shadow_installation_v1`、`misaka_shadow_pseudonym_salt_v1`，同样不进入网页存储。Key不得写入源码、提交、日志、文档或公开issue。
 
 ### IndexedDB
 
@@ -523,10 +523,17 @@ git diff --check
 - `/misaka diag`：面向维护，显示runtime、loader、对话Key来源、embedding provider/model/维度、embedding Key来源及语义上限；embedding Key缺失时明确说明对话仍可运行但向量记忆不可用。
 - `/misaka selftest`：在实际设备内只读测试严格回复与两类Voyage请求，并用一条临时记录验证IndexedDB写入、读取和删除；同时记录origin、向量维度分布、Safari存储用量/配额及持久化状态。不会发公屏或执行BC操作。报告保存到 `window.__misakaSelftestReport`；成功报告不上传，自检失败且已配置私有诊断时才复用已验证的回复故障包协议上传脱敏摘要。
 - `/misaka diagnostics`：只打开私有诊断上传密钥设置，不是通用运行诊断。
+- `/misaka shadow on|off|status`：控制默认关闭的只读BC Agent影子试验。开启要求已有私有诊断上传密钥；候选不能发言或执行BC操作。
 - `window.__misakaDebugTrace`：最近 30 条内部 trace。
 - 控制台前缀：`[MisakaChat]`、`[GimpSorter]`。
 
 OpenClaw 的页面 console 拦截器使用最多 1,000 条的环形缓存。MCP 休眠不会清掉页面缓存；刷新、跳转或标签页回收后要重新注入。
+
+### 只读BC Agent影子试验
+
+影子事件在御坂检测到直接点名时立即生成，不等待现行回复队列或冷却。上传内容严格限于触发消息、最多8条近期上下文、当前房间epoch的哈希、最多20名成员的匿名化位置，以及发送者/御坂的简化Appearance。MemberNumber、结构化显示名、房间标识和消息标识均在Tampermonkey隔离世界中稳定匿名化后才进入私有重试队列；现行回复首次调用原生发送路径、错误、超时、排队过期或溢出时再上传对应legacy receipt。
+
+Cloudflare Worker使用SQLite Durable Object保存带租约的队列和对照结果；记录保留72小时、租约3分钟、最多重试5次。Ubuntu上的独立 `misaka-shadow-processor.service` 以host-only HMAC领取事件，调用无channel binding的 `misaka-spike` Agent，再回传只读decision。Agent仅能读取上传快照并写本地观察/决策文件；没有工具或路由可向真实BC发送消息、执行人物操作或回写房间。关闭影子模式后不再产生或上传新记录；Tampermonkey菜单可删除本地队列、installation id和匿名化salt。
 
 ### 黑箱测试最小记录
 
@@ -548,12 +555,13 @@ OpenClaw 的页面 console 拦截器使用最多 1,000 条的环形缓存。MCP 
 
 ### 自动化与 CDP 回归
 
-回归分为四层，详细命令、网络边界和发布门槛见 `tests/README.md`：
+回归分为五层，详细命令、网络边界和发布门槛见 `tests/README.md`：
 
 1. 纯Node协议/安全回归：严格Schema、loader私有桥、诊断签名、队列、iPad Guard、Voyage typed body与selftest汇总；默认不访问真实模型或浏览器。
 2. 确定性浏览器回归：把本地候选以test mode注入BC页面，只调用只读debug hooks，不发公屏、不改人物状态。
 3. raw-CDP兼容runner：仅在显式提供 `MISAKA_CDP_URL` 时使用，不再默认固定9222；日常操作仍走OpenClaw `profile=user` existing-session。
 4. iPad `/misaka selftest`：验证Tampermonkey私有Key、真实DeepSeek/Voyage、WebKit IndexedDB及存储配额，是设备集成验收，不替代桌面确定性回归。
+5. 影子协议与观察期：Node回归锁定匿名化、即时事件、legacy receipt和只读工具；真实观察期只比较结果与延迟，候选不发言、不执行。
 
 仓库现有11条不会主动改变房间状态的浏览器/CDP回归，覆盖记忆、上下文、Activity、好友、表情包、生命周期、道具语义与操作、棒棒糖、随机对话和严格回复协议。主要入口包括：
 
@@ -586,12 +594,13 @@ OpenClaw 的页面 console 拦截器使用最多 1,000 条的环形缓存。MCP 
 
 ## 13. 路线图
 
-### 当前：v3.3.0 严格回复与Voyage设备自检
+### 当前：v3.3.1 只读BC Agent影子试验
 
 1. 继续积累真实房间样本，只修稳定复现的漏查、误查、假阴性或能力误触发。
 2. Activity 继续验证不同动作、部位、距离和权限变化；自动化回归不使用真人做写入测试。
 3. 自主加好友保持默认关闭，先观察审计 trace；本人明确请求与自主判断严格分开。
 4. 跟踪 `tearful` 漏选；修复时优先采用不增加模型调用的高置信度本地护栏，并覆盖否定、第三人、喜极而泣和引用反例。
+5. 影子模式默认关闭；只在用户明确开启后的12–24小时观察窗收集同事件的v3.3 legacy receipt与OpenClaw候选decision，结论形成后关闭并清理过期数据。
 
 ### 后续方向
 

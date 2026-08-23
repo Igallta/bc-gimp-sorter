@@ -3,7 +3,7 @@
 为 Bondage Club 的 Gimp Dolls 房间维护两套主要用户脚本：
 
 - **GimpSorter v1.7.4**：按 `GIMP → Gimp → Doll → GIMP Pet → Pet → Error` 分类；组内先排三位编号，再排四位编号，并各自按数值升序整理。
-- **MisakaChat v3.3.0**：御坂房间 Bot，提供结构化角色回复、人物与长期记忆、角色扮演、BC 原生互动、语境表情包、好友能力和受控的 BC 操作；密集点名时最多排队五条，并使用 BC 原生消息引用明确回复对象。近期上下文使用中性的输入元数据，正式回复只接受 DeepSeek Beta Chat Completions 的强制严格函数调用，单次生成不可用时保存脱敏故障包并继续处理队列。
+- **MisakaChat v3.3.1**：御坂房间 Bot，提供结构化角色回复、人物与长期记忆、角色扮演、BC 原生互动、语境表情包、好友能力和受控的 BC 操作；密集点名时最多排队五条，并使用 BC 原生消息引用明确回复对象。近期上下文使用中性的输入元数据，正式回复只接受 DeepSeek Beta Chat Completions 的强制严格函数调用，单次生成不可用时保存脱敏故障包并继续处理队列。新增默认关闭的只读影子试验，用同一真实事件比较现行链与 OpenClaw BC Agent 候选，但候选不能发言或操作房间。
 
 另提供一个默认关闭、仅供 iPadOS 长期挂机使用的独立守护脚本：
 
@@ -55,6 +55,7 @@ Embedding 使用 OpenRouter `voyageai/voyage-4-large`（1,024维）：召回查�
 /misaka activity on|off
 /misaka sticker on|off
 /misaka friend on|off
+/misaka shadow on|off|status
 /misaka status
 /misaka diag
 /misaka selftest
@@ -94,6 +95,8 @@ Embedding 使用 OpenRouter `voyageai/voyage-4-large`（1,024维）：召回查�
 `/misaka forget` 会清空人物档案、语义记忆和提炼长期记忆，使用前应先导出备份。
 
 当单次结构化回复不可用时，MisakaChat 会在浏览器本地保存最近 20 个回复故障包。每包包含有限的近期上下文、规划摘要、HTTP/工具调用状态、耗时、token、错误码及不可用输出预览；疑似 API key 与 Authorization 会自动脱敏。配置诊断上传密钥后，loader 会签名并异步上传故障包到私有诊断收集器；普通成功回复和成功自检不会触发该网络请求。自检失败时会复用已验证的故障包协议上传脱敏摘要。上传失败的包最多在 Tampermonkey 私有存储中保留 5 个，并在下次启动、故障或失败自检时重试。使用 `/misaka diagnostics` 打开诊断上传密钥设置，`/misaka diag` 查看运行时与模型配置，`/misaka selftest` 验证严格回复、Voyage query/document、IndexedDB临时读写及Safari配额，`/misaka trace` 导出到 `window.__misakaTraceExport`。
+
+`/misaka shadow on` 只在已经配置私有诊断上传密钥时生效。影子模式只上传本来就会触发御坂回复的消息、最多 8 条近期上下文、最小房间投影和现行回复耗时；成员编号、房间标识、消息标识及结构化显示名在 iPad 端稳定匿名化后才进入私有队列。候选 Agent 没有 BC channel binding，只有读取快照和保存建议的影子工具，无法发送消息或执行操作。影子数据和主机侧产物保留 72 小时；关闭后立即停止新增和上传，可从 Tampermonkey 菜单清除本地影子队列及匿名化标识。
 
 ## 文档
 

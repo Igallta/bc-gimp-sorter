@@ -1,10 +1,10 @@
-// MisakaChat v3.3.0 - BC 御坂自动回复系统
+// MisakaChat v3.3.1 - BC 御坂自动回复系统
 // 模块：配置与生命周期、记忆、API、规划、BC 操作、回复、命令和初始化。
 
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "3.3.0";
+  const SCRIPT_VERSION = "3.3.1";
   const bootstrapOptions = window.__misakaNextBootstrapOptions || {};
   delete window.__misakaNextBootstrapOptions;
   const TEST_MODE = bootstrapOptions.mode === "test";
@@ -218,6 +218,7 @@
     pendingReplies: [], // busy/冷却期间最多保留 5 条直接点名，按到达顺序续跑
     pendingReplyTimer: null,
     selftestRunning: false,
+    activeShadowRun: null,
   };
   onDispose(() => {
     state.semanticMemories = [];
@@ -228,6 +229,7 @@
     state.pendingClarifications = {};
     state.pendingReplies = [];
     state.pendingReplyTimer = null;
+    state.activeShadowRun = null;
     if (!TEST_MODE && window.__misakaLifecycle === lifecycle) {
       window.__misakaOnMessage = null;
       window.__misakaGlobalBusy = false;
@@ -3828,6 +3830,20 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
     replaceRecentMessagesForTest: messages => {
       state.recentMessages = (Array.isArray(messages) ? messages : []).map(message => ({ ...message }));
     },
+    buildShadowEventForTest: input => buildShadowEvent({
+      eventId: String(input?.eventId || "shadow-test"),
+      createdAt: Number(input?.createdAt) || Date.now(),
+      receivedAt: Number(input?.receivedAt) || Date.now(),
+      senderNum: Number(input?.senderNum) || 0,
+      senderName: String(input?.senderName || ""),
+      content: String(input?.content || ""),
+      replyId: String(input?.replyId || ""),
+      messageType: String(input?.messageType || "Chat"),
+    }),
+    inspectShadowStateForTest: () => ({
+      status: shadowStatus(),
+      active: state.activeShadowRun ? { ...state.activeShadowRun } : null,
+    }),
     inspectLifecycleForTest: () => ({
       id: lifecycle.id,
       mode: lifecycle.mode,
@@ -5100,6 +5116,184 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
     return true;
   }
 
+  const SHADOW_EVENT_NAME = "misaka-shadow-event-v1";
+  const SHADOW_LEGACY_EVENT_NAME = "misaka-shadow-legacy-v1";
+
+  function shadowStatus() {
+    try {
+      const status = typeof window.__misakaShadowStatus === "function"
+        ? window.__misakaShadowStatus()
+        : null;
+      return {
+        available: !!status,
+        enabled: status?.enabled === true,
+        configured: status?.configured === true,
+        pending: Math.max(0, Number(status?.pending) || 0),
+      };
+    } catch (e) {
+      return { available: false, enabled: false, configured: false, pending: 0 };
+    }
+  }
+
+  function setShadowEnabled(enabled) {
+    try {
+      if (typeof window.__misakaShadowSetEnabled !== "function") {
+        return { available: false, enabled: false, configured: false, pending: 0 };
+      }
+      const status = window.__misakaShadowSetEnabled(enabled === true) || {};
+      return {
+        available: true,
+        enabled: status.enabled === true,
+        configured: status.configured === true,
+        pending: Math.max(0, Number(status.pending) || 0),
+      };
+    } catch (e) {
+      return { available: false, enabled: false, configured: false, pending: 0 };
+    }
+  }
+
+  function boundedShadowText(value, max = 500) {
+    return String(value || "").replace(/\s+/g, " ").trim().slice(0, max);
+  }
+
+  function currentShadowRoomEpoch() {
+    const room = typeof ChatRoomData === "object" && ChatRoomData ? ChatRoomData : {};
+    return [
+      String(room.Name || ""),
+      String(room.Description || ""),
+      String(room.Background || ""),
+      String(room.Space || ""),
+      String(room.Creator || ""),
+    ].join("\u001f") || "chatroom:unknown";
+  }
+
+  function shadowAppearanceSummary(character) {
+    const appearance = Array.isArray(character?.Appearance) ? character.Appearance : [];
+    return appearance.slice(0, 18).map(item => ({
+      group: boundedShadowText(item?.Asset?.Group?.Name || "", 50),
+      asset: boundedShadowText(item?.Asset?.Name || "", 80),
+    })).filter(item => item.group && item.asset);
+  }
+
+  function buildShadowProjection(senderNum) {
+    const characters = Array.isArray(typeof ChatRoomCharacter !== "undefined" ? ChatRoomCharacter : null)
+      ? ChatRoomCharacter
+      : [];
+    const selfNumber = Number(typeof Player === "object" && Player ? Player.MemberNumber : 0);
+    return {
+      memberCount: characters.length,
+      members: characters.slice(0, 20).map((character, index) => {
+        const memberNumber = Number(character?.MemberNumber) || 0;
+        const isRelevant = memberNumber === Number(senderNum) || memberNumber === selfNumber;
+        return {
+          memberNumber,
+          name: boundedShadowText(character?.Nickname || character?.Name || "", 80),
+          position: index,
+          role: memberNumber === selfNumber ? "self" : (memberNumber === Number(senderNum) ? "sender" : "member"),
+          appearance: isRelevant ? shadowAppearanceSummary(character) : [],
+        };
+      }).filter(member => member.memberNumber),
+    };
+  }
+
+  function buildShadowEvent({ eventId, createdAt, receivedAt, senderNum, senderName, content, replyId, messageType }) {
+    const recent = state.recentMessages.slice(-10);
+    const context = recent.filter((message, index) => {
+      const isLatestDuplicate = index === recent.length - 1 && !message?.isSelf &&
+        Number(message?.senderMemberNumber) === Number(senderNum) &&
+        String(message?.content || "") === String(content || "");
+      return !isLatestDuplicate;
+    }).slice(-8).map(message => ({
+      memberNumber: message?.isSelf
+        ? Number(typeof Player === "object" && Player ? Player.MemberNumber : 0)
+        : Number(message?.senderMemberNumber) || 0,
+      senderName: boundedShadowText(message?.senderName || (message?.isSelf ? "御坂" : ""), 80),
+      isSelf: message?.isSelf === true,
+      type: boundedShadowText(message?.messageType || "Chat", 32),
+      text: boundedShadowText(message?.content, 500),
+      time: Number(message?.time) || createdAt,
+    })).filter(message => message.text);
+    return {
+      protocol: "misaka.shadow-event.v1",
+      eventId,
+      createdAt,
+      receivedAt,
+      roomEpoch: currentShadowRoomEpoch(),
+      runtime: { version: SCRIPT_VERSION, model: CONFIG.model },
+      sender: {
+        memberNumber: Number(senderNum) || 0,
+        name: boundedShadowText(senderName, 80),
+      },
+      message: {
+        type: boundedShadowText(messageType || "Chat", 32),
+        text: boundedShadowText(content, 1000),
+        replyId: normalizeReplyId(replyId),
+      },
+      context,
+      projection: buildShadowProjection(senderNum),
+    };
+  }
+
+  function createShadowRun(input) {
+    const status = shadowStatus();
+    if (!status.enabled || !status.configured) return null;
+    const createdAt = Date.now();
+    const eventId = `shadow-${input.debugId}`;
+    const run = {
+      eventId,
+      receivedAt: Number(input.receivedAt) || createdAt,
+      startedAt: createdAt,
+      visibleAt: 0,
+      completedAt: 0,
+    };
+    try {
+      const event = buildShadowEvent({ ...input, eventId, createdAt, receivedAt: run.receivedAt });
+      document.dispatchEvent(new CustomEvent(SHADOW_EVENT_NAME, { detail: event }));
+      return run;
+    } catch (error) {
+      console.warn("[MisakaShadow] 无法生成影子事件:", error?.message || error);
+      return null;
+    }
+  }
+
+  function finishShadowRun(run, outcome, { visibleText = "", errorCode = "" } = {}) {
+    if (!run || run.completedAt) return false;
+    const completedAt = Date.now();
+    run.completedAt = completedAt;
+    const visibleAt = Number(run.visibleAt) || 0;
+    try {
+      document.dispatchEvent(new CustomEvent(SHADOW_LEGACY_EVENT_NAME, {
+        detail: {
+          protocol: "misaka.shadow-legacy.v1",
+          eventId: run.eventId,
+          receivedAt: run.receivedAt,
+          startedAt: run.startedAt,
+          visibleAt,
+          completedAt,
+          outcome: boundedShadowText(outcome, 80),
+          visibleText: boundedShadowText(visibleText, 1000),
+          errorCode: boundedShadowText(errorCode, 160),
+          timings: {
+            queueMs: Math.max(0, run.startedAt - run.receivedAt),
+            firstVisibleMs: visibleAt ? Math.max(0, visibleAt - run.receivedAt) : null,
+            totalMs: Math.max(0, completedAt - run.receivedAt),
+          },
+        },
+      }));
+    } catch (error) {
+      console.warn("[MisakaShadow] 无法生成旧版结果:", error?.message || error);
+    }
+    if (state.activeShadowRun === run) state.activeShadowRun = null;
+    return true;
+  }
+
+  function markShadowVisible(text) {
+    const run = state.activeShadowRun;
+    if (!run || run.completedAt) return;
+    run.visibleAt = Date.now();
+    finishShadowRun(run, "visible-reply", { visibleText: text });
+  }
+
   // 发送回复到 BC 聊天室(含去重 + 多行分割 + 原生指定回复)
   function sendReply(text, replyId = "") {
     if (!text || !isCurrent()) return false;
@@ -5129,6 +5323,7 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
       } else {
         sendNativeReplyPart(parts[0] || text, normalizedReplyId);
       }
+      if (parts.length > 0) markShadowVisible(text);
       if (state.recentMessages.length > CONFIG.maxContext) state.recentMessages.shift();
     }
     return true;
@@ -5896,7 +6091,12 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
 
   function purgeExpiredPendingReplies(now = Date.now()) {
     const cutoff = now - CONFIG.pendingReplyTtlMs;
-    state.pendingReplies = state.pendingReplies.filter(item => Number(item?.receivedAt) >= cutoff);
+    const retained = [];
+    for (const item of state.pendingReplies) {
+      if (Number(item?.receivedAt) >= cutoff) retained.push(item);
+      else finishShadowRun(item?.shadowRun, "queue-expired", { errorCode: "pending-reply-expired" });
+    }
+    state.pendingReplies = retained;
     return state.pendingReplies.length;
   }
 
@@ -5909,14 +6109,22 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
       messageType: String(item?.messageType || "Chat"),
       replyId: normalizeReplyId(item?.replyId),
       receivedAt: Number(item?.receivedAt) || now,
+      shadowRun: item?.shadowRun || null,
     };
-    if (!normalized.senderNum || !normalized.content) return false;
+    if (!normalized.senderNum || !normalized.content) {
+      finishShadowRun(normalized.shadowRun, "queue-invalid", { errorCode: "invalid-pending-reply" });
+      return false;
+    }
     const key = pendingReplyKey(normalized);
-    if (state.pendingReplies.some(existing => pendingReplyKey(existing) === key)) return false;
+    if (state.pendingReplies.some(existing => pendingReplyKey(existing) === key)) {
+      finishShadowRun(normalized.shadowRun, "queue-duplicate", { errorCode: "duplicate-pending-reply" });
+      return false;
+    }
     state.pendingReplies.push(normalized);
     while (state.pendingReplies.length > CONFIG.pendingReplyMax) {
       const dropped = state.pendingReplies.shift();
       console.warn("[MisakaChat] 待回复区已满，丢弃最旧点名:", dropped?.senderName, dropped?.content);
+      finishShadowRun(dropped?.shadowRun, "queue-overflow", { errorCode: "pending-reply-overflow" });
     }
     if (schedule) schedulePendingReplyDrain();
     return true;
@@ -5952,15 +6160,17 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
 
     window.__misakaGlobalBusy = true;
     window.__misakaReplyInProgress = true;
+    state.activeShadowRun = item.shadowRun || null;
     const replyTimeout = trackedTimeout(() => {
       console.error("[MisakaChat] 回复硬超时");
+      finishShadowRun(state.activeShadowRun, "hard-timeout", { errorCode: "reply-hard-timeout" });
       state.busy = false;
       window.__misakaGlobalBusy = false;
       window.__misakaReplyInProgress = false;
       schedulePendingReplyDrain();
     }, CONFIG.replyHardTimeoutMs);
 
-    handleReply(item.senderNum, item.senderName, item.content, item.replyId, item.messageType)
+    handleReply(item.senderNum, item.senderName, item.content, item.replyId, item.messageType, item.receivedAt, item.shadowRun)
       .finally(() => {
         clearTrackedTimeout(replyTimeout);
         schedulePendingReplyDrain();
@@ -6122,6 +6332,15 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
 
 
     if (!triggered) return;
+    const shadowRun = createShadowRun({
+      debugId: `${now}-${Math.random().toString(36).slice(2, 8)}`,
+      receivedAt: now,
+      senderNum,
+      senderName,
+      content: readableContent,
+      replyId,
+      messageType: data.Type,
+    });
     const pending = {
       senderNum,
       senderName,
@@ -6129,6 +6348,7 @@ part 可以使用上文列出的语义部位，也可以使用道具清单中的
       messageType: data.Type,
       replyId,
       receivedAt: now,
+      shadowRun,
     };
     if (state.busy || window.__misakaGlobalBusy || window.__misakaReplyInProgress ||
         replyCooldownRemaining(pending, now) > 0) {
@@ -6777,7 +6997,15 @@ function unescapeHTML(s) {
     return result;
   }
 
-  async function handleReply(senderNum, senderName, content, replyId = "", messageType = "Chat") {
+  async function handleReply(
+    senderNum,
+    senderName,
+    content,
+    replyId = "",
+    messageType = "Chat",
+    receivedAt = Date.now(),
+    shadowRun = null,
+  ) {
     if (!isCurrent()) return;
     const debugId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     state.busy = true;
@@ -7224,7 +7452,9 @@ function unescapeHTML(s) {
         console.error("[MisakaChat] 回复失败:", e.message);
         pushDebugTrace({ id: debugId, stage: "error", error: e.message });
       }
+      finishShadowRun(shadowRun, "error", { errorCode: e?.message || "reply-error" });
     } finally {
+      finishShadowRun(shadowRun, "completed-without-visible-reply");
       state.busy = false;
       if (isCurrent()) {
         window.__misakaGlobalBusy = false;
@@ -7283,8 +7513,20 @@ function unescapeHTML(s) {
       localStorage.setItem(storageKey("auto_friend_enabled"), String(CONFIG.autoFriendEnabled));
       sendLocal(`${CONFIG.autoFriendEnabled ? "✅ 已开启" : "⏹ 已关闭"}：自动加好友`);
     }
+    else if (sub === "shadow" && ["on", "off", "status"].includes(String(parts[1] || "status").toLowerCase())) {
+      const action = String(parts[1] || "status").toLowerCase();
+      const status = action === "status" ? shadowStatus() : setShadowEnabled(action === "on");
+      if (!status.available) {
+        sendLocal("❌ 影子模式不可用：请先更新 MisakaChat loader");
+      } else if (action === "on" && !status.configured) {
+        sendLocal("⚠️ 影子模式已开启，但尚未配置私有诊断上传密钥");
+      } else {
+        sendLocal(`影子模式：${status.enabled ? "开启" : "关闭"} | 上传密钥：${status.configured ? "已配置" : "缺失"} | 待上传：${status.pending}`);
+      }
+    }
     else if (sub === "status") {
-      sendLocal(`状态：${CONFIG.enabled?"开启":"关闭"} | 原生互动：${CONFIG.activityEnabled?"开启":"关闭"} | 表情包：${CONFIG.stickerEnabled?"开启":"关闭"} | 自动加好友：${CONFIG.autoFriendEnabled?"开启":"关闭"} | 模型：${CONFIG.model} | 语义记忆：${state.semanticMemories.length} | 提炼记忆：${state.refinedMemories.length} | 人物：${Object.keys(loadMemory().profiles||{}).length}`);
+      const shadow = shadowStatus();
+      sendLocal(`状态：${CONFIG.enabled?"开启":"关闭"} | 原生互动：${CONFIG.activityEnabled?"开启":"关闭"} | 表情包：${CONFIG.stickerEnabled?"开启":"关闭"} | 自动加好友：${CONFIG.autoFriendEnabled?"开启":"关闭"} | 影子：${shadow.enabled?"开启":"关闭"} | 模型：${CONFIG.model} | 语义记忆：${state.semanticMemories.length} | 提炼记忆：${state.refinedMemories.length} | 人物：${Object.keys(loadMemory().profiles||{}).length}`);
     } else if (sub === "diag") {
       const key = getApiKeyStatus();
       const embed = getEmbeddingProviderStatus();
@@ -7391,7 +7633,7 @@ function unescapeHTML(s) {
       localStorage.setItem(storageKey("persona_extra"), parts.slice(1).join(" "));
       sendLocal("✅ 已更新：人设附加备注");
     } else {
-      sendLocal("用法：/misaka on|off|activity on|off|sticker on|off|friend on|off|key <key>|embedkey <openrouter-key>|model <name>|status|diag|selftest|trace [clear]|diagnostics|forget|memory|persona <text>|export|import");
+      sendLocal("用法：/misaka on|off|activity on|off|sticker on|off|friend on|off|shadow on|off|status|key <key>|embedkey <openrouter-key>|model <name>|status|diag|selftest|trace [clear]|diagnostics|forget|memory|persona <text>|export|import");
     }
     return true;
   }

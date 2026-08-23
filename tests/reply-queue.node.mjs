@@ -8,6 +8,7 @@ const source = fs.readFileSync(new URL("../misaka-chat.js", import.meta.url), "u
 const store = new Map();
 const sent = [];
 const localMessages = [];
+const shadowEvents = [];
 const timers = [];
 let inputWrites = 0;
 
@@ -23,7 +24,13 @@ const context = {
   setInterval() { return 1; },
   clearInterval() {},
   navigator: {},
-  document: { readyState: "complete" },
+  CustomEvent: class CustomEvent {
+    constructor(type, options = {}) { this.type = type; this.detail = options.detail; }
+  },
+  document: {
+    readyState: "complete",
+    dispatchEvent(event) { shadowEvents.push(structuredClone({ type: event.type, detail: event.detail })); },
+  },
   localStorage: {
     getItem(key) { return store.has(key) ? store.get(key) : null; },
     setItem(key, value) { store.set(key, String(value)); },
@@ -46,11 +53,37 @@ const context = {
   ChatRoomSendChat() { throw new Error("native reply path must not use InputChat"); },
 };
 context.window = context;
+context.__misakaShadowStatus = () => ({ enabled: true, configured: true, pending: 0 });
 context.window.__misakaNextBootstrapOptions = { mode: "test" };
 vm.runInNewContext(source, context, { filename: "misaka-chat.js" });
 
 const hooks = context.__misakaPlanDebug;
 assert.ok(hooks, "MisakaChat test hooks must be available");
+hooks.replaceRecentMessagesForTest([
+  { senderName: "铃", senderMemberNumber: 1001, content: "上一句", messageType: "Chat", time: 1 },
+  { senderName: "咲", senderMemberNumber: 1002, content: "御坂，晚上好", messageType: "Chat", time: 2 },
+]);
+context.ChatRoomCharacter.push(
+  { MemberNumber: 194331, Name: "御坂", Appearance: [] },
+  { MemberNumber: 1001, Name: "铃", Appearance: [] },
+  { MemberNumber: 1002, Name: "咲", Appearance: [] },
+);
+const shadowEvent = JSON.parse(JSON.stringify(hooks.buildShadowEventForTest({
+  eventId: "shadow-runtime-test",
+  createdAt: 3,
+  receivedAt: 2,
+  senderNum: 1002,
+  senderName: "咲",
+  content: "御坂，晚上好",
+  replyId: "msg-shadow",
+  messageType: "Chat",
+})));
+assert.equal(shadowEvent.protocol, "misaka.shadow-event.v1");
+assert.equal(shadowEvent.context.length, 1, "latest triggering message must not be duplicated in context");
+assert.equal(shadowEvent.projection.memberCount, 3);
+assert.equal(shadowEvent.message.text, "御坂，晚上好");
+context.ChatRoomCharacter.length = 0;
+hooks.replaceRecentMessagesForTest([]);
 assert.deepEqual(
   JSON.parse(JSON.stringify(hooks.inspectPendingReplyConfigForTest())),
   { max: 5, ttlMs: 300000 },
@@ -87,6 +120,16 @@ for (let index = 1; index <= 6; index++) {
     Dictionary: [{ Tag: "MsgId", MsgId: `incoming-${index}` }],
   });
 }
+assert.equal(
+  shadowEvents.filter(event => event.type === "misaka-shadow-event-v1").length,
+  6,
+  "shadow events must be emitted at trigger ingress even while legacy replies remain queued",
+);
+assert.equal(
+  shadowEvents.filter(event => event.type === "misaka-shadow-legacy-v1" && event.detail.outcome === "queue-overflow").length,
+  1,
+  "an evicted legacy reply must close its shadow comparison record",
+);
 let queued = JSON.parse(JSON.stringify(hooks.snapshotPendingRepliesForTest()));
 assert.deepEqual(queued.map(item => item.replyId), ["incoming-2", "incoming-3", "incoming-4", "incoming-5", "incoming-6"],
   "distinct BC message IDs must preserve repeated text while busy instead of disappearing");
@@ -286,7 +329,7 @@ assert.doesNotMatch(localMessages[0].Content, /版本：|Loader：|对话Key：|
 localMessages.length = 0;
 assert.equal(hooks.handleCommandForTest("/misaka diag"), true);
 assert.equal(localMessages.length, 1);
-assert.match(localMessages[0].Content, /\[MisakaChat\] 运行时：3\.3\.0 \| Loader：未知/);
+assert.match(localMessages[0].Content, /\[MisakaChat\] 运行时：3\.3\.1 \| Loader：未知/);
 assert.match(localMessages[0].Content, /Embedding：OpenRouter Voyage 4 Large\/voyageai\/voyage-4-large\/1024维/);
 
 gmSecrets.delete("misaka_openrouter_key");

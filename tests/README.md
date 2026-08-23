@@ -2,7 +2,7 @@
 
 ## Regression model
 
-回归按“越靠下越接近真实设备、外部状态越多”分成四层。不能用某一层通过来替代其他层：
+回归按“越靠下越接近真实设备、外部状态越多”分成五层。不能用某一层通过来替代其他层：
 
 | 层级 | 入口 | 真实网络 | 写入 | 证明范围 |
 |---|---|---:|---|---|
@@ -10,6 +10,7 @@
 | 确定性浏览器 | `run-context-blue-node.mjs` 或browser hooks | 默认否 | test mode，不写生产IDB | 浏览器语义守卫、上下文、生命周期和规划边界 |
 | raw-CDP兼容 | `run-*-cdp.mjs` | 部分用真实模型 | 只读debug hooks；禁止BC状态写入 | 当前BC runtime、目录、人物与模型集成 |
 | iPad设备自检 | `/misaka selftest` | 是 | 仅一条临时IDB记录，读回后删除 | 私有Key、DeepSeek strict、Voyage query/document、WebKit存储与配额 |
+| BC Agent影子 | Node桥接回归＋12–24小时观察 | 是 | 私有队列/只读decision；不写BC | 匿名化、事件配对、legacy/vNext延迟与回复质量 |
 
 ### 发布前本地基线
 
@@ -41,6 +42,8 @@ git diff --check
 - 自检任一子项失败时总结果必须失败；
 - Node test mode不得上传诊断包或触碰真实IndexedDB。
 
+`diagnostic-upload.node.mjs` 还必须锁定影子桥的隐私边界：默认关闭、上传前匿名化MemberNumber/房间/消息标识和结构化显示名、失败时仅保留在Tampermonkey私有队列。`reply-queue.node.mjs` 必须证明影子事件在触发入口立即产生，即使现行回复仍处于busy/冷却；队列溢出和过期必须生成终止legacy receipt，不能留下永久待配对记录。
+
 ### iPad集成验收
 
 在御坂实际运行的iPad房间内执行：
@@ -59,6 +62,18 @@ window.__misakaSelftestReport
 成功报告只保留在当前页面。若自检失败且已通过 `/misaka diagnostics` 配置私有诊断上传，失败摘要会复用现有 `misaka.reply-failure.v1` 签名上传队列；不引入未经服务端验证的新上传协议。验收要求8项检查全部通过；现存语义记忆只要包含非1,024维历史向量，`stored-vector-dimensions` 就会失败并要求先备份、重建。设备自检不验证真人指令语义、多步BC事务或回滚，这些仍由黑箱案例覆盖。
 
 `deepseek-strict-tool.live.mjs` 是人工、显式的远程协议探针，不属于默认基线；只有在安全凭据文件已配置且确需验证DeepSeek服务端兼容性时运行。测试输出不得包含Key或模型正文。
+
+### 真实影子观察验收
+
+影子试验不替代上述四层。开启前必须确认：
+
+- Worker `/health` 返回 `shadow: true`；
+- `misaka-shadow-processor.service` 为active，且独立于Gateway unit；
+- `misaka-spike` 没有channel binding，只允许BC实验工具；
+- 本地processor secret为0600，Cloudflare只保存encrypted Secret；
+- `/misaka shadow status` 显示上传密钥已配置、待上传为0。
+
+观察期内候选只能写decision，不能发公屏、私聊或BC操作。结束后运行主机侧 `npm run shadow:report`，至少核对配对率、decision/legacy p50与p95、拒绝/澄清比例和人工回复质量；未配对、失败或重试耗尽的事件必须单列，不能从统计中静默删除。
 
 ## Browser runner connection
 
