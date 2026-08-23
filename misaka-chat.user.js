@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BC Misaka Auto Chat
 // @namespace    https://igallta.github.io/bc-gimp-sorter
-// @version      3.3.1
+// @version      3.3.2
 // @description  御坂 BC 自动回复系统 — LLM 驱动 + 语义记忆(IDB) + 房间上下文
 // @match        https://*.bondageprojects.elementfx.com/R*/*
 // @match        https://*.bondage-europe.com/R*/*
@@ -27,7 +27,7 @@
   "use strict";
 
   const pageWindow = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
-  const SCRIPT_VERSION = "3.3.1";
+  const SCRIPT_VERSION = "3.3.2";
 
   // 模型密钥只留在 Tampermonkey 私有存储。页面运行时只能查询是否存在、
   // 覆盖/删除指定密钥，以及让 loader 代发到固定 API 的请求，不能读取明文。
@@ -107,6 +107,7 @@
   const DIAGNOSTIC_PENDING_LIMIT = 5;
   const SHADOW_EVENT_ENDPOINT = "https://misaka-diagnostics.misaka-diagnostics.workers.dev/v1/shadow/events";
   const SHADOW_LEGACY_ENDPOINT = "https://misaka-diagnostics.misaka-diagnostics.workers.dev/v1/shadow/legacy";
+  const SHADOW_HEARTBEAT_ENDPOINT = "https://misaka-diagnostics.misaka-diagnostics.workers.dev/v1/shadow/heartbeat";
   const SHADOW_EVENT = "misaka-shadow-event-v1";
   const SHADOW_LEGACY_EVENT = "misaka-shadow-legacy-v1";
   const SHADOW_ENABLED_KEY = "misaka_shadow_enabled_v1";
@@ -114,8 +115,10 @@
   const SHADOW_INSTALLATION_KEY = "misaka_shadow_installation_v1";
   const SHADOW_PSEUDONYM_SALT_KEY = "misaka_shadow_pseudonym_salt_v1";
   const SHADOW_PENDING_LIMIT = 20;
+  const SHADOW_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
   let diagnosticUploadBusy = false;
   let shadowUploadBusy = false;
+  let shadowHeartbeatTimer = null;
 
   function diagnosticSecret() {
     try { return String(GM_getValue(DIAGNOSTIC_SECRET_KEY, "") || ""); }
@@ -328,6 +331,47 @@
     void flushShadowPending();
   }
 
+  function cancelShadowHeartbeat() {
+    if (shadowHeartbeatTimer !== null && typeof clearTimeout === "function") {
+      clearTimeout(shadowHeartbeatTimer);
+    }
+    shadowHeartbeatTimer = null;
+  }
+
+  async function sendShadowHeartbeat() {
+    if (!shadowEnabled()) return false;
+    const secret = diagnosticSecret();
+    if (secret.length < 24) return false;
+    const visibility = ["visible", "hidden", "prerender"].includes(String(document.visibilityState || ""))
+      ? String(document.visibilityState)
+      : "unknown";
+    return uploadSignedEnvelope(SHADOW_HEARTBEAT_ENDPOINT, {
+      protocol: "misaka.shadow-upload.v1",
+      kind: "heartbeat",
+      client: {
+        version: SCRIPT_VERSION,
+        installationId: shadowInstallationId(),
+      },
+      heartbeat: {
+        protocol: "misaka.shadow-heartbeat.v1",
+        sentAt: Date.now(),
+        visibility,
+        online: typeof navigator === "undefined" || navigator.onLine !== false,
+        pending: readShadowPending().length,
+      },
+    }, secret);
+  }
+
+  function scheduleShadowHeartbeat(delay = SHADOW_HEARTBEAT_INTERVAL_MS) {
+    cancelShadowHeartbeat();
+    if (!shadowEnabled()) return;
+    shadowHeartbeatTimer = setTimeout(async () => {
+      shadowHeartbeatTimer = null;
+      await sendShadowHeartbeat();
+      scheduleShadowHeartbeat();
+    }, Math.max(0, Number(delay) || 0));
+  }
+
   pageWindow.__misakaShadowStatus = () => ({
     enabled: shadowEnabled(),
     configured: diagnosticSecret().length >= 24,
@@ -336,7 +380,13 @@
   pageWindow.__misakaShadowSetEnabled = value => {
     const enabled = value === true;
     GM_setValue(SHADOW_ENABLED_KEY, enabled);
-    if (enabled) void flushShadowPending();
+    if (enabled) {
+      void flushShadowPending();
+      void sendShadowHeartbeat();
+      scheduleShadowHeartbeat();
+    } else {
+      cancelShadowHeartbeat();
+    }
     return pageWindow.__misakaShadowStatus();
   };
 
@@ -392,6 +442,11 @@
     document.addEventListener(DIAGNOSTIC_CONFIG_EVENT, openDiagnosticSecretDialog);
     document.addEventListener(SHADOW_EVENT, event => void enqueueShadowDetail("event", event.detail));
     document.addEventListener(SHADOW_LEGACY_EVENT, event => void enqueueShadowDetail("legacy", event.detail));
+    document.addEventListener("visibilitychange", () => {
+      if (!shadowEnabled()) return;
+      void sendShadowHeartbeat();
+      scheduleShadowHeartbeat();
+    });
     GM_registerMenuCommand("设置御坂诊断上传密钥", openDiagnosticSecretDialog);
     GM_registerMenuCommand("清除御坂诊断上传设置", () => {
       GM_deleteValue(DIAGNOSTIC_SECRET_KEY);
@@ -402,9 +457,12 @@
       GM_setValue(SHADOW_ENABLED_KEY, true);
       console.log("[MisakaShadow] 只读影子模式已开启");
       void flushShadowPending();
+      void sendShadowHeartbeat();
+      scheduleShadowHeartbeat();
     });
     GM_registerMenuCommand("关闭御坂只读影子模式", () => {
       GM_setValue(SHADOW_ENABLED_KEY, false);
+      cancelShadowHeartbeat();
       console.log("[MisakaShadow] 只读影子模式已关闭");
     });
     GM_registerMenuCommand("清除御坂影子本地数据", () => {
@@ -412,10 +470,15 @@
       GM_deleteValue(SHADOW_PENDING_KEY);
       GM_deleteValue(SHADOW_INSTALLATION_KEY);
       GM_deleteValue(SHADOW_PSEUDONYM_SALT_KEY);
+      cancelShadowHeartbeat();
       console.log("[MisakaShadow] 本地影子队列与匿名化标识已清除");
     });
     Promise.resolve().then(() => void flushDiagnosticPending());
     Promise.resolve().then(() => void flushShadowPending());
+    if (shadowEnabled()) {
+      Promise.resolve().then(() => void sendShadowHeartbeat());
+      scheduleShadowHeartbeat();
+    }
   } catch (e) {}
 
   // 固定 revision，保证 loader、persona 与 runtime 始终来自同一版本。

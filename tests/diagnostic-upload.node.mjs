@@ -16,6 +16,7 @@ let uploadSucceeds = true;
 
 const document = {
   body: { append() {} },
+  visibilityState: "visible",
   addEventListener(type, callback) { listeners.set(type, callback); },
   dispatchEvent(event) { listeners.get(event.type)?.(event); return true; },
   getElementById() { return null; },
@@ -38,6 +39,7 @@ const context = {
   CustomEvent: class CustomEvent { constructor(type, init = {}) { this.type = type; this.detail = init.detail; } },
   document,
   CurrentScreen: "Login",
+  navigator: { onLine: true },
   Player: { MemberNumber: 194331, ImmersionSettings: { ReturnToChatRoomAdmin: true } },
   ChatSearchAutoJoinRoom() {},
   setTimeout(callback, delay) { timers.push({ callback, delay }); return timers.length; },
@@ -97,6 +99,15 @@ assert.deepEqual(
   JSON.parse(JSON.stringify(shadowStatus)),
   { enabled: true, configured: true, pending: 0 },
 );
+await new Promise(resolve => setTimeout(resolve, 25));
+const heartbeatRequest = requests.findLast(request => request.url.endsWith("/v1/shadow/heartbeat"));
+assert.ok(heartbeatRequest, "enabling shadow mode should send an immediate heartbeat");
+const heartbeatUpload = JSON.parse(heartbeatRequest.data);
+assert.equal(heartbeatUpload.kind, "heartbeat");
+assert.equal(heartbeatUpload.heartbeat.protocol, "misaka.shadow-heartbeat.v1");
+assert.equal(heartbeatUpload.heartbeat.visibility, "visible");
+assert.equal(heartbeatUpload.heartbeat.online, true);
+assert.equal(heartbeatUpload.heartbeat.pending, 0);
 const shadowEvent = {
   protocol: "misaka.shadow-event.v1",
   eventId: "shadow-test-1",
@@ -116,7 +127,7 @@ const shadowEvent = {
 };
 document.dispatchEvent(new context.CustomEvent("misaka-shadow-event-v1", { detail: shadowEvent }));
 await new Promise(resolve => setTimeout(resolve, 25));
-const shadowRequest = requests.at(-1);
+const shadowRequest = requests.findLast(request => request.url.endsWith("/v1/shadow/events"));
 assert.equal(shadowRequest.url, "https://misaka-diagnostics.misaka-diagnostics.workers.dev/v1/shadow/events");
 const shadowUpload = JSON.parse(shadowRequest.data);
 assert.equal(shadowUpload.protocol, "misaka.shadow-upload.v1");

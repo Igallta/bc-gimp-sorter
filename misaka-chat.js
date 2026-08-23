@@ -1,10 +1,10 @@
-// MisakaChat v3.3.1 - BC 御坂自动回复系统
+// MisakaChat v3.3.2 - BC 御坂自动回复系统
 // 模块：配置与生命周期、记忆、API、规划、BC 操作、回复、命令和初始化。
 
 (function() {
   "use strict";
 
-  const SCRIPT_VERSION = "3.3.1";
+  const SCRIPT_VERSION = "3.3.2";
   const bootstrapOptions = window.__misakaNextBootstrapOptions || {};
   delete window.__misakaNextBootstrapOptions;
   const TEST_MODE = bootstrapOptions.mode === "test";

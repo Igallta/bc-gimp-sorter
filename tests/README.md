@@ -42,7 +42,7 @@ git diff --check
 - 自检任一子项失败时总结果必须失败；
 - Node test mode不得上传诊断包或触碰真实IndexedDB。
 
-`diagnostic-upload.node.mjs` 还必须锁定影子桥的隐私边界：默认关闭、上传前匿名化MemberNumber/房间/消息标识和结构化显示名、失败时仅保留在Tampermonkey私有队列。`reply-queue.node.mjs` 必须证明影子事件在触发入口立即产生，即使现行回复仍处于busy/冷却；队列溢出和过期必须生成终止legacy receipt，不能留下永久待配对记录。
+`diagnostic-upload.node.mjs` 还必须锁定影子桥的隐私边界：默认关闭、上传前匿名化MemberNumber/房间/消息标识和结构化显示名、失败时仅保留在Tampermonkey私有队列；开启时发送的客户端心跳只能包含匿名安装ID、版本、页面可见性、在线标志、待上传数量和时间。`reply-queue.node.mjs` 必须证明影子事件在触发入口立即产生，即使现行回复仍处于busy/冷却；队列溢出和过期必须生成终止legacy receipt，不能留下永久待配对记录。
 
 ### iPad集成验收
 
@@ -73,7 +73,7 @@ window.__misakaSelftestReport
 - 本地processor secret为0600，Cloudflare只保存encrypted Secret；
 - `/misaka shadow status` 显示上传密钥已配置、待上传为0。
 
-观察期内候选只能写decision，不能发公屏、私聊或BC操作。结束后运行主机侧 `npm run shadow:report`，至少核对配对率、decision/legacy p50与p95、拒绝/澄清比例和人工回复质量；未配对、失败或重试耗尽的事件必须单列，不能从统计中静默删除。
+观察期内候选只能写decision，不能发公屏、私聊或BC操作。主机处理器每批完成后自动刷新 `runtime/shadow/reports/latest.json`；也可手动运行 `npm run shadow:report`。报告至少核对配对率、decision/legacy p50与p95、拒绝/澄清比例、客户端心跳和人工回复质量；未配对、失败或重试耗尽的事件必须单列，不能从统计中静默删除。
 
 ## Browser runner connection
 

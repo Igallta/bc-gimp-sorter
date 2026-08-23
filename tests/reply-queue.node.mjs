@@ -329,7 +329,7 @@ assert.doesNotMatch(localMessages[0].Content, /版本：|Loader：|对话Key：|
 localMessages.length = 0;
 assert.equal(hooks.handleCommandForTest("/misaka diag"), true);
 assert.equal(localMessages.length, 1);
-assert.match(localMessages[0].Content, /\[MisakaChat\] 运行时：3\.3\.1 \| Loader：未知/);
+assert.match(localMessages[0].Content, /\[MisakaChat\] 运行时：3\.3\.2 \| Loader：未知/);
 assert.match(localMessages[0].Content, /Embedding：OpenRouter Voyage 4 Large\/voyageai\/voyage-4-large\/1024维/);
 
 gmSecrets.delete("misaka_openrouter_key");
