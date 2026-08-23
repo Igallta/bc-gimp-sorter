@@ -419,7 +419,7 @@
   } catch (e) {}
 
   // 固定 revision，保证 loader、persona 与 runtime 始终来自同一版本。
-  const ASSET_REVISION = "1a5ffc6";
+  const ASSET_REVISION = "0f26d39";
   const BASE_URL = `https://raw.githack.com/Igallta/bc-gimp-sorter/${ASSET_REVISION}`;
 
   // BC 的“返回上个房间并恢复管理员房间”会在搜索阶段短暂没找到房间时
